@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="104" fill="#059669"/>
+  <!-- queue -->
+  <path d="M150 290 Q70 250 95 180 Q130 220 175 235 Z" fill="#ffffff"/>
+  <path d="M150 300 Q60 300 70 230 Q120 270 178 268 Z" fill="#ffffff"/>
+  <!-- corps -->
+  <ellipse cx="270" cy="318" rx="135" ry="108" fill="#ffffff"/>
+  <!-- tete -->
+  <circle cx="340" cy="212" r="70" fill="#ffffff"/>
+  <!-- crete -->
+  <circle cx="318" cy="150" r="20" fill="#ef4444"/>
+  <circle cx="346" cy="138" r="22" fill="#ef4444"/>
+  <circle cx="374" cy="150" r="20" fill="#ef4444"/>
+  <!-- bec -->
+  <polygon points="404,206 452,224 404,244" fill="#f59e0b"/>
+  <!-- barbillon -->
+  <path d="M392 250 q14 26 -2 44 q-18 -8 -16 -34 Z" fill="#ef4444"/>
+  <!-- oeil -->
+  <circle cx="356" cy="206" r="11" fill="#1f2937"/>
+  <!-- aile -->
+  <path d="M250 300 q60 -30 110 -6 q-44 54 -110 30 Z" fill="#e2e8f0"/>
+  <!-- pattes -->
+  <g stroke="#f59e0b" stroke-width="11" stroke-linecap="round">
+    <line x1="240" y1="420" x2="240" y2="468"/>
+    <line x1="300" y1="420" x2="300" y2="468"/>
+    <line x1="240" y1="468" x2="222" y2="484"/><line x1="240" y1="468" x2="258" y2="484"/>
+    <line x1="300" y1="468" x2="282" y2="484"/><line x1="300" y1="468" x2="318" y2="484"/>
+  </g>
+</svg>
