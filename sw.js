@@ -1,11 +1,18 @@
 /* Service worker Cheptel — cache l'app pour un fonctionnement hors-ligne de base.
    Navigations : réseau d'abord (pour récupérer les mises à jour), cache si hors-ligne.
    Autres ressources (icônes, librairies CDN) : cache d'abord. */
-const CACHE = "cheptel-v2";
+const CACHE = "cheptel-v3";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // On ne fait PAS skipWaiting ici : le nouveau SW reste « en attente » → l'app affiche le
+  // bandeau « Mettre à jour ». Le clic envoie SKIP_WAITING (ci-dessous) pour l'activer.
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
+});
+
+// Activation à la demande (clic « Mettre à jour » dans l'app)
+self.addEventListener("message", (e) => {
+  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (e) => {
