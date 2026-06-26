@@ -14,10 +14,60 @@
   <meta name="apple-mobile-web-app-title" content="Cheptel" />
   <meta name="mobile-web-app-capable" content="yes" />
   <script>
-    // Enregistre le service worker (hors-ligne). Sans effet en local (file://) — uniquement une fois hébergé.
+    // Applique le thème jour/nuit AVANT le rendu (évite le clignotement). Choix mémorisé.
+    try { if (localStorage.getItem("cheptel_theme") === "nuit") document.documentElement.classList.add("nuit"); } catch (e) {}
+  </script>
+  <style>
+    /* ===== Mode nuit ===== Surcouche : on assombrit les surfaces claires de Tailwind sans
+       toucher aux centaines de classes du code. Les sélecteurs html.nuit gagnent en spécificité. */
+    html.nuit body, html.nuit .bg-slate-100 { background-color:#0b1220 !important; }
+    html.nuit .bg-white { background-color:#172033 !important; }
+    html.nuit .bg-slate-50 { background-color:#1f2a40 !important; }
+    html.nuit .text-slate-900, html.nuit .text-slate-800, html.nuit .text-slate-700 { color:#e8edf6 !important; }
+    html.nuit .text-slate-600, html.nuit .text-slate-500 { color:#b8c2d4 !important; }
+    html.nuit .text-slate-400 { color:#8a93a6 !important; }
+    html.nuit .text-slate-300 { color:#9aa5b8 !important; }
+    html.nuit .border-slate-100, html.nuit .border-slate-200, html.nuit .border-slate-300 { border-color:#2c3850 !important; }
+    html.nuit .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color:#2c3850 !important; }
+    html.nuit input, html.nuit select, html.nuit textarea { background-color:#0b1220 !important; color:#e8edf6 !important; border-color:#2c3850 !important; }
+    /* Pastilles / fonds colorés très clairs → teintes sombres lisibles (badges, criticité, alertes) */
+    html.nuit .bg-red-50 { background-color:#3a1d1f !important; }
+    html.nuit .bg-orange-50 { background-color:#3a2a17 !important; }
+    html.nuit .bg-amber-50 { background-color:#3a3217 !important; }
+    html.nuit .bg-lime-50 { background-color:#26331a !important; }
+    html.nuit .bg-emerald-50 { background-color:#16291f !important; }
+    html.nuit .bg-blue-50 { background-color:#172a40 !important; }
+    html.nuit .bg-indigo-50 { background-color:#1e2240 !important; }
+    html.nuit .bg-purple-50 { background-color:#271a3a !important; }
+    html.nuit .bg-red-100 { background-color:#4a2326 !important; }
+    html.nuit .bg-orange-100 { background-color:#46321b !important; }
+    html.nuit .bg-amber-100 { background-color:#473c1b !important; }
+    html.nuit .bg-lime-100 { background-color:#2f4020 !important; }
+    html.nuit .bg-emerald-100 { background-color:#1b3527 !important; }
+    html.nuit .bg-blue-100 { background-color:#1c3450 !important; }
+    html.nuit .bg-indigo-100 { background-color:#262b50 !important; }
+  </style>
+  <script>
+    // Service worker (hors-ligne) + détection de mise à jour → bandeau « Mettre à jour ».
+    // Sans effet en local (file://) ; actif une fois hébergé.
     if ("serviceWorker" in navigator) {
+      window.__appliquerMAJ = function (worker) { if (worker && worker.postMessage) worker.postMessage({ type: "SKIP_WAITING" }); };
+      var __swRefresh = false;
+      navigator.serviceWorker.addEventListener("controllerchange", function () {
+        if (__swRefresh) return; __swRefresh = true; window.location.reload();   // nouveau SW actif → recharge
+      });
       window.addEventListener("load", function () {
-        navigator.serviceWorker.register("sw.js").catch(function () {});
+        navigator.serviceWorker.register("sw.js").then(function (reg) {
+          function signale(w) { if (w) window.dispatchEvent(new CustomEvent("sw-maj", { detail: w })); }
+          if (reg.waiting && navigator.serviceWorker.controller) signale(reg.waiting);
+          reg.addEventListener("updatefound", function () {
+            var nw = reg.installing; if (!nw) return;
+            nw.addEventListener("statechange", function () {
+              if (nw.state === "installed" && navigator.serviceWorker.controller) signale(nw);
+            });
+          });
+          setInterval(function () { reg.update().catch(function () {}); }, 60000);   // vérifie les MAJ
+        }).catch(function () {});
       });
     }
   </script>
@@ -1507,7 +1557,7 @@
           <PageHeader title="Tableau de bord" subtitle="Tout au même endroit — déplie les sections selon tes besoins" />
 
           {/* 1. ACTIONS DU JOUR (les choses importantes du jour + les retards restent visibles d'emblée) */}
-          <Section titre={"✅ Actions du jour" + (aFaire.length ? " · " + aFaire.length : "")} defaut={true}>
+          <Section titre={"✅ Actions du jour" + (aFaire.length ? " · " + aFaire.length : "")} defaut={true} alerte={enRetard.length}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <DashListe titre="🔴 En retard" couleur="red" items={enRetard} vide="Rien en retard 👍" />
               <DashListe titre="🟠 Aujourd'hui / bientôt" couleur="orange" items={aFaire} vide="Rien d'urgent" />
@@ -1520,7 +1570,7 @@
           </Section>
 
           {/* 2. ALERTES IMPORTANTES */}
-          <Section titre={"🚨 Alertes importantes" + (nbAlertes ? " · " + nbAlertes : "")} defaut={true}>
+          <Section titre={"🚨 Alertes importantes" + (nbAlertes ? " · " + nbAlertes : "")} defaut={true} alerte={nbAlertes}>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <DashListe titre="Stocks urgents à racheter" couleur="orange" items={stocksUrgents} vide="Aucun stock urgent" />
               <DashListe titre="Matériel à traiter" couleur="red" items={materielTraiter} vide="Aucun" />
@@ -1583,12 +1633,13 @@
           </Section>
 
           {/* 5. COUVAISON */}
-          <Section titre={"🌡️ Couvaison" + (lotsActifs.length ? " · " + lotsActifs.length + " lot(s)" : "")}>
+          <Section titre={"🌡️ Couvaison" + (lotsActifs.length ? " · " + lotsActifs.length + " lot(s)" : "")} alerte={alertesCouv.length}>
             <div className="grid md:grid-cols-2 gap-4 mb-4">
               <IncubatorCard num={1} />
               <IncubatorCard num={2} />
             </div>
             <Table
+              resume={(r, i) => { const l = lotsActifs[i]; const inc = infoIncub(l); return <><span className="font-medium">{l.id}</span> — {l.espece === "caille" ? "Cailles" : "Poules"}<span className="text-slate-400"> · {inc.futur ? "à venir" : "J" + alertesCouvaison(l, suivis.filter(s => s.lot === l.id).slice().sort((a, b) => a.jour - b.jour), config).jour}</span></>; }}
               columns={["Lot", "Espèce", "Couveuse", "J", "T° dernier", "H% dernier", "Norme", "Éclosion prévue"]}
               rows={lotsActifs.map(l => {
                 const inc = infoIncub(l);
@@ -1613,41 +1664,22 @@
             </div>
           </Section>
 
-          {/* 6. POUSSINS ET CAILLETEAUX — séparés */}
-          <Section titre={"🐥 Poussins et cailleteaux" + (jeunesActifs.length ? " · " + jeunesActifs.length + " lot(s)" : "")} defaut={true}>
+          {/* 6. POUSSINS ET CAILLETEAUX — résumé en cartes (comme « Animaux »). Détails dans l'onglet dédié. */}
+          <Section titre={"🐥 Poussins et cailleteaux" + (jeunesActifs.length ? " · " + jeunesActifs.length + " lot(s)" : "")} defaut={true} alerte={alJeune.length}>
             {(tachesJeunes.length > 0 || alJeune.length > 0) && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <DashListe titre="Tâches du jour (jeunes)" couleur="emerald" items={tachesJeunes} vide="Tout est fait 👍" />
                 <DashListe titre="Alertes jeunes" couleur="orange" items={alJeune} vide="—" />
               </div>
             )}
 
-            {/* Poussins */}
-            <p className="text-xs text-slate-500 mb-2 font-medium">🐔 Poussins · {vivants(jeunesPoussins)} vivants · {jeunesPoussins.length} lot(s)</p>
-            <Table
-              columns={["Lot", "Naissance", "Âge", "Vivants", "Morts", "Étape"]}
-              rows={jeunesPoussins.map(({ p }) => {
-                const a = ageJeune(p.date);
-                return [p.lot || "—", frDate(p.date), <span className={a.futur ? "text-red-600" : ""}>{a.label}</span>, p.nombre, Number(p.morts) || 0, <EtapeJeune birthDate={p.date} />];
-              })}
-            />
-
-            {/* Cailleteaux */}
-            <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">🐦 Cailleteaux · {vivants(jeunesCailleteaux)} vivants · {jeunesCailleteaux.length} lot(s)</p>
-            <Table
-              columns={["Lot", "Naissance", "Âge", "Vivants", "Morts", "Étape"]}
-              rows={jeunesCailleteaux.map(({ p }) => {
-                const a = ageJeune(p.date);
-                return [p.lot || "—", frDate(p.date), <span className={a.futur ? "text-red-600" : ""}>{a.label}</span>, p.nombre, Number(p.morts) || 0, <EtapeJeune birthDate={p.date} />];
-              })}
-            />
-
-            {/* Total général (après les détails séparés) */}
-            <div className="grid grid-cols-3 gap-4 mt-4">
-              <StatCard label="Poussins vivants" value={vivants(jeunesPoussins)} />
-              <StatCard label="Cailleteaux vivants" value={vivants(jeunesCailleteaux)} color="indigo" />
-              <StatCard label="Total jeunes vivants" value={vivants(jeunesPoussins) + vivants(jeunesCailleteaux)} color="purple" sub={"pertes : " + (morts(jeunesPoussins) + morts(jeunesCailleteaux))} />
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="🐥 Poussins vivants" value={vivants(jeunesPoussins)} sub={jeunesPoussins.length + " lot(s)"} />
+              <StatCard label="🐦 Cailleteaux vivants" value={vivants(jeunesCailleteaux)} color="indigo" sub={jeunesCailleteaux.length + " lot(s)"} />
+              <StatCard label="Total jeunes vivants" value={vivants(jeunesPoussins) + vivants(jeunesCailleteaux)} color="purple" />
+              <StatCard label="Pertes" value={morts(jeunesPoussins) + morts(jeunesCailleteaux)} color="orange" />
             </div>
+            <p className="text-xs text-slate-400 mt-3">Détail par lot et suivi quotidien dans l'onglet <span className="font-medium">Poussins et cailleteaux</span>.</p>
           </Section>
 
           {/* 7. ANIMAUX */}
@@ -1690,13 +1722,18 @@
       );
     }
 
-    // Section déroulante du tableau de bord (native <details>, simple et mobile-friendly)
-    function Section({ titre, defaut, children }) {
+    // Section déroulante du tableau de bord (native <details>, simple et mobile-friendly).
+    // `alerte` (nombre) → pastille ⚠️ visible UNIQUEMENT quand la section est repliée
+    // (incite à l'ouvrir pour voir l'anomalie).
+    function Section({ titre, defaut, alerte, children }) {
       return (
         <details open={!!defaut} className="bg-white rounded-xl shadow-sm border border-slate-100 mb-4 group">
-          <summary className="cursor-pointer select-none px-5 py-4 font-semibold text-slate-800 flex items-center justify-between list-none">
-            <span>{titre}</span>
-            <span className="text-slate-400 text-xs transition-transform group-open:rotate-180">▼</span>
+          <summary className="cursor-pointer select-none px-5 py-4 font-semibold text-slate-800 flex items-center justify-between gap-2 list-none">
+            <span className="flex items-center gap-2 min-w-0">
+              <span>{titre}</span>
+              {alerte ? <span className="group-open:hidden inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 animate-pulse">⚠️ {alerte}</span> : null}
+            </span>
+            <span className="text-slate-400 text-xs transition-transform group-open:rotate-180 shrink-0">▼</span>
           </summary>
           <div className="px-5 pb-5">{children}</div>
         </details>
@@ -3344,6 +3381,7 @@
             <StatCard label="Achats enregistrés" value={breederPurchases.length} />
           </div>
           <Table
+            resume={(r, k) => { const a = lignes[k].a; return <>{frDate(a.date)} — {a.fournisseur || a.typeAchat || "achat"}<span className="text-slate-400"> · {a.espece || "—"} · {eur(paye(a))}</span></>; }}
             columns={["Date", "Fournisseur / éleveur", "Type", "Espèce", "Animaux (détail)", "Prix payé", "Obs", ""]}
             rows={lignes.map(({ a, i }) => {
               const total = Number(a.nombre) || 0;
@@ -3438,6 +3476,7 @@
           <p className="text-sm text-slate-400 mb-3">{filtres.reduce((s, { r }) => s + (Number(r.nombre) || 1), 0)} animal(aux) · {filtres.length} ligne(s)</p>
 
           <Table
+            resume={(row, k) => { const r = filtres[k].r; return <><span className="font-medium">{r.nom || "(lot)"}</span> — {r.espece}{(Number(r.nombre) || 1) > 1 ? " ×" + r.nombre : ""}<span className="text-slate-400"> · {r.statut}</span></>; }}
             columns={["Nom", "Nb", "Espèce", "Race", "Naissance / arrivée", "Âge", "Stade repro", "Statut", "Décès / retrait", "Obs", ""]}
             rows={filtres.map(({ r, i }) => [
               <span className="font-medium">{r.nom || <span className="text-slate-400 font-normal">(lot sans nom)</span>}</span>,
@@ -3557,6 +3596,7 @@
             action={<AddButton onClick={() => setOpen(true)} label="Ajouter un animal ou lot" />}
           />
           <Table
+            resume={(r, k) => { const a = abattoir[k]; return <><span className="font-medium">{a.lot || "—"}</span> — {a.espece}<span className="text-slate-400"> · {a.nombre} · {a.statut}</span></>; }}
             columns={["Lot", "Espèce", "Race", "Naissance", "Nombre", "Statut", "Abattage prévu", "Abattage réel", "Obs", ""]}
             rows={abattoir.map((a, i) => [
               <span className="font-medium">{a.lot || "—"}</span>,
@@ -4573,6 +4613,7 @@
           {/* Journal des actions */}
           <h2 className="text-lg font-semibold mb-3">Dernières actions</h2>
           <Table
+            resume={(r, k) => { const p = lignes[k].p; const done = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return <>{frDate(p.date)} — {p.zone}{done.length ? <span className="text-slate-400"> · {done.map(a => a.icone).join(" ")}</span> : null}</>; }}
             columns={["Date", "Zone", "Actions", "T°/H%", "Quantités", "Obs", ""]}
             rows={lignes.map(({ p, i }) => [
               frDate(p.date),
@@ -4914,6 +4955,7 @@
                 <StatCard label="Lots en suivi" value={actifsIdx.length} color="purple" />
               </div>
               <Table
+                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {p.nombre} viv.</span></>; }}
                 columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "Obs", "Actions"]}
                 rows={lignes.map(({ p, i }) => {
                   const a = ageJeune(p.date);
@@ -5157,6 +5199,7 @@
           {/* Historique des récoltes d'œufs */}
           <h2 className="text-lg font-semibold mb-3">Historique des récoltes</h2>
           <Table
+            resume={(r) => <>Récolte du {r[0]} — {r[1]}</>}
             columns={["Date", "Espèce", "Nombre", "Destination", "Lot stock", "Statut final", "Obs"]}
             rows={evtsOeufs(collectes).slice().sort((a, b) => b.date.localeCompare(a.date)).map((e) => [
               frDate(e.date), e.espece, <span className="font-medium">{e.nombre}</span>,
@@ -5171,6 +5214,7 @@
           {vue === "lots" && <>
           <h2 className="text-lg font-semibold mb-3">Lots terminés</h2>
           <Table
+            resume={(r, k) => { const l = lotsTermines[k].l; return <><span className="font-medium">{l.id}</span> — {l.espece}<span className="text-slate-400"> · {l.nbOeufs} œufs</span></>; }}
             columns={["Lot", "Espèce", "Couveuse", "Mise en couveuse", "Œufs", ""]}
             rows={lotsTermines.map(({ l, i }) => [
               <span className="font-medium">{l.id}</span>, l.espece, "Couveuse " + l.couveuse, frDate(l.dateDebut), l.nbOeufs,
@@ -5183,6 +5227,7 @@
           {vue === "materiel" && <>
           <h2 className="text-lg font-semibold mb-3">Matériel remplacé</h2>
           <Table
+            resume={(r, k) => { const m = materielRemplace[k].m; return <><span className="font-medium">{m.article}</span><span className="text-slate-400"> · {m.categorie}</span></>; }}
             columns={["Article", "Catégorie", "Acheté le", "Coût", ""]}
             rows={materielRemplace.map(({ m, i }) => [
               <span className="font-medium">{m.article}</span>, m.categorie, frDate(m.dateAchat),
@@ -5693,6 +5738,48 @@
       );
     }
 
+    // Bouton bascule jour / nuit (préférence mémorisée dans localStorage)
+    function ThemeToggle({ className }) {
+      const [nuit, setNuit] = useState(() => document.documentElement.classList.contains("nuit"));
+      const toggle = () => {
+        const on = !nuit;
+        document.documentElement.classList.toggle("nuit", on);
+        try { localStorage.setItem("cheptel_theme", on ? "nuit" : "jour"); } catch (e) {}
+        setNuit(on);
+      };
+      return (
+        <button onClick={toggle} aria-label={nuit ? "Passer en mode jour" : "Passer en mode nuit"}
+          title={nuit ? "Mode jour" : "Mode nuit"}
+          className={className || "flex items-center justify-center w-10 h-10 rounded-lg text-xl"}>
+          {nuit ? "☀️" : "🌙"}
+        </button>
+      );
+    }
+
+    // Bandeau « Mettre à jour » : apparaît quand une nouvelle version du service worker est prête.
+    function UpdateBanner() {
+      const [worker, setWorker] = useState(null);
+      const [maj, setMaj] = useState(false);
+      useEffect(() => {
+        const h = (e) => setWorker(e.detail || true);
+        window.addEventListener("sw-maj", h);
+        return () => window.removeEventListener("sw-maj", h);
+      }, []);
+      if (!worker) return null;
+      const appliquer = () => { setMaj(true); if (window.__appliquerMAJ) window.__appliquerMAJ(worker); setTimeout(() => window.location.reload(), 1500); };
+      return (
+        <div className="fixed inset-x-3 bottom-3 z-[60] mx-auto max-w-md bg-slate-900 text-white rounded-xl shadow-lg border border-slate-700 p-3 flex items-center gap-3"
+          style={{ marginBottom: "env(safe-area-inset-bottom, 0px)" }}>
+          <span className="text-xl">🆕</span>
+          <span className="text-sm flex-1">Nouvelle version disponible.</span>
+          <button onClick={appliquer} disabled={maj}
+            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium whitespace-nowrap disabled:opacity-60">
+            {maj ? "Mise à jour…" : "Mettre à jour"}
+          </button>
+        </div>
+      );
+    }
+
     function App() {
       const store = useData();
       const config = store.config || {};
@@ -5714,6 +5801,7 @@
               className="flex items-center justify-center w-11 h-11 -ml-1 rounded-lg text-2xl leading-none hover:bg-slate-800 active:bg-slate-700"
               aria-label="Ouvrir le menu">☰</button>
             <span className="text-xl">🐔</span><span className="font-bold">Cheptel</span>
+            <ThemeToggle className="ml-auto flex items-center justify-center w-11 h-11 rounded-lg text-xl hover:bg-slate-800 active:bg-slate-700" />
           </div>
           {/* Voile sombre derrière le menu mobile */}
           {menuOuvert && <div className="sm:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMenuOuvert(false)} />}
@@ -5724,7 +5812,10 @@
                 <span className="text-2xl">🐔</span>
                 <span className="font-bold text-lg">Cheptel</span>
               </div>
-              <button onClick={() => setMenuOuvert(false)} className="sm:hidden flex items-center justify-center w-10 h-10 -mr-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-2xl leading-none" aria-label="Fermer">×</button>
+              <div className="flex items-center gap-1">
+                <ThemeToggle className="flex items-center justify-center w-10 h-10 rounded-lg text-xl text-slate-300 hover:text-white hover:bg-slate-800" />
+                <button onClick={() => setMenuOuvert(false)} className="sm:hidden flex items-center justify-center w-10 h-10 -mr-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-2xl leading-none" aria-label="Fermer">×</button>
+              </div>
             </div>
             <nav className="space-y-1 overflow-y-auto flex-1 -mr-2 pr-2">
               {visiblePages.map(p => (
@@ -5862,10 +5953,12 @@
         await demarrer();
       }
 
-      if (phase === "loading") return <PleinEcran msg="Chargement…" />;
-      if (phase === "sync") return <PleinEcran msg="Synchronisation…" />;
-      if (phase === "login") return <LoginEcran onLogin={login} erreur={erreur} occupe={occupe} onLocal={() => setPhase("app")} />;
-      return <DataProvider><App /></DataProvider>;
+      const contenu =
+        phase === "loading" ? <PleinEcran msg="Chargement…" />
+        : phase === "sync" ? <PleinEcran msg="Synchronisation…" />
+        : phase === "login" ? <LoginEcran onLogin={login} erreur={erreur} occupe={occupe} onLocal={() => setPhase("app")} />
+        : <DataProvider><App /></DataProvider>;
+      return <>{contenu}<UpdateBanner /></>;
     }
 
     ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
