@@ -1287,7 +1287,23 @@
       );
     }
 
-    function Table({ columns, rows }) {
+    // Table responsive.
+    // - resume(row, i) : si fourni, sur téléphone chaque ligne devient une carte « repliée »
+    //   (résumé sur une ligne, détails au clic). L'ordinateur garde le tableau complet.
+    // - rowClass(row, i) : classe CSS optionnelle par ligne (ex. mise en évidence criticité).
+    function Table({ columns, rows, resume, rowClass }) {
+      const rc = (i) => (rowClass ? (" " + (rowClass(rows[i], i) || "")) : "");
+      // Détail (paires libellé · valeur) réutilisé par les deux modes mobiles
+      const detail = (r) => r.map((cell, j) => {
+        const lbl = columns[j];
+        if (!lbl) return <div key={j} className="pt-1 flex flex-wrap gap-2">{cell}</div>;  // colonne « actions » (sans titre) → pleine largeur
+        return (
+          <div key={j} className="flex justify-between items-start gap-3 text-sm">
+            <span className="text-slate-400 shrink-0">{lbl}</span>
+            <span className="text-right min-w-0">{cell}</span>
+          </div>
+        );
+      });
       return (
         <div className="bg-white rounded-xl shadow-sm border border-slate-100">
           {/* Ordinateur : tableau classique */}
@@ -1300,7 +1316,7 @@
                 {rows.length === 0
                   ? <tr><td colSpan={columns.length} className="px-4 py-6 text-center text-slate-400">Aucune donnée</td></tr>
                   : rows.map((r, i) => (
-                      <tr key={i} className="hover:bg-slate-50">
+                      <tr key={i} className={"hover:bg-slate-50" + rc(i)}>
                         {r.map((cell, j) => <td key={j} className="px-4 py-3">{cell}</td>)}
                       </tr>
                     ))
@@ -1308,24 +1324,25 @@
               </tbody>
             </table>
           </div>
-          {/* Téléphone : une carte par ligne (libellé de colonne · valeur) — pas de défilement horizontal */}
+          {/* Téléphone */}
           <div className="sm:hidden divide-y divide-slate-100">
             {rows.length === 0
               ? <p className="px-4 py-6 text-center text-slate-400 text-sm">Aucune donnée</p>
-              : rows.map((r, i) => (
-                  <div key={i} className="px-4 py-3 space-y-1.5">
-                    {r.map((cell, j) => {
-                      const lbl = columns[j];
-                      if (!lbl) return <div key={j} className="pt-1 flex flex-wrap gap-2">{cell}</div>;  // colonne « actions » (sans titre) → pleine largeur
-                      return (
-                        <div key={j} className="flex justify-between items-start gap-3 text-sm">
-                          <span className="text-slate-400 shrink-0">{lbl}</span>
-                          <span className="text-right min-w-0">{cell}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))
+              : resume
+                ? rows.map((r, i) => (
+                    /* Mode compact : résumé sur une ligne, détails dépliables au clic */
+                    <details key={i} className={"group" + rc(i)}>
+                      <summary className="cursor-pointer select-none px-4 py-3 flex items-center justify-between gap-2 list-none">
+                        <span className="text-sm text-slate-700 min-w-0">{resume(r, i)}</span>
+                        <span className="text-slate-400 text-xs transition-transform group-open:rotate-180 shrink-0">▼</span>
+                      </summary>
+                      <div className="px-4 pb-3 space-y-1.5">{detail(r)}</div>
+                    </details>
+                  ))
+                : rows.map((r, i) => (
+                    /* Une carte par ligne (libellé de colonne · valeur) — pas de défilement horizontal */
+                    <div key={i} className={"px-4 py-3 space-y-1.5" + rc(i)}>{detail(r)}</div>
+                  ))
             }
           </div>
         </div>
@@ -1489,13 +1506,17 @@
         <div>
           <PageHeader title="Tableau de bord" subtitle="Tout au même endroit — déplie les sections selon tes besoins" />
 
-          {/* 1. ACTIONS DU JOUR */}
+          {/* 1. ACTIONS DU JOUR (les choses importantes du jour + les retards restent visibles d'emblée) */}
           <Section titre={"✅ Actions du jour" + (aFaire.length ? " · " + aFaire.length : "")} defaut={true}>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <DashListe titre="🔴 En retard" couleur="red" items={enRetard} vide="Rien en retard 👍" />
               <DashListe titre="🟠 Aujourd'hui / bientôt" couleur="orange" items={aFaire} vide="Rien d'urgent" />
-              <DashListe titre="🔵 Prochains rappels" couleur="slate" items={aVenir} vide="Aucun rappel programmé" />
             </div>
+          </Section>
+
+          {/* 1bis. PROCHAINS RAPPELS — repliés par défaut (ni le jour, ni en retard → ne prend pas de place à l'ouverture) */}
+          <Section titre={"🔵 Prochains rappels" + (aVenir.length ? " · " + aVenir.length : "")} defaut={false}>
+            <DashListe titre="À venir" couleur="slate" items={aVenir} vide="Aucun rappel programmé" />
           </Section>
 
           {/* 2. ALERTES IMPORTANTES */}
@@ -2251,6 +2272,7 @@
             <AddButton onClick={() => setOpenLot(true)} label="Ajouter une couvaison" />
           </div>
           <Table
+            resume={(r, i) => { const l = lots[i]; const inc = infoIncub(l); const j = l.statut === "en stockage" ? "" : (inc.futur ? " · à venir" : " · " + inc.label); return <><span className="font-medium">{l.id}</span> — {l.espece === "caille" ? "Cailles" : "Poules"} — {l.nbOeufs} œufs<span className="text-slate-400">{j}</span></>; }}
             columns={["N° Lot", "Espèce", "Couveuse", "Mise en couveuse", "Œufs", "Jour actuel", "Éclosion prévue", "Statut", ""]}
             rows={lots.map((l, i) => {
               const inc = infoIncub(l);
@@ -2347,6 +2369,7 @@
           {/* Détail des récoltes (lignes individuelles, éditables) */}
           <h3 className="text-sm font-semibold text-slate-600 mb-2 mt-6">Toutes les récoltes</h3>
           <Table
+            resume={(r, i) => { const c = collectes[i]; const v = vue(c); const dl = v.dest === "consommation" ? " · conso" : v.dest === "stock" ? " · stock" : ""; return <>Récolte du {frDate(c.date)} — {c.espece === "caille" ? "Cailles" : "Poules"} — {v.nombre} œufs<span className="text-slate-400">{dl}</span></>; }}
             columns={["Date", "Espèce", "Nombre", "Destination", "Lot stock", "Âge", "Obs", ""]}
             rows={collectes.map((c, i) => {
               const v = vue(c);
@@ -2551,6 +2574,7 @@
           </div>
 
           <Table
+            resume={(r, i) => { const ev = evtsFiltres[i]; const l = lotDe(ev.lot); const j = ev.jour != null ? " · J" + ev.jour : ""; return <>{frDate(ev.date)} — {ev.type}{l.couveuse ? " C" + l.couveuse : ""}<span className="text-slate-400">{j}</span> — Lot {ev.lot}</>; }}
             columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Type", "Temp.", "Hum.", "Clairs", "Féc.", "Ret.", "Nés", "N.écl.", "Obs", ""]}
             rows={evtsFiltres.map(ev => {
               const l = lotDe(ev.lot);
@@ -3802,6 +3826,7 @@
           {/* Stock par article + action rapide "Sortir" */}
           <h2 className="text-lg font-semibold mb-3">Stock par article</h2>
           <Table
+            resume={(r, i) => { const a = st.parArticle[i]; return <span className={a.bas ? "font-medium text-red-600" : "font-medium"}>{a.article}</span>; }}
             columns={["Article", "Catégorie", "Stock actuel", "Seuil", "Statut", "Urgent", "Action"]}
             rows={st.parArticle.map((a) => {
               const u = articleEstUrgent(config, a.article);
@@ -3839,6 +3864,7 @@
           {/* Mouvements */}
           <h2 className="text-lg font-semibold mb-3">Mouvements de stock</h2>
           <Table
+            resume={(r, k) => { const c = mvts[k].c; return <>{frDate(c.date)} — {c.article} — <span className={c.mouvement === "sortie" ? "text-amber-700" : "text-emerald-700"}>{c.mouvement === "sortie" ? "Sortie" : "Entrée"}</span></>; }}
             columns={["Date", "Article", "Catégorie", "Mouvement", "Quantité", "Prix u.", "Coût", "Fournisseur", "Obs", ""]}
             rows={mvts.map(({ c, i }) => [
               frDate(c.date),
@@ -4026,6 +4052,7 @@
 
           {vue === "parc" && <>
           <Table
+            resume={(r, k) => { const m = lignes[k].m; return <><span className="font-medium">{m.article}</span> <span className="text-slate-400">— {m.etat}</span></>; }}
             columns={["Date d'achat", "Article", "Catégorie", "Qté", "Prix u.", "Coût", "État", "Âge", "Obs", "Actions"]}
             rows={lignes.map(({ m, i }) => [
               frDate(m.dateAchat),
@@ -4164,17 +4191,16 @@
           <div>
             <p className="text-sm font-medium text-slate-600 mb-2">Actions faites (coche tout ce qui a été fait)</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {ACTIONS_COCHES.map(({ key, label, icone, restes }) => {
-                const interdit = restes && restesInterdit;
-                return (
-                  <label key={key} className={"flex items-center gap-2 text-sm px-3 py-2 rounded-lg border cursor-pointer " + (interdit ? "opacity-40 cursor-not-allowed border-slate-200" : (coches[key] ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "border-slate-200 hover:bg-slate-50"))}>
-                    <input type="checkbox" disabled={interdit} checked={!!coches[key] && !interdit} onChange={() => toggle(key)} className="w-4 h-4" />
+              {ACTIONS_COCHES
+                /* « Restes » réservés aux reproducteurs poules : complètement absent ailleurs (pas grisé) */
+                .filter(({ restes }) => !(restes && restesInterdit))
+                .map(({ key, label, icone }) => (
+                  <label key={key} className={"flex items-center gap-2 text-sm px-3 py-2 rounded-lg border cursor-pointer " + (coches[key] ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "border-slate-200 hover:bg-slate-50")}>
+                    <input type="checkbox" checked={!!coches[key]} onChange={() => toggle(key)} className="w-4 h-4" />
                     <span>{icone} {label}</span>
                   </label>
-                );
-              })}
+                ))}
             </div>
-            {restesInterdit && <p className="text-xs text-amber-600 mt-1">🥬 Restes désactivés dans cette zone (réservés aux poules).</p>}
           </div>
 
           {/* Quantité propre à chaque traitement coché */}
@@ -4449,26 +4475,24 @@
           </div>
 
           {vue === "soins" && <>
-          {/* Soin rapide du jour par zone (cases à cocher) — eau/nourriture/nettoyage/restes + traitements avec dose calculée */}
+          {/* Soin rapide du jour par zone (cases à cocher) — eau / nourriture / nettoyage,
+              + « Restes » réservés aux reproducteurs poules. Les traitements (Fortiferm/Cocciferm/
+              Vermiferm) sont volontairement absents ici : ils se saisissent dans le Journal. */}
           <h2 className="text-lg font-semibold mb-3">Soin du jour — {frDate(today)}</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
             {zonesSoin.map((zone) => {
               const restesOk = !(config.restesInterdits || []).map(normLibelle).includes(normLibelle(zone));
-              const quick = ACTIONS_COCHES.filter(a => ["eau", "nourriture", "nettoyage"].includes(a.key) || (a.key === "restes" && restesOk) || TRAITEMENTS.includes(a.key));
-              const vol = volumeAbreuvoirZone(config, zone);
-              const dose = doseTraitement(config, vol);
+              const quick = ACTIONS_COCHES.filter(a => ["eau", "nourriture", "nettoyage"].includes(a.key) || (a.key === "restes" && restesOk));
               return (
                 <div key={zone} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
-                  <p className="text-sm font-medium text-slate-700 mb-1">{zone}</p>
-                  {vol != null && <p className="text-xs text-slate-400 mb-2">Abreuvoir {vol} L → dose traitement <span className="font-medium text-slate-600">{formatMl(dose)}</span></p>}
+                  <p className="text-sm font-medium text-slate-700 mb-2">{zone}</p>
                   <div className="flex flex-wrap gap-2">
                     {quick.map((a) => {
                       const on = faitAujourdhui(zone, a.key);
-                      const estTrait = TRAITEMENTS.includes(a.key);
                       return (
                         <button key={a.key} onClick={() => toggleSoin(zone, a.key)}
                           className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
-                          {on ? "✓ " : ""}{a.icone} {a.label}{estTrait && dose != null ? " · " + formatMl(dose) : ""}
+                          {on ? "✓ " : ""}{a.icone} {a.label}
                         </button>
                       );
                     })}
@@ -4477,6 +4501,7 @@
               );
             })}
           </div>
+          <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »).</p>
 
           </>}
 
@@ -4820,21 +4845,30 @@
       );
     }
 
+    // Criticité d'un jour de jeune (les 10 premiers jours sont décisifs).
+    // Plus on avance, moins la couleur est « alerte » : fond + bordure gauche colorée qui s'estompe
+    // (rouge → orange → ambre → lime de surveillance → neutre). Renvoie {cls, badge, label}.
+    function critJour(n) {
+      if (n <= 3)  return { cls: "bg-red-50 border-l-4 border-red-400",       badge: "bg-red-100 text-red-700",       label: "très critique" };
+      if (n <= 7)  return { cls: "bg-orange-50 border-l-4 border-orange-400", badge: "bg-orange-100 text-orange-700", label: "critique" };
+      if (n <= 10) return { cls: "bg-amber-50 border-l-4 border-amber-400",   badge: "bg-amber-100 text-amber-700",   label: "important" };
+      if (n <= 21) return { cls: "bg-lime-50 border-l-4 border-lime-300",     badge: "bg-lime-100 text-lime-700",     label: "surveillance" };
+      return { cls: "", badge: "", label: "" };
+    }
+
     function Poussins() {
       const { poussins, config, majLigne, supprimerLigne, patchLigne, ajouterAbattoir } = useData();
-      const [sub, setSub] = useState("lots");           // lots | jour | sem
+      const [sub, setSub] = useState("lots");           // lots | sem
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
       const [jourEdit, setJourEdit] = useState(null);   // { lotIndex, p, jour }
       const [semEdit, setSemEdit] = useState(null);
-      const [semOuvertes, setSemOuvertes] = useState({}); // semaines dépliées dans le suivi S1-S8
+      const [semOuvertes, setSemOuvertes] = useState({ 1: true }); // semaine 1 ouverte par défaut (jours décisifs)
       const nJ = (config.jeunes && config.jeunes.suiviJours) || 10;
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
 
       const actifsIdx = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
-      const [selJ, setSelJ] = useState(null);
       const [selS, setSelS] = useState(null);
-      const idxJ = selJ != null ? selJ : (actifsIdx[0] ? actifsIdx[0].i : null);
       const idxS = selS != null ? selS : (actifsIdx[0] ? actifsIdx[0].i : null);
       const labelLot = (p, i) => (p.id || p.lot || ("Lot " + (i + 1))) + " · " + labelJeune(p.espece);
 
@@ -4859,89 +4893,17 @@
       );
       const chk = (checked, onChange) => <input type="checkbox" checked={!!checked} onChange={onChange} className="w-4 h-4" />;
       const majJour = (i, p, n, patch) => patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...((p.jours || {})[n] || {}), ...patch } } });
-      // Enregistre/annule un traitement du jour pour le lot (date du dernier traitement = aujourd'hui).
-      const today = AUJOURDHUI.toISOString().slice(0, 10);
-      const marquerTraitement = (i, p, key) => {
-        const tr = { ...(p.traitements || {}) };
-        if (tr[key] === today) delete tr[key]; else tr[key] = today;   // re-clic = annuler
-        patchLigne("poussins", i, { traitements: tr });
-      };
-      const toggleNettoyageJour = (i, p) => {                          // coche le nettoyage du jour courant du lot
-        const a = ageJeune(p.date); if (a.jours == null || a.futur) return;
-        const n = a.jours + 1; const d = (p.jours || {})[n] || {};
-        majJour(i, p, n, { nettoyage: !d.nettoyage });
-      };
 
       return (
         <div>
-          <PageHeader title="Poussins & cailleteaux" subtitle="Soins des jeunes par lot : naissances, soins quotidiens, traitements Fortiferm/Cocciferm/Vermiferm (dose calculée), J1-J10 et S1-S8, mortalité, alertes"
+          <PageHeader title="Poussins & cailleteaux" subtitle="Suivi des jeunes par lot : naissances + suivi quotidien S1 à S8 (les 10 premiers jours sont mis en évidence car décisifs). Soins quotidiens centralisés dans Gestion poulailler."
             action={sub === "lots" ? <AddButton onClick={() => setOpen(true)} label="Ajouter un lot" /> : null} />
 
           {/* Sous-onglets */}
           <div className="flex gap-2 mb-5 flex-wrap">
             {tab("lots", "Lots / naissances")}
-            {tab("soins", "Soins & traitements")}
-            {tab("jour", "Suivi J1–J" + nJ)}
             {tab("sem", "Suivi S1–S" + nS)}
           </div>
-
-          {/* SECTION SOINS & TRAITEMENTS — par lot actif (jusqu'à S{nS}) */}
-          {sub === "soins" && (
-            <div>
-              {actifsIdx.length === 0
-                ? <p className="text-sm text-slate-400">Aucun lot en suivi. Ajoute un lot dans « Lots / naissances ».</p>
-                : <div className="space-y-4">
-                    {actifsIdx.map(({ p, i }) => {
-                      const s = soinsJeuneLot(p, config);
-                      const badge = (etat, label) => {
-                        const map = { retard: "bg-red-50 text-red-700 border-red-200", aujourdhui: "bg-amber-50 text-amber-700 border-amber-200", avenir: "bg-emerald-50 text-emerald-700 border-emerald-200", jamais: "bg-slate-50 text-slate-500 border-slate-200", off: "bg-slate-50 text-slate-400 border-slate-200" };
-                        const txt = etat.code === "retard" ? "en retard (" + (-etat.reste) + " j)" : etat.code === "aujourdhui" ? "aujourd'hui" : etat.code === "avenir" ? "le " + frDate(etat.prochain) : etat.code === "jamais" ? "à planifier" : "désactivé";
-                        return <span className={"px-2 py-0.5 rounded-full text-xs font-medium border " + map[etat.code]}>{label} · {txt}</span>;
-                      };
-                      const btnTrait = (key, lbl) => {
-                        const on = (p.traitements || {})[key] === today;
-                        return (
-                          <button key={key} onClick={() => marquerTraitement(i, p, key)}
-                            className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50")}>
-                            {on ? "✓ " : "🧪 "}{lbl}{s.dose != null ? " · " + formatMl(s.dose) : ""}
-                          </button>
-                        );
-                      };
-                      const nettToday = ((p.jours || {})[(s.age.jours || 0) + 1] || {}).nettoyage;
-                      return (
-                        <div key={i} className={"bg-white rounded-xl border shadow-sm p-4 " + (s.actif ? "border-slate-100" : "border-slate-100 opacity-70")}>
-                          <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-                            <p className="text-sm font-semibold text-slate-700">{p.id || "—"} · {labelJeune(p.espece)} <span className="font-normal text-slate-400">· {s.age.label}</span> <EtapeJeune birthDate={p.date} /></p>
-                            <p className="text-xs text-slate-500">Abreuvoir {s.volume != null ? s.volume + " L" : "— (à régler)"} → dose <span className="font-medium text-slate-700">{s.dose != null ? formatMl(s.dose) : "—"}</span></p>
-                          </div>
-                          {!s.actif && <p className="text-xs text-slate-400 mb-2">Hors fenêtre de suivi (transféré ou &gt; {nS} sem.) — les rappels jeunes ne s'appliquent plus.</p>}
-                          {s.actif && (
-                            <>
-                              <div className="flex flex-wrap gap-2 mb-3">
-                                {badge(s.nettoyage, "Nettoyage")}
-                                {badge(s.fortiferm, "Fortiferm")}
-                                {badge(s.cocciferm, "Cocciferm")}
-                                {badge(s.vermiferm, "Vermiferm")}
-                              </div>
-                              <div className="flex flex-wrap gap-2 items-center">
-                                <button onClick={() => toggleNettoyageJour(i, p)}
-                                  className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (nettToday ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50")}>
-                                  {nettToday ? "✓ " : "🧹 "}Nettoyage du jour
-                                </button>
-                                {btnTrait("fortiferm", "Fortiferm")}
-                                {btnTrait("cocciferm", "Cocciferm")}
-                                {btnTrait("vermiferm", "Vermiferm")}
-                              </div>
-                              {s.volume == null && <p className="text-xs text-amber-600 mt-2">⚠️ Volume d'abreuvoir non réglé pour ce type — renseigne-le dans Réglages → Abreuvoirs / volumes pour calculer la dose.</p>}
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                    <p className="text-xs text-slate-400">Doses = volume d'eau × {(config.doseRule || {}).ml || 3} / {(config.doseRule || {}).parLitres || 5}. Clique un traitement pour l'enregistrer aujourd'hui (re-clic = annuler). Rappels calculés par lot selon les fréquences (Réglages), jusqu'à S{nS}.</p>
-                  </div>}
-            </div>
-          )}
 
           {/* SECTION 1 — Lots / naissances */}
           {sub === "lots" && (
@@ -4984,47 +4946,7 @@
             </div>
           )}
 
-          {/* SECTION 2 — Suivi J1 à J10 */}
-          {sub === "jour" && (
-            <div>
-              <Field label="Lot suivi">
-                <select className={inputClass + " max-w-xs"} value={idxJ != null ? idxJ : ""} onChange={(e) => setSelJ(e.target.value === "" ? null : Number(e.target.value))}>
-                  <option value="">— choisir un lot —</option>
-                  {actifsIdx.map(({ p, i }) => <option key={i} value={i}>{labelLot(p, i)}</option>)}
-                </select>
-              </Field>
-              {idxJ == null ? <p className="text-sm text-slate-400 mt-3">Aucun lot en suivi. Ajoute un lot dans « Lots / naissances ».</p> : (() => {
-                const p = poussins[idxJ]; if (!p) return null;
-                const a = ageJeune(p.date);
-                return (
-                  <div className="mt-3">
-                    <p className="text-sm text-slate-600 mb-2">{p.id || ""} · {labelJeune(p.espece)} · {a.label} · <EtapeJeune birthDate={p.date} /></p>
-                    <Table
-                      columns={["Jour", "Date", "Temp.", "💧", "🌾", "🧹", "Vivants", "Morts", "Obs", ""]}
-                      rows={Array.from({ length: nJ }, (_, k) => k + 1).map((n) => {
-                        const d = (p.jours || {})[n] || {};
-                        return [
-                          "J " + n,
-                          frDate(dateDecalee(p.date, n - 1)),
-                          d.temp != null && d.temp !== "" ? d.temp + "°" : "—",
-                          chk(d.eau, (e) => majJour(idxJ, p, n, { eau: e.target.checked })),
-                          chk(d.nourriture, (e) => majJour(idxJ, p, n, { nourriture: e.target.checked })),
-                          chk(d.nettoyage, (e) => majJour(idxJ, p, n, { nettoyage: e.target.checked })),
-                          d.vivants != null && d.vivants !== "" ? d.vivants : "—",
-                          (Number(d.morts) || 0) > 0 ? <span className="text-red-600 font-medium">{d.morts}</span> : "—",
-                          <ObsCell texte={d.obs} titre={"J " + n} onSave={(v) => majJour(idxJ, p, n, { obs: v })} />,
-                          <button onClick={() => setJourEdit({ lotIndex: idxJ, p, jour: n })} className="px-1.5 py-0.5 rounded hover:bg-slate-100 text-slate-500">✏️</button>,
-                        ];
-                      })}
-                    />
-                    <p className="text-xs text-slate-400 mt-2">Coche 💧 eau · 🌾 nourriture · 🧹 nettoyage directement. ✏️ pour température / vivants / morts / comportement.</p>
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-
-          {/* SECTION 3 — Suivi S1 à S8 */}
+          {/* SECTION 2 — Suivi S1 à S8 (intègre les 10 premiers jours, mis en évidence) */}
           {sub === "sem" && (
             <div>
               <Field label="Lot suivi">
@@ -5038,22 +4960,33 @@
                 return (
                   <div className="mt-3">
                     <p className="text-sm text-slate-600 mb-2">{p.id || ""} · {labelJeune(p.espece)} · {ageJeune(p.date).label}</p>
-                    <p className="text-xs text-slate-400 mb-3">Suivi quotidien sur {nS} semaines. Clique une semaine pour la déplier · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · ✏️ pour le détail (temp / humidité / vivants / morts / comportement / problème).</p>
+                    <p className="text-xs text-slate-400 mb-2">Suivi quotidien sur {nS} semaines (les 10 premiers jours, décisifs, sont colorés). Clique une semaine pour la déplier, puis un jour pour ses détails · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · ✏️ pour le détail.</p>
+                    {/* Légende de criticité des 10 premiers jours */}
+                    <div className="flex flex-wrap gap-2 mb-3 text-xs">
+                      <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">J1-J3 très critique</span>
+                      <span className="px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-medium">J4-J7 critique</span>
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">J8-J10 important</span>
+                      <span className="px-2 py-0.5 rounded-full bg-lime-100 text-lime-700 font-medium">S2-S3 surveillance</span>
+                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-medium">ensuite normal</span>
+                    </div>
                     <div className="space-y-2">
                       {Array.from({ length: nS }, (_, k) => k + 1).map((sem) => {
                         const ouverte = !!semOuvertes[sem];
                         const jours = Array.from({ length: 7 }, (_, j) => (sem - 1) * 7 + j + 1);
                         const nbFait = jours.reduce((s, n) => { const d = (p.jours || {})[n] || {}; return s + ((d.eau || d.nourriture || d.nettoyage) ? 1 : 0); }, 0);
                         const mortsSem = jours.reduce((s, n) => s + (Number(((p.jours || {})[n] || {}).morts) || 0), 0);
+                        const crit = critJour(jours[0]);   // criticité de la semaine = celle de son 1er jour
                         return (
-                          <div key={sem} className="bg-white rounded-xl border border-slate-100 shadow-sm">
-                            <button type="button" onClick={() => setSemOuvertes((o) => ({ ...o, [sem]: !o[sem] }))} className="w-full flex items-center justify-between px-4 py-3 text-left">
-                              <span className="text-sm font-medium text-slate-700">{ouverte ? "▼" : "▶"} Semaine {sem} <span className="text-xs text-slate-400 font-normal">· {frDate(dateDecalee(p.date, (sem - 1) * 7))} → {frDate(dateDecalee(p.date, sem * 7 - 1))}</span></span>
-                              <span className="text-xs text-slate-400">{nbFait}/7 j {mortsSem > 0 ? <span className="text-red-600">· {mortsSem} mort(s)</span> : null}</span>
+                          <div key={sem} className={"rounded-xl border shadow-sm " + (crit.cls ? crit.cls + " border-slate-200" : "bg-white border-slate-100")}>
+                            <button type="button" onClick={() => setSemOuvertes((o) => ({ ...o, [sem]: !o[sem] }))} className="w-full flex items-center justify-between px-4 py-3 text-left gap-2">
+                              <span className="text-sm font-medium text-slate-700 min-w-0">{ouverte ? "▼" : "▶"} Semaine {sem} <span className="text-xs text-slate-400 font-normal">· {frDate(dateDecalee(p.date, (sem - 1) * 7))} → {frDate(dateDecalee(p.date, sem * 7 - 1))}</span> {crit.label && <span className={"ml-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium " + crit.badge}>{crit.label}</span>}</span>
+                              <span className="text-xs text-slate-400 shrink-0">{nbFait}/7 j {mortsSem > 0 ? <span className="text-red-600">· {mortsSem} mort(s)</span> : null}</span>
                             </button>
                             {ouverte && (
                               <div className="px-2 pb-3">
                                 <Table
+                                  rowClass={(r, k) => critJour(jours[k]).cls}
+                                  resume={(r, k) => { const n = jours[k]; const c = critJour(n); return <>J {n} · {frDate(dateDecalee(p.date, n - 1))} {c.label && <span className={"ml-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium " + c.badge}>{c.label}</span>}</>; }}
                                   columns={["Jour", "Date", "💧", "🌾", "🧹", "Temp.", "Vivants", "Morts", "Obs", ""]}
                                   rows={jours.map((n) => {
                                     const d = (p.jours || {})[n] || {};
@@ -5773,20 +5706,25 @@
       const allerA = (id) => { setPage(id); setMenuOuvert(false); };
       return (
         <div className="sm:flex min-h-screen">
-          {/* Barre du haut (mobile uniquement) : bouton menu ☰ */}
-          <div className="sm:hidden sticky top-0 z-30 flex items-center gap-3 bg-slate-900 text-white px-4 py-3">
-            <button onClick={() => setMenuOuvert(true)} className="text-2xl leading-none" aria-label="Menu">☰</button>
+          {/* Barre du haut (mobile uniquement) : bouton menu ☰.
+              padding-top = safe-area pour ne pas passer sous la barre d'état / le notch du téléphone. */}
+          <div className="sm:hidden sticky top-0 z-40 flex items-center gap-2 bg-slate-900 text-white px-3 pb-3"
+            style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.625rem)" }}>
+            <button onClick={() => setMenuOuvert(true)}
+              className="flex items-center justify-center w-11 h-11 -ml-1 rounded-lg text-2xl leading-none hover:bg-slate-800 active:bg-slate-700"
+              aria-label="Ouvrir le menu">☰</button>
             <span className="text-xl">🐔</span><span className="font-bold">Cheptel</span>
           </div>
           {/* Voile sombre derrière le menu mobile */}
           {menuOuvert && <div className="sm:hidden fixed inset-0 bg-black/40 z-40" onClick={() => setMenuOuvert(false)} />}
-          <aside className={"w-60 bg-slate-900 text-slate-100 flex-shrink-0 p-4 flex flex-col h-screen fixed sm:sticky top-0 left-0 z-50 transition-transform duration-200 sm:translate-x-0 " + (menuOuvert ? "translate-x-0" : "-translate-x-full")}>
+          <aside className={"w-60 bg-slate-900 text-slate-100 flex-shrink-0 p-4 flex flex-col h-screen fixed sm:sticky top-0 left-0 z-50 transition-transform duration-200 sm:translate-x-0 " + (menuOuvert ? "translate-x-0" : "-translate-x-full")}
+            style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}>
             <div className="flex items-center justify-between mb-6 px-2">
               <div className="flex items-center gap-2">
                 <span className="text-2xl">🐔</span>
                 <span className="font-bold text-lg">Cheptel</span>
               </div>
-              <button onClick={() => setMenuOuvert(false)} className="sm:hidden text-slate-400 hover:text-white text-2xl leading-none" aria-label="Fermer">×</button>
+              <button onClick={() => setMenuOuvert(false)} className="sm:hidden flex items-center justify-center w-10 h-10 -mr-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-2xl leading-none" aria-label="Fermer">×</button>
             </div>
             <nav className="space-y-1 overflow-y-auto flex-1 -mr-2 pr-2">
               {visiblePages.map(p => (
