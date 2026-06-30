@@ -232,7 +232,7 @@
     // --- Inventaires : listes de référence ---
     const CONSO_CATS = ["alimentation poules", "alimentation cailles", "copeaux", "paille", "compléments", "produits de nettoyage", "autres consommables"];
     const MATERIEL_CATS = ["poulailler", "cage", "couveuse", "abreuvoir", "mangeoire", "lampe chauffante", "bac", "outil", "autre matériel durable"];
-    const UNITES = ["kg", "sac", "litre", "pièce", "autre"];
+    const UNITES = ["kg", "sac", "litre", "ml", "pièce", "autre"];
     // "remplacé" = état terminal (sort des listes actives)
     const ETATS_MATERIEL = ["neuf", "bon", "à surveiller", "à réparer", "à remplacer", "hors service", "remplacé"];
 
@@ -295,12 +295,17 @@
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
       // Règle de dosage des traitements : ml de produit par litres d'eau (Fortiferm/Cocciferm/Vermiferm = 3 ml / 5 L)
       doseRule: { ml: 3, parLitres: 5 },
+      // Rappel récolte des œufs pour la prochaine couvée : conservation max des œufs + marge (retard d'éclosion possible)
+      conservationOeufs: 14,   // jours max de conservation d'un œuf avant remise en incubation
+      deltaEclosion: 2,        // marge : l'éclosion peut déborder de quelques jours au-delà de la durée théorique
       // Abreuvoirs / volumes d'eau par zone (sert au calcul automatique des doses). Modifiable dans Réglages.
+      // Plusieurs abreuvoirs possibles par zone ; `traitement: true` = abreuvoir dédié aux traitements (le plus petit).
       abreuvoirs: [
-        { zone: "poulailler poules reproductrices", type: "poules",      volume: 30, actif: true, obs: "" },
-        { zone: "espace cailles",                    type: "cailles",     volume: 18, actif: true, obs: "" },
-        { zone: "espace poussins",                   type: "poussins",    volume: 1,  actif: true, obs: "" },
-        { zone: "espace cailleteaux",                type: "cailleteaux", volume: "", actif: true, obs: "à compléter (petits abreuvoirs bleus)" },
+        { zone: "poulailler poules reproductrices", type: "poules",      volume: 30, actif: true, traitement: false, obs: "" },
+        { zone: "poulailler poules reproductrices", type: "poules",      volume: 5,  actif: true, traitement: true,  obs: "petit abreuvoir dédié aux traitements" },
+        { zone: "espace cailles",                    type: "cailles",     volume: 18, actif: true, traitement: false, obs: "" },
+        { zone: "espace poussins",                   type: "poussins",    volume: 1,  actif: true, traitement: false, obs: "" },
+        { zone: "espace cailleteaux",                type: "cailleteaux", volume: "", actif: true, traitement: false, obs: "à compléter (petits abreuvoirs bleus)" },
       ],
       // Fréquence des traitements des jeunes par lot (jours) — modifiable. Nettoyage quotidien.
       freqJeunes: { nettoyage: 1, fortiferm: 30, cocciferm: 30, vermiferm: 30 },
@@ -393,6 +398,10 @@
       out.articlesUrgents = Array.isArray(saved.articlesUrgents) ? saved.articlesUrgents : (def.articlesUrgents || []);
       out.doseRule = { ...def.doseRule, ...(saved.doseRule || {}) };
       out.abreuvoirs = Array.isArray(saved.abreuvoirs) ? saved.abreuvoirs : def.abreuvoirs.map((a) => ({ ...a }));
+      // « ml » toujours disponible (traitements) ; rappel récolte œufs (conservation + marge éclosion)
+      out.unites = Array.from(new Set((Array.isArray(saved.unites) ? saved.unites : def.unites).concat(["ml"])));
+      out.conservationOeufs = saved.conservationOeufs != null ? saved.conservationOeufs : def.conservationOeufs;
+      out.deltaEclosion = saved.deltaEclosion != null ? saved.deltaEclosion : def.deltaEclosion;
       out.freqJeunes = { ...def.freqJeunes, ...(saved.freqJeunes || {}) };
       // Normes détaillées : par espèce, on garde le tableau sauvegardé s'il existe, sinon le défaut
       out.normesCouvaison = { ...def.normesCouvaison };
@@ -987,6 +996,8 @@
       orange: "text-orange-500",
       indigo: "text-indigo-600",
       purple: "text-purple-600",
+      red: "text-red-600",
+      slate: "text-slate-600",
     };
     function StatCard({ label, value, sub, color = "emerald" }) {
       return (
@@ -1472,6 +1483,24 @@
         .concat(rappelsManuels.filter(r => r.rappel > today).sort((a, b) => a.rappel.localeCompare(b.rappel)).map(r => "Rappel — " + r.zone + " (" + frDate(r.rappel) + ")"))
         .slice(0, 8);
 
+      // --- Rappel récolte des œufs pour la PROCHAINE couvée, par couveuse (cailles / poules séparées) ---
+      // On doit commencer à récolter ~14 j (conservation max) avant l'éclosion, en intégrant une marge
+      // (l'éclosion peut déborder de quelques jours). Début = durée − conservation + delta (ex. poule 21−14+2 = J9).
+      const conservationOeufs = Number(config.conservationOeufs) || 14;
+      const deltaEclosion = Number(config.deltaEclosion) || 0;
+      const rappelsRecolte = [];
+      lots.filter(l => l.statut === "en couveuse" && l.dateDebut).forEach(l => {
+        const duree = DUREE[l.espece] || 21;
+        const jour = joursDepuis(l.dateDebut);
+        if (jour == null || jour < 0) return;
+        const debutRecolte = duree - conservationOeufs + deltaEclosion;
+        const finRecolte = duree + deltaEclosion;                       // jusqu'à l'éclosion (+ marge)
+        if (jour >= debutRecolte && jour <= finRecolte) {
+          rappelsRecolte.push("🥚 Récolte prochaine couvée — Couveuse " + l.couveuse + " (" + l.espece + ", J" + jour + "/" + duree + ") : tu peux commencer à ramasser (les plus vieux auront < " + conservationOeufs + " j à la relance)");
+        }
+      });
+      rappelsRecolte.forEach(m => aFaire.push(m));   // affichées dans « Actions du jour »
+
       // --- Alertes ---
       // Seuls les articles à racheter ET marqués « urgent » remontent en alerte importante (les autres restent dans l'inventaire).
       const stocksUrgents = sc.parArticle.filter(a => a.bas && articleEstUrgent(config, a.article)).map(a => a.article + " (" + a.stock + " " + a.unite + ")");
@@ -1508,7 +1537,11 @@
 
       // --- Animaux ---
       const lotsActifs = lots.filter(l => l.statut !== "terminé");
-      const reproActifs = reproducteurs.filter(r => r.statut === "actif").reduce((s, r) => s + (Number(r.nombre) || 1), 0);
+      const reproParStatut = (st) => reproducteurs.filter(r => r.statut === st).reduce((s, r) => s + (Number(r.nombre) || 1), 0);
+      const reproActifs = reproParStatut("actif");
+      const reproMalades = reproParStatut("malade");
+      const reproDecedes = reproParStatut("décédé");
+      const reproRetraites = reproParStatut("retiré reproduction");
       const consoTotal = abattoir.reduce((s, a) => s + (Number(a.nombre) || 0), 0);
 
       // --- Poussins / cailleteaux (séparés) ---
@@ -1655,12 +1688,20 @@
           {/* Animaux & jeunes (fusion reproducteurs/cheptel + poussins/cailleteaux) */}
           <Section titre="🐓 Animaux & jeunes" alerte={alJeune.length}>
             <p className="text-xs text-slate-500 mb-2 font-medium">Reproducteurs & cheptel</p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
               <StatCard label="Poules" value={(config.cheptel || cheptel).poules} />
               <StatCard label="Coqs" value={(config.cheptel || cheptel).coqs} color="orange" />
               <StatCard label="Cailles ♀" value={(config.cheptel || cheptel).caillesF} />
               <StatCard label="Cailles ♂" value={(config.cheptel || cheptel).caillesM} color="orange" />
-              <StatCard label="Reproducteurs actifs" value={reproActifs} color="indigo" />
+            </div>
+            {/* Statuts des reproducteurs (les non-actifs sortent du compte « actifs ») */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+              <StatCard label="Reproducteurs actifs" value={reproActifs} color="emerald" />
+              <StatCard label="Malades" value={reproMalades} color="orange" />
+              <StatCard label="Décédés" value={reproDecedes} color="red" />
+              <StatCard label="Retraités" value={reproRetraites} color="slate" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
               <StatCard label="Animaux consommation" value={consoTotal} color="purple" />
             </div>
 
@@ -4126,8 +4167,7 @@
 
     /* ---------- Gestion des poulaillers ---------- */
     function PoulaillerForm({ onClose, initial, onSave }) {
-      const { ajouterPoulailler, ajouterConsommable, config } = useData();
-      const UNITES_C = config.unites;
+      const { ajouterPoulailler, config } = useData();
       // Zones adultes uniquement (les jeunes se gèrent dans « Poussins & cailleteaux »).
       // En édition d'une ancienne ligne sur zone de jeunes, on garde sa valeur pour ne pas la perdre.
       const ZONES_C = (() => {
@@ -4153,26 +4193,27 @@
       const [quantites, setQuantites] = useState(initial && initial.quantites ? { ...initial.quantites } : {});
       const [unitesProd, setUnitesProd] = useState(initial && initial.unitesProd ? { ...initial.unitesProd } : {});
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
-      const [deduire, setDeduire] = useState(false);
 
       const restesInterdit = (config.restesInterdits || []).map(normLibelle).includes(normLibelle(zone));
       const toggle = (k) => setCoches((c) => ({ ...c, [k]: !c[k] }));
       const setQ = (k, v) => setQuantites((q) => ({ ...q, [k]: v }));
-      const setU = (k, v) => setUnitesProd((u) => ({ ...u, [k]: v }));
       // Si la zone interdit les restes, on décoche restes automatiquement
       useEffect(() => { if (restesInterdit) setCoches((c) => (c.restes ? { ...c, restes: false } : c)); }, [zone]);
 
       const traitementsCoches = TRAITEMENTS.filter((k) => coches[k]);
+      // Dose conseillée (ml) = volume de l'abreuvoir DÉDIÉ AUX TRAITEMENTS de la zone × règle de dosage
+      const volTrait = volumeTraitementZone(config, zone);
+      const doseTrait = doseTraitement(config, volTrait);
 
       function submit(e) {
         e.preventDefault();
         const cochesClean = {};
         ACTIONS_COCHES.forEach(({ key }) => { if (coches[key]) cochesClean[key] = true; });
-        // Quantité propre par traitement coché
+        // Quantité par traitement coché — toujours en ml (petites quantités, NON déduites du stock)
         const quantitesClean = {}, unitesClean = {};
         traitementsCoches.forEach((k) => {
           quantitesClean[k] = (quantites[k] === "" || quantites[k] == null) ? "" : (Number(quantites[k]) || 0);
-          if (unitesProd[k]) unitesClean[k] = unitesProd[k];
+          unitesClean[k] = "ml";
         });
         const rec = {
           ...(initial || {}),
@@ -4184,19 +4225,7 @@
         };
         delete rec.action; delete rec.probleme;  // migration vers coches + suppression « problème »
         (onSave || ajouterPoulailler)(rec);
-        // Déduction du stock : une sortie par traitement avec quantité (à la création)
-        if (!initial && deduire) {
-          traitementsCoches.forEach((k) => {
-            if (Number(quantites[k]) > 0) {
-              const nom = (ACTIONS_COCHES.find((a) => a.key === k) || {}).label || k;
-              ajouterConsommable({
-                date, article: nom, categorie: "compléments", mouvement: "sortie",
-                quantite: Number(quantites[k]) || 0, unite: unitesProd[k] || "pièce", prixUnitaire: 0, seuil: "",
-                fournisseur: "", obs: "Utilisé — " + zone,
-              });
-            }
-          });
-        }
+        // Les traitements (Fortiferm/Cocciferm/Vermiferm) ne sont PAS déduits du stock : quantités trop petites (ml).
         onClose();
       }
       return (
@@ -4226,29 +4255,29 @@
             </div>
           </div>
 
-          {/* Quantité propre à chaque traitement coché */}
+          {/* Quantité par traitement coché — en ml. Dose conseillée = abreuvoir « traitement » de la zone. */}
           {traitementsCoches.length > 0 && (
             <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 space-y-2">
-              <p className="text-sm font-medium text-slate-600">Quantité par traitement</p>
+              <p className="text-sm font-medium text-slate-600">Quantité par traitement <span className="font-normal text-slate-400">(en ml)</span></p>
+              {doseTrait != null
+                ? <p className="text-xs text-slate-500">💧 Dose conseillée : <span className="font-medium text-slate-700">{formatMl(doseTrait)}</span> (abreuvoir traitement {volTrait} L)</p>
+                : <p className="text-xs text-amber-600">⚠️ Aucun abreuvoir « traitement » réglé pour cette zone — renseigne-le dans Réglages → Abreuvoirs / volumes (coche « Traitt. »).</p>}
               {traitementsCoches.map((k) => {
                 const lbl = (ACTIONS_COCHES.find((a) => a.key === k) || {}).label || k;
                 return (
-                  <div key={k} className="grid grid-cols-3 gap-2 items-center">
+                  <div key={k} className="grid grid-cols-[1fr_auto_auto] gap-2 items-center">
                     <span className="text-sm text-slate-700">🧪 {lbl}</span>
-                    <input type="number" step="0.01" min="0" className={inputClass} value={quantites[k] != null ? quantites[k] : ""} onChange={(e) => setQ(k, e.target.value)} placeholder="quantité" />
-                    <select className={inputClass} value={unitesProd[k] || ""} onChange={(e) => setU(k, e.target.value)}>
-                      <option value="">unité…</option>
-                      {UNITES_C.map((u) => <option key={u} value={u}>{u}</option>)}
-                    </select>
+                    <span className="flex items-center gap-1">
+                      <input type="number" step="0.1" min="0" className={inputClass + " w-24"} value={quantites[k] != null ? quantites[k] : ""} onChange={(e) => setQ(k, e.target.value)} placeholder="ml" />
+                      <span className="text-sm text-slate-500">ml</span>
+                    </span>
+                    {doseTrait != null
+                      ? <button type="button" onClick={() => setQ(k, Number(doseTrait.toFixed(1)))} className="text-xs px-2 py-1 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 whitespace-nowrap">dose {formatMl(doseTrait)}</button>
+                      : <span />}
                   </div>
                 );
               })}
-              {!initial && (
-                <label className="flex items-center gap-2 text-sm text-slate-600">
-                  <input type="checkbox" checked={deduire} onChange={(e) => setDeduire(e.target.checked)} />
-                  Déduire ces quantités du stock consommable
-                </label>
-              )}
+              <p className="text-xs text-slate-400">Ces quantités (en ml) ne sont pas déduites du stock (trop petites).</p>
             </div>
           )}
 
@@ -4295,6 +4324,14 @@
       const arr = (config && config.abreuvoirs) || [];
       const a = arr.find((x) => normLibelle(x.zone) === normLibelle(zone));
       return a && a.volume !== "" && a.volume != null ? Number(a.volume) : null;
+    }
+    // Volume de l'abreuvoir DÉDIÉ AUX TRAITEMENTS d'une zone (le petit). Sinon, à défaut, le 1er abreuvoir de la zone.
+    function volumeTraitementZone(config, zone) {
+      const arr = (config && config.abreuvoirs) || [];
+      const nz = normLibelle(zone);
+      const t = arr.find((x) => x.traitement === true && normLibelle(x.zone) === nz && x.actif !== false && x.volume !== "" && x.volume != null);
+      if (t) return Number(t.volume);
+      return volumeAbreuvoirZone(config, zone);   // pas d'abreuvoir traitement → on retombe sur le volume de la zone
     }
     // Type de jeune (poussins / cailleteaux) → volume du 1er abreuvoir actif de ce type.
     function volumeAbreuvoirType(config, type) {
@@ -4880,6 +4917,22 @@
       return { cls: "", badge: "", label: "" };
     }
 
+    // Confirmation du transfert d'un lot de jeunes vers l'abattoir (avec le nombre destiné à la consommation)
+    function TransfertConsoForm({ p, onClose, onConfirm }) {
+      const vivants = Number(p.nombre) || 0;
+      const [nombre, setNombre] = useState(String(vivants));
+      return (
+        <form onSubmit={(e) => { e.preventDefault(); onConfirm(Math.max(0, Number(nombre) || 0)); onClose(); }} className="space-y-3">
+          <p className="text-sm text-slate-600">Lot <span className="font-medium">{p.id || "—"}</span> · {labelJeune(p.espece)} · <span className="font-medium">{vivants}</span> vivant(s).</p>
+          <Field label="Nombre destiné à la consommation (abattoir)">
+            <input type="number" min="0" max={vivants} className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} autoFocus />
+          </Field>
+          <p className="text-xs text-slate-400">Le lot sera marqué « transféré consommation » et ce nombre ajouté aux « Animaux consommation ». Aucun transfert automatique vers les reproducteurs (à faire manuellement).</p>
+          <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
     function Poussins() {
       const { poussins, config, majLigne, supprimerLigne, patchLigne, ajouterAbattoir } = useData();
       const [sub, setSub] = useState("lots");           // lots | sem
@@ -4888,6 +4941,7 @@
       const [jourEdit, setJourEdit] = useState(null);   // { lotIndex, p, jour }
       const [semEdit, setSemEdit] = useState(null);
       const [semOuvertes, setSemOuvertes] = useState({ 1: true }); // semaine 1 ouverte par défaut (jours décisifs)
+      const [transfConso, setTransfConso] = useState(null);        // { i, p } → modale de transfert vers l'abattoir
       const nJ = (config.jeunes && config.jeunes.suiviJours) || 10;
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
 
@@ -4900,10 +4954,11 @@
       const vivP = actifsIdx.filter(({ p }) => p.espece !== "caille").reduce((s, { p }) => s + (Number(p.nombre) || 0), 0);
       const vivC = actifsIdx.filter(({ p }) => p.espece === "caille").reduce((s, { p }) => s + (Number(p.nombre) || 0), 0);
 
-      // Action de fin de suivi : transfert / archivage
-      function transferer(i, p, cible) {
+      // Action de fin de suivi : transfert / archivage. Pour la consommation, `nombre` = quantité destinée à l'abattoir.
+      function transferer(i, p, cible, nombre) {
         if (cible === "consommation") {
-          ajouterAbattoir({ lot: p.id || "", espece: p.espece === "caille" ? "caille" : "poule", race: "", naissance: p.date, nombre: Number(p.nombre) || 0, statut: "en croissance", abattagePrevu: "", abattageReel: "", obs: "Issu du lot de naissance " + (p.id || "") });
+          const n = nombre != null ? nombre : (Number(p.nombre) || 0);
+          ajouterAbattoir({ lot: p.id || "", espece: p.espece === "caille" ? "caille" : "poule", race: "", naissance: p.date, nombre: n, statut: "en croissance", abattagePrevu: "", abattageReel: "", obs: "Issu du lot de naissance " + (p.id || "") });
           patchLigne("poussins", i, { statut: "transféré consommation" });
         } else if (cible === "reproduction") {
           patchLigne("poussins", i, { statut: "transféré reproduction" });
@@ -4960,7 +5015,7 @@
                       extra={pret && p.statut === "en croissance" ? (
                         <>
                           <button onClick={() => transferer(i, p, "reproduction")} title="→ Reproducteurs" className="px-1.5 py-0.5 rounded hover:bg-emerald-50 text-emerald-600 text-xs">→Repro</button>
-                          <button onClick={() => transferer(i, p, "consommation")} title="→ Consommation" className="px-1.5 py-0.5 rounded hover:bg-orange-50 text-orange-600 text-xs">→Conso</button>
+                          <button onClick={() => setTransfConso({ i, p })} title="→ Consommation" className="px-1.5 py-0.5 rounded hover:bg-orange-50 text-orange-600 text-xs">→Conso</button>
                           <button onClick={() => transferer(i, p, "archive")} title="Archiver" className="px-1.5 py-0.5 rounded hover:bg-slate-100 text-slate-500 text-xs">Arch.</button>
                         </>
                       ) : null} />,
@@ -5043,6 +5098,7 @@
 
           {open && <Modal title="Nouveau lot de naissance" onClose={() => setOpen(false)}><PoussinForm onClose={() => setOpen(false)} /></Modal>}
           {edit && <Modal title="Modifier le lot" onClose={() => setEdit(null)}><PoussinForm initial={edit.rec} onSave={(rec) => majLigne("poussins", edit.index, rec)} onClose={() => setEdit(null)} /></Modal>}
+          {transfConso && <Modal title="Transférer vers l'abattoir" onClose={() => setTransfConso(null)}><TransfertConsoForm p={transfConso.p} onClose={() => setTransfConso(null)} onConfirm={(n) => transferer(transfConso.i, transfConso.p, "consommation", n)} /></Modal>}
           {jourEdit && <Modal title="Suivi du jour" onClose={() => setJourEdit(null)}><SuiviJourForm lotIndex={jourEdit.lotIndex} p={poussins[jourEdit.lotIndex]} jour={jourEdit.jour} onClose={() => setJourEdit(null)} /></Modal>}
           {semEdit && <Modal title="Suivi de la semaine" onClose={() => setSemEdit(null)}><SuiviSemForm lotIndex={semEdit.lotIndex} p={poussins[semEdit.lotIndex]} sem={semEdit.sem} onClose={() => setSemEdit(null)} /></Modal>}
         </div>
@@ -5274,7 +5330,7 @@
       const setFreqTrait = (zone, key, val) => setConfig((c) => ({ ...c, freqTraitements: { ...c.freqTraitements, [zone]: { ...((c.freqTraitements || {})[zone] || {}), [key]: Number(val) || 0 } } }));
       // Abreuvoirs / volumes
       const setAbreuvoir = (idx, champ, val) => setConfig((c) => ({ ...c, abreuvoirs: (c.abreuvoirs || []).map((a, i) => i === idx ? { ...a, [champ]: (champ === "volume" ? (val === "" ? "" : (Number(val) || 0)) : (champ === "actif" ? val : val)) } : a) }));
-      const addAbreuvoir = () => setConfig((c) => ({ ...c, abreuvoirs: (c.abreuvoirs || []).concat([{ zone: "", type: "poussins", volume: "", actif: true, obs: "" }]) }));
+      const addAbreuvoir = () => setConfig((c) => ({ ...c, abreuvoirs: (c.abreuvoirs || []).concat([{ zone: "", type: "poussins", volume: "", actif: true, traitement: false, obs: "" }]) }));
       const delAbreuvoir = (idx) => setConfig((c) => ({ ...c, abreuvoirs: (c.abreuvoirs || []).filter((_, i) => i !== idx) }));
       const setDoseRule = (champ, val) => setConfig((c) => ({ ...c, doseRule: { ...(c.doseRule || { ml: 3, parLitres: 5 }), [champ]: Number(val) || 0 } }));
       const setFreqJeune = (key, val) => setConfig((c) => ({ ...c, freqJeunes: { ...(c.freqJeunes || {}), [key]: Number(val) || 0 } }));
@@ -5554,10 +5610,10 @@
           {/* Abreuvoirs / volumes (dosage automatique) */}
           <h2 className="text-lg font-semibold mb-3">Abreuvoirs / volumes</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-4 overflow-x-auto">
-            <p className="text-xs text-slate-400 mb-3">Volume d'eau de chaque abreuvoir → sert au calcul automatique des doses Fortiferm / Cocciferm / Vermiferm. Pour les lots de jeunes, le volume est repéré par le <span className="font-medium">type</span> : « espace poussins » et « poussins » (ou « espace cailleteaux » et « cailleteaux ») sont traités comme une seule et même valeur — pas besoin de les différencier.</p>
+            <p className="text-xs text-slate-400 mb-3">Volume d'eau de chaque abreuvoir → sert au calcul automatique des doses Fortiferm / Cocciferm / Vermiferm. Tu peux mettre <span className="font-medium">plusieurs abreuvoirs par zone</span> (ex. 2 chez les poules en canicule) et cocher <span className="font-medium">Traitt.</span> sur le plus petit : c'est lui qui servira au dosage des traitements. Pour les lots de jeunes, le volume est repéré par le <span className="font-medium">type</span> (« espace poussins » = « poussins », etc.).</p>
             <table className="w-full text-xs">
               <thead className="text-slate-500 text-left"><tr>
-                <th className="px-1 py-1">Zone / lot</th><th className="px-1 py-1">Type</th><th className="px-1 py-1">Volume (L)</th><th className="px-1 py-1">Dose</th><th className="px-1 py-1">Actif</th><th className="px-1 py-1">Observation</th><th className="px-1 py-1"></th>
+                <th className="px-1 py-1">Zone / lot</th><th className="px-1 py-1">Type</th><th className="px-1 py-1">Volume (L)</th><th className="px-1 py-1">Dose</th><th className="px-1 py-1">Traitt.</th><th className="px-1 py-1">Actif</th><th className="px-1 py-1">Observation</th><th className="px-1 py-1"></th>
               </tr></thead>
               <tbody>
                 {(config.abreuvoirs || []).map((a, i) => (
@@ -5570,6 +5626,7 @@
                     </td>
                     <td className="px-1 py-1"><input type="number" step="0.1" min="0" className={numCls} value={a.volume != null ? a.volume : ""} onChange={(e) => setAbreuvoir(i, "volume", e.target.value)} /></td>
                     <td className="px-1 py-1 text-slate-500 whitespace-nowrap">{a.volume !== "" && a.volume != null ? formatMl(doseTraitement(config, a.volume)) : "—"}</td>
+                    <td className="px-1 py-1 text-center"><input type="checkbox" checked={a.traitement === true} onChange={(e) => setAbreuvoir(i, "traitement", e.target.checked)} title="Abreuvoir dédié aux traitements (le plus petit)" /></td>
                     <td className="px-1 py-1 text-center"><input type="checkbox" checked={a.actif !== false} onChange={(e) => setAbreuvoir(i, "actif", e.target.checked)} /></td>
                     <td className="px-1 py-1"><input className="w-40 border border-slate-300 rounded-md px-1 py-1 text-xs" value={a.obs || ""} onChange={(e) => setAbreuvoir(i, "obs", e.target.value)} /></td>
                     <td className="px-1 py-1 text-right"><button onClick={() => delAbreuvoir(i)} className="text-red-500 hover:bg-red-50 rounded px-1.5">🗑</button></td>
