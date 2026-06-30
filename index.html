@@ -1455,11 +1455,39 @@
       );
     }
 
+    // Nombre d'œufs récoltés (tous destinations) d'une collecte — gère ancien + nouveau modèle.
+    function nbRecolte(c) { return c.destination ? (Number(c.nombre) || 0) : (Number(c.recoltes) || 0); }
+    // Taux de ponte d'une espèce sur les `jours` derniers jours = œufs / (pondeuses × jours).
+    function tauxPonte(collectes, espece, pondeuses, jours, finISO) {
+      if (!pondeuses || !jours) return null;
+      const fin = finISO || AUJOURDHUI_ISO;
+      const debut = dateDecalee(fin, -(jours - 1));
+      let oeufs = 0;
+      collectes.forEach((c) => {
+        if (c.espece !== espece) return;
+        const d = (c.date || "").slice(0, 10);
+        if (d >= debut && d <= fin) oeufs += nbRecolte(c);
+      });
+      return { oeufs, jours, pondeuses, taux: oeufs / (pondeuses * jours) };
+    }
+    // Lignées « à risque » de consanguinité : lignées (non vides) ayant ≥ 2 reproducteurs ACTIFS
+    // → à ne pas accoupler entre eux. Renvoie [{ lignee, noms:[] }].
+    function ligneesRisque(reproducteurs) {
+      const par = {};
+      reproducteurs.forEach((r) => {
+        if (r.statut !== "actif") return;
+        const lg = (r.lignee || "").trim();
+        if (!lg) return;
+        (par[lg] = par[lg] || []).push(r.nom || r.espece || "?");
+      });
+      return Object.keys(par).filter((lg) => par[lg].length >= 2).map((lg) => ({ lignee: lg, noms: par[lg] }));
+    }
+
     /* ============================================================
        PAGES
        ============================================================ */
     function Dashboard() {
-      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock } = useData();
+      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases } = useData();
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
       const today = AUJOURDHUI.toISOString().slice(0, 10);
@@ -1529,11 +1557,39 @@
         const releves = suivis.filter(s => s.lot === l.id).slice().sort((a, b) => a.jour - b.jour);
         alertesCouvaison(l, releves, config).alertes.forEach((m) => alertesCouv.push(l.id + " : " + m));
       });
-      const nbAlertes = enRetard.length + stocksUrgents.length + materielTraiter.length + alertesRepro.length + ecartCouvaison.length + alertesCouv.length;
+      // --- Taux de ponte (7 derniers jours) + détection de baisse vs les 7 jours précédents ---
+      const chept = config.cheptel || cheptel;
+      const pontePoule7 = tauxPonte(collectes, "poule", chept.poules, 7);
+      const ponteCaille7 = tauxPonte(collectes, "caille", chept.caillesF, 7);
+      const pontePoulePrev = tauxPonte(collectes, "poule", chept.poules, 7, dateDecalee(AUJOURDHUI_ISO, -7));
+      const ponteCaillePrev = tauxPonte(collectes, "caille", chept.caillesF, 7, dateDecalee(AUJOURDHUI_ISO, -7));
+      const baissePonte = [];
+      const checkBaisse = (cur, prev, nom) => { if (cur && prev && prev.taux > 0 && cur.taux < prev.taux * 0.7) baissePonte.push("Baisse de ponte " + nom + " : " + Math.round(cur.taux * 100) + " %/j vs " + Math.round(prev.taux * 100) + " %/j"); };
+      checkBaisse(pontePoule7, pontePoulePrev, "poules");
+      checkBaisse(ponteCaille7, ponteCaillePrev, "cailles");
+
+      // --- Lignées à risque de consanguinité (≥ 2 reproducteurs actifs d'une même lignée) ---
+      const alertesLignee = ligneesRisque(reproducteurs).map((g) => g.lignee + " : " + g.noms.join(", ") + " — éviter de les accoupler");
+
+      const nbAlertes = enRetard.length + stocksUrgents.length + materielTraiter.length + alertesRepro.length + ecartCouvaison.length + alertesCouv.length + baissePonte.length + alertesLignee.length;
 
       // --- Œufs / récolte ---
       const so = statsOeufs(collectes, lotsStock, lots, config);
       const batchesD = lotsStock.map((b) => agregLotStock(b, collectes));
+
+      // --- Coûts & rentabilité (année en cours) ---
+      const anStr = String(ANNEE_COURANTE);
+      const estAn = (d) => (d || "").slice(0, 4) === anStr;
+      const depConsoAn = (statsConsommables(consommables).depAnnee || {})[anStr] || 0;   // aliment + conso
+      const depMatAn = statsMateriel(materiel).depenseAnneeCourante || 0;
+      const depReproAn = (breederPurchases || []).filter((a) => estAn(a.date)).reduce((s, a) => s + Math.max(0, (Number(a.prixTotal) || 0) - (Number(a.remise) || 0)), 0);
+      const totalDepAn = depConsoAn + depMatAn + depReproAn;
+      const oeufsAn = collectes.filter((c) => estAn(c.date)).reduce((s, c) => s + nbRecolte(c), 0);
+      const poussinsNesAn = poussins.filter((p) => estAn(p.date)).reduce((s, p) => s + (Number(p.nes != null && p.nes !== "" ? p.nes : p.nombre) || 0), 0);
+      const prixOeuf = Number(config.prixOeuf) || 0;
+      const coutParOeuf = oeufsAn > 0 ? depConsoAn / oeufsAn : null;          // coût aliment par œuf récolté
+      const coutParPoussin = poussinsNesAn > 0 ? totalDepAn / poussinsNesAn : null;
+      const valeurOeufsAn = oeufsAn * prixOeuf;
 
       // --- Animaux ---
       const lotsActifs = lots.filter(l => l.statut !== "terminé");
@@ -1599,12 +1655,19 @@
           </Section>
 
           {/* Œufs (suivi quotidien important) */}
-          <Section titre="🥚 Œufs" defaut={true}>
+          <Section titre="🥚 Œufs" defaut={true} alerte={baissePonte.length}>
             <p className="text-xs text-slate-500 mb-2 font-medium">Aujourd'hui</p>
             <div className="grid grid-cols-3 gap-4 mb-4">
               <StatCard label="Récoltés" value={so.recoltesJour} />
               <StatCard label="Consommés" value={so.consoJour} color="orange" />
               <StatCard label="Mis en couveuse" value={so.couvaisonJour} color="indigo" />
+            </div>
+
+            {/* Taux de ponte sur 7 jours = œufs récoltés / pondeuses / jour */}
+            <p className="text-xs text-slate-500 mb-2 font-medium">Taux de ponte (7 derniers jours)</p>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <StatCard label={"🐔 Poules (" + chept.poules + " pondeuses)"} value={pontePoule7 ? Math.round(pontePoule7.taux * 100) + " %/j" : "—"} color={baissePonte.some(b => /poules/.test(b)) ? "orange" : "emerald"} sub={pontePoule7 ? pontePoule7.oeufs + " œufs / 7 j" : ""} />
+              <StatCard label={"🐦 Cailles (" + chept.caillesF + " pondeuses)"} value={ponteCaille7 ? Math.round(ponteCaille7.taux * 100) + " %/j" : "—"} color={baissePonte.some(b => /cailles/.test(b)) ? "orange" : "emerald"} sub={ponteCaille7 ? ponteCaille7.oeufs + " œufs / 7 j" : ""} />
             </div>
 
             <p className="text-xs text-slate-500 mb-2 font-medium">Par espèce</p>
@@ -1645,6 +1708,8 @@
               <DashListe titre="Âge reproducteurs" couleur="red" items={alertesRepro} vide="Aucune alerte d'âge" />
               <DashListe titre="Écart couvaison poule/caille" couleur="orange" items={ecartCouvaison} vide="Écarts ≥ 4 j OK" />
               <DashListe titre="Couvaison hors normes" couleur="red" items={alertesCouv} vide="Relevés conformes aux normes" />
+              <DashListe titre="🥚 Baisse de ponte" couleur="orange" items={baissePonte} vide="Ponte stable" />
+              <DashListe titre="🧬 Consanguinité (lignées)" couleur="red" items={alertesLignee} vide="Aucun risque détecté" />
             </div>
           </Section>
 
@@ -1736,6 +1801,24 @@
               <StatCard label="À traiter" value={sm.nbAReparer} color="orange" />
             </div>
             <p className="text-xs text-slate-400 mt-3">Détails dans les onglets <span className="font-medium">Inventaire consommables</span> / <span className="font-medium">matériel</span> ; les articles ⭐ urgents et le matériel à traiter remontent dans « Alertes importantes ».</p>
+          </Section>
+
+          {/* COÛTS & RENTABILITÉ (année en cours) */}
+          <Section titre={"💶 Coûts & rentabilité " + ANNEE_COURANTE}>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Dépenses totales" value={eur(totalDepAn)} color="red" sub="aliment + matériel + achats" />
+              <StatCard label="Aliment / consommables" value={eur(depConsoAn)} color="orange" />
+              <StatCard label="Matériel (année)" value={eur(depMatAn)} color="orange" />
+              <StatCard label="Achats reproducteurs" value={eur(depReproAn)} color="orange" />
+            </div>
+            <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Production & coût de revient</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Œufs récoltés" value={oeufsAn} />
+              <StatCard label="Poussins/cailleteaux nés" value={poussinsNesAn} color="indigo" />
+              <StatCard label="Coût aliment / œuf" value={coutParOeuf != null ? eur(coutParOeuf) : "—"} color="purple" sub={prixOeuf ? "valeur œuf : " + eur(prixOeuf) : ""} />
+              <StatCard label="Coût / poussin né" value={coutParPoussin != null ? eur(coutParPoussin) : "—"} color="purple" sub="toutes dépenses" />
+            </div>
+            <p className="text-xs text-slate-400 mt-3">Estimations {ANNEE_COURANTE} : « coût aliment / œuf » = dépenses consommables ÷ œufs récoltés ; « coût / poussin né » = toutes les dépenses ÷ poussins nés. Valeur d'un œuf modifiable dans Réglages.{valeurOeufsAn ? " Valeur des œufs récoltés : " + eur(valeurOeufsAn) + "." : ""}</p>
           </Section>
 
           {/* STATISTIQUES DÉTAILLÉES */}
@@ -3164,8 +3247,11 @@
 
     /* ---------- Animaux reproducteurs ---------- */
     function ReproducteurForm({ onClose, initial, onSave }) {
-      const { races, ajouterReproducteur } = useData();
+      const { races, reproducteurs, poussins, ajouterReproducteur } = useData();
+      // Lignées déjà utilisées (reproducteurs + lots de jeunes) → suggestions
+      const ligneesConnues = Array.from(new Set([].concat((reproducteurs || []).map(r => r.lignee), (poussins || []).map(p => p.lignee)).map(x => (x || "").trim()).filter(Boolean))).sort();
       const [nom, setNom] = useState(initial ? initial.nom : "");
+      const [lignee, setLignee] = useState(initial ? (initial.lignee || "") : "");
       const [nombre, setNombre] = useState(initial && initial.nombre != null ? String(initial.nombre) : "1");
       const [espece, setEspece] = useState(initial ? initial.espece : "poule");
       const [race, setRace] = useState(initial ? (initial.race || "") : "");
@@ -3195,7 +3281,7 @@
 
       function submit(e) {
         e.preventDefault();
-        const rec = { nom: nom.trim(), nombre: Math.max(1, Number(nombre) || 1), espece, race: race.trim(), couleur: couleur.trim(), naissance, arrivee, statut, dateFin: finNecessaire ? dateFin : "", obs: obs.trim() };
+        const rec = { nom: nom.trim(), nombre: Math.max(1, Number(nombre) || 1), espece, race: race.trim(), couleur: couleur.trim(), lignee: lignee.trim(), naissance, arrivee, statut, dateFin: finNecessaire ? dateFin : "", obs: obs.trim() };
         (onSave || ajouterReproducteur)(rec);
         onClose();
       }
@@ -3240,6 +3326,11 @@
               <input type="date" className={inputClass} value={arrivee} onChange={(e) => setArrivee(e.target.value)} />
             </Field>
           </div>
+          <Field label="Lignée / famille (anti-consanguinité)">
+            <input className={inputClass} list="repro-lignees-list" value={lignee} onChange={(e) => setLignee(e.target.value)} placeholder="ex. Lignée A, descendants de Cléo…" />
+            <datalist id="repro-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
+            <p className="text-xs text-slate-400 mt-1">Donne la même lignée aux animaux apparentés. L'appli te prévient si 2 reproducteurs actifs d'une même lignée pourraient être accouplés.</p>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Statut">
               <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
@@ -3499,14 +3590,27 @@
           </div>
           <p className="text-sm text-slate-400 mb-3">{filtres.reduce((s, { r }) => s + (Number(r.nombre) || 1), 0)} animal(aux) · {filtres.length} ligne(s)</p>
 
+          {/* Anti-consanguinité : lignées ayant ≥ 2 reproducteurs actifs */}
+          {ligneesRisque(reproducteurs).length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5">
+              <p className="text-sm font-semibold text-amber-800 mb-1">🧬 Consanguinité — à surveiller</p>
+              <ul className="space-y-1">
+                {ligneesRisque(reproducteurs).map((g, k) => (
+                  <li key={k} className="text-sm text-amber-700"><span className="font-medium">{g.lignee}</span> : {g.noms.join(", ")} — évite de les accoupler entre eux.</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <Table
-            resume={(row, k) => { const r = filtres[k].r; return <><span className="font-medium">{r.nom || "(lot)"}</span> — {r.espece}{(Number(r.nombre) || 1) > 1 ? " ×" + r.nombre : ""}<span className="text-slate-400"> · {r.statut}</span></>; }}
-            columns={["Nom", "Nb", "Espèce", "Race", "Naissance / arrivée", "Âge", "Stade repro", "Statut", "Décès / retrait", "Obs", ""]}
+            resume={(row, k) => { const r = filtres[k].r; return <><span className="font-medium">{r.nom || "(lot)"}</span> — {r.espece}{(Number(r.nombre) || 1) > 1 ? " ×" + r.nombre : ""}<span className="text-slate-400"> · {r.statut}{r.lignee ? " · " + r.lignee : ""}</span></>; }}
+            columns={["Nom", "Nb", "Espèce", "Race", "Lignée", "Naissance / arrivée", "Âge", "Stade repro", "Statut", "Décès / retrait", "Obs", ""]}
             rows={filtres.map(({ r, i }) => [
               <span className="font-medium">{r.nom || <span className="text-slate-400 font-normal">(lot sans nom)</span>}</span>,
               (Number(r.nombre) || 1) > 1 ? <span className="font-medium text-emerald-600">{r.nombre}</span> : (Number(r.nombre) || 1),
               r.espece,
               <div><span>{r.race || "—"}</span>{r.couleur ? <span className="block text-xs text-slate-400">{r.couleur}</span> : null}</div>,
+              r.lignee ? <span className="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-600">{r.lignee}</span> : <span className="text-slate-300">—</span>,
               r.naissance
                 ? <span className="whitespace-nowrap">{frDate(r.naissance)}</span>
                 : (r.arrivee ? <span className="whitespace-nowrap">{frDate(r.arrivee)} <span className="text-slate-400 text-xs">(arrivée)</span></span> : "—"),
@@ -4480,7 +4584,7 @@
     }
 
     function GestionPoulaillers() {
-      const { poulaillers, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
+      const { poulaillers, poussins, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
       const [vue, setVue] = useState("soins");   // onglet interne : soins | bebe | rappels | journal
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
@@ -4506,7 +4610,25 @@
 
       // Coche rapide d'un soin pour aujourd'hui (crée ou met à jour la ligne du jour de la zone)
       const faitAujourdhui = (zone, key) => poulaillers.some(p => p.date === today && normLibelle(p.zone) === normLibelle(zone) && ligneFaitAction(p, key));
+      // Les bébés vivent dans l'enclos des adultes (poussins → poules, cailleteaux → cailles) :
+      // cocher un soin de l'enclos coche la MÊME journée du suivi Bébé pour les lots qui y vivent.
+      function propagerBebes(zone, key, valeur) {
+        if (!["eau", "nourriture", "nettoyage"].includes(key)) return;   // seuls les soins quotidiens communs
+        const nz = normLibelle(zone);
+        const pourPoules = nz.includes("poule"), pourCailles = nz.includes("caille");
+        if (!pourPoules && !pourCailles) return;
+        poussins.forEach((p, i) => {
+          if (p.statut !== "en croissance") return;
+          const match = pourPoules ? p.espece !== "caille" : (p.espece === "caille");
+          if (!match) return;
+          const a = ageJeune(p.date); if (a.jours == null || a.futur) return;
+          const n = a.jours + 1;
+          const d = (p.jours || {})[n] || {};
+          if (!!d[key] !== valeur) patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...d, [key]: valeur } } });
+        });
+      }
       function toggleSoin(zone, key) {
+        const valeur = !faitAujourdhui(zone, key);   // état visé après la bascule
         const idx = poulaillers.findIndex(p => p.date === today && normLibelle(p.zone) === normLibelle(zone) && p.coches && !p.action);
         if (idx >= 0) {
           const p = poulaillers[idx];
@@ -4514,6 +4636,7 @@
         } else {
           ajouterPoulailler({ date: today, zone, coches: { [key]: true }, obs: "" });
         }
+        propagerBebes(zone, key, valeur);   // même action → journée des bébés de l'enclos
       }
       const actionsLabel = (p) => { const d = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return d.length ? d.map(a => a.label).join(", ") : (p.action || "Rappel"); };
       const th = (p) => [p.temperature !== "" && p.temperature != null ? p.temperature + "°" : null, p.humidite !== "" && p.humidite != null ? p.humidite + "%" : null].filter(Boolean).join(" · ") || "—";
@@ -4704,10 +4827,12 @@
     }
 
     function PoussinForm({ onClose, initial, onSave }) {
-      const { lots, ajouterPoussin, genPoussinId } = useData();
+      const { lots, reproducteurs, poussins, ajouterPoussin, genPoussinId } = useData();
+      const ligneesConnues = Array.from(new Set([].concat((reproducteurs || []).map(r => r.lignee), (poussins || []).map(p => p.lignee)).map(x => (x || "").trim()).filter(Boolean))).sort();
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [espece, setEspece] = useState(initial ? initial.espece : "poussin");
       const [lot, setLot] = useState(initial ? (initial.lot || "") : "");
+      const [lignee, setLignee] = useState(initial ? (initial.lignee || "") : "");
       const [nes, setNes] = useState(initial && initial.nes != null ? String(initial.nes) : "");
       const [nombre, setNombre] = useState(initial ? String(initial.nombre) : "");
       const [morts, setMorts] = useState(initial && initial.morts != null ? String(initial.morts) : "0");
@@ -4718,7 +4843,7 @@
         e.preventDefault();
         const rec = {
           ...(initial || {}),            // préserve jours/semaines en édition
-          id: idGenere, date, espece, lot,
+          id: idGenere, date, espece, lot, lignee: lignee.trim(),
           nes: nes === "" ? "" : (Number(nes) || 0),
           nombre: Number(nombre) || 0, morts: Number(morts) || 0, statut, obs: obs.trim(),
         };
@@ -4764,6 +4889,11 @@
             <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
               {["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
+          </Field>
+          <Field label="Lignée / famille (anti-consanguinité)">
+            <input className={inputClass} list="poussin-lignees-list" value={lignee} onChange={(e) => setLignee(e.target.value)} placeholder="ex. lignée des parents (Cléo × Daphnis)" />
+            <datalist id="poussin-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
+            <p className="text-xs text-slate-400 mt-1">À reporter sur l'animal s'il devient reproducteur → évite les accouplements entre proches.</p>
           </Field>
           <p className="text-xs text-slate-400">L'étape est calculée automatiquement selon l'âge (date de naissance).</p>
           <Field label="Observation">
@@ -5728,6 +5858,156 @@
       );
     }
 
+    // Contexte de navigation : permet à une page (ex. Calendrier) de demander l'ouverture d'une autre page.
+    const NavContext = createContext(() => {});
+
+    // Calendrier mensuel : couvaisons (mise en couveuse + éclosion prévue + mirages),
+    // début de récolte des œufs pour la couvée suivante, et rappels (nettoyage / traitements / manuels).
+    // Chaque événement a une `page` cible → cliquable pour s'y rendre.
+    function Calendrier() {
+      const allerA = useContext(NavContext);
+      const { lots, poulaillers, poussins, reproducteurs, abattoir, config } = useData();
+      const now = new Date();
+      const [vue, setVue] = useState({ y: now.getFullYear(), m: now.getMonth() });
+      const [jourSel, setJourSel] = useState(AUJOURDHUI_ISO);
+      const pad = (n) => String(n).padStart(2, "0");
+      const isoDate = (y, m, d) => y + "-" + pad(m + 1) + "-" + pad(d);
+
+      // Collecte de tous les événements datés → { "YYYY-MM-DD": [ {icon,label,color} ] }
+      const events = {};
+      const add = (date, ev) => { if (!date) return; (events[date] = events[date] || []).push(ev); };
+      // Couvaisons : couleur par ESPÈCE (poule = ambre, caille = indigo) → repère la couveuse d'un coup d'œil.
+      lots.forEach((l) => {
+        if (l.statut === "terminé" || !l.dateDebut) return;
+        const cE = l.espece === "caille" ? "indigo" : "amber";   // code couleur par couveuse / espèce
+        add(l.dateDebut, { icon: "🥚", label: "Mise en couveuse " + l.id + " (" + l.espece + ")", color: cE, page: "lots" });
+        add(dateEclosion(l.dateDebut, l.espece), { icon: "🐣", label: "Éclosion prévue " + l.id + " (" + l.espece + ")", color: cE, page: "lots" });
+        const params = (normeEspece(config, l.espece).params) || {};
+        if (params.mirage1) add(dateDecalee(l.dateDebut, Number(params.mirage1)), { icon: "🔦", label: "Mirage 1 — " + l.id + " (" + l.espece + ")", color: cE, page: "suivi" });
+        if (params.mirage2) add(dateDecalee(l.dateDebut, Number(params.mirage2)), { icon: "🔦", label: "Mirage 2 — " + l.id + " (" + l.espece + ")", color: cE, page: "suivi" });
+        if (l.statut === "en couveuse") {
+          const duree = DUREE[l.espece] || 21;
+          const cons = Number(config.conservationOeufs) || 14, delta = Number(config.deltaEclosion) || 0;
+          add(dateDecalee(l.dateDebut, Math.max(0, duree - cons + delta)), { icon: "🥚", label: "Début récolte prochaine couvée — couveuse " + l.couveuse + " (" + l.espece + ")", color: cE, page: "lots" });
+        }
+      });
+      rappelsIntelligents(poulaillers, config).forEach((r) => { if (r.prochain) add(r.prochain, { icon: "🔔", label: r.label + " — " + r.zone, color: "red", page: "poulaillers" }); });
+      poulaillers.forEach((p) => { if (p.rappel && !ligneFaitAction(p, "nettoyage")) add(p.rappel, { icon: "⏰", label: "Rappel — " + p.zone, color: "red", page: "poulaillers" }); });
+      // Transferts prévus des bébés à la fin du suivi (≈ 8 semaines depuis la naissance)
+      const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
+      poussins.forEach((p) => {
+        if (p.statut !== "en croissance" || !p.date) return;
+        add(dateDecalee(p.date, nS * 7), { icon: "🍗", label: "Transfert prévu (" + nS + " sem.) — " + (p.id || labelJeune(p.espece)), color: "purple", page: "poulaillers" });
+      });
+      // Jalons d'âge des reproducteurs actifs : entrée en ponte/repro (min) et début de déclin
+      reproducteurs.forEach((r) => {
+        if (r.statut !== "actif" || !r.naissance) return;
+        const seuils = (config.agesRepro || {})[r.espece];
+        if (!seuils) return;
+        const nom = r.nom || r.espece;
+        if (seuils.min != null) add(dateDecalee(r.naissance, Math.round(seuils.min * 30.44)), { icon: "🐓", label: "Âge de ponte/repro — " + nom, color: "emerald", page: "reproducteurs" });
+        if (seuils.declin != null) add(dateDecalee(r.naissance, Math.round(seuils.declin * 30.44)), { icon: "⚠️", label: "Début de déclin — " + nom, color: "orange", page: "reproducteurs" });
+      });
+      // Abattages prévus (animaux destinés à la consommation) — si une date d'abattage prévu est renseignée
+      abattoir.forEach((a) => {
+        if (!a.abattagePrevu || a.abattageReel) return;   // déjà abattu → on n'affiche plus
+        add(a.abattagePrevu, { icon: "🔪", label: "Abattage prévu — " + (a.lot || a.espece || "lot") + (a.nombre ? " (" + a.nombre + ")" : ""), color: "slate", page: "abattoir" });
+      });
+
+      const dot = { indigo: "bg-indigo-500", emerald: "bg-emerald-500", amber: "bg-amber-500", orange: "bg-orange-500", red: "bg-red-500", purple: "bg-purple-500", slate: "bg-slate-500" };
+      const chip = { indigo: "bg-indigo-100 text-indigo-700", emerald: "bg-emerald-100 text-emerald-700", amber: "bg-amber-100 text-amber-700", orange: "bg-orange-100 text-orange-700", red: "bg-red-100 text-red-700", purple: "bg-purple-100 text-purple-700", slate: "bg-slate-200 text-slate-700" };
+
+      const premierJour = new Date(vue.y, vue.m, 1);
+      const offset = (premierJour.getDay() + 6) % 7;   // semaine commençant le lundi
+      const nbJours = new Date(vue.y, vue.m + 1, 0).getDate();
+      const cells = [];
+      for (let i = 0; i < offset; i++) cells.push(null);
+      for (let d = 1; d <= nbJours; d++) cells.push(d);
+      const moisLabel = premierJour.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+      const prevMois = () => setVue((v) => { const d = new Date(v.y, v.m - 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+      const nextMois = () => setVue((v) => { const d = new Date(v.y, v.m + 1, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
+      const auj = () => { setVue({ y: now.getFullYear(), m: now.getMonth() }); setJourSel(AUJOURDHUI_ISO); };
+
+      const evJourSel = events[jourSel] || [];
+      const moisCle = vue.y + "-" + pad(vue.m + 1);
+      const datesMois = Object.keys(events).filter((d) => d.slice(0, 7) === moisCle).sort();
+
+      return (
+        <div>
+          <PageHeader title="Calendrier" subtitle="Couvaisons, éclosions prévues et rappels — vue mensuelle." />
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <button onClick={prevMois} className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50" aria-label="Mois précédent">◀</button>
+              <div className="text-center">
+                <p className="font-semibold text-slate-800 capitalize">{moisLabel}</p>
+                <button onClick={auj} className="text-xs text-emerald-600 hover:underline">Aujourd'hui</button>
+              </div>
+              <button onClick={nextMois} className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50" aria-label="Mois suivant">▶</button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-xs text-slate-400 mb-1">
+              {["L", "M", "M", "J", "V", "S", "D"].map((j, i) => <div key={i}>{j}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((d, i) => {
+                if (d == null) return <div key={i} />;
+                const date = isoDate(vue.y, vue.m, d);
+                const evs = events[date] || [];
+                const estAuj = date === AUJOURDHUI_ISO;
+                const estSel = date === jourSel;
+                return (
+                  <button key={i} onClick={() => setJourSel(date)}
+                    className={"aspect-square rounded-lg border p-1 flex flex-col items-center justify-start " + (estSel ? "border-emerald-500 bg-emerald-50" : "border-slate-100 hover:bg-slate-50")}>
+                    <span className={"text-xs leading-none " + (estAuj ? "font-bold text-emerald-600" : "text-slate-600")}>{d}</span>
+                    <span className="flex flex-wrap gap-0.5 mt-1 justify-center">
+                      {evs.slice(0, 4).map((e, k) => <span key={k} className={"inline-block w-1.5 h-1.5 rounded-full " + (dot[e.color] || "bg-slate-400")} />)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Détail du jour sélectionné */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
+            <p className="text-sm font-semibold text-slate-700 mb-2">{frDate(jourSel)}{jourSel === AUJOURDHUI_ISO ? " · aujourd'hui" : ""}</p>
+            {evJourSel.length === 0
+              ? <p className="text-sm text-slate-400">Rien de prévu ce jour.</p>
+              : <ul className="space-y-1.5">{evJourSel.map((e, k) => (
+                  <li key={k}>
+                    <button onClick={() => e.page && allerA(e.page)} className="flex items-center gap-2 text-sm w-full text-left hover:opacity-80">
+                      <span>{e.icon}</span>
+                      <span className={"px-2 py-0.5 rounded-full text-xs font-medium " + (chip[e.color] || "bg-slate-100 text-slate-600")}>{e.label}</span>
+                      {e.page && <span className="text-slate-300 text-xs">›</span>}
+                    </button>
+                  </li>
+                ))}</ul>}
+          </div>
+
+          {/* Agenda du mois */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+            <p className="text-sm font-semibold text-slate-700 mb-2">Agenda du mois</p>
+            {datesMois.length === 0
+              ? <p className="text-sm text-slate-400">Aucun événement ce mois-ci.</p>
+              : <ul className="space-y-2">
+                  {datesMois.map((d) => (
+                    <li key={d}>
+                      <p className="text-xs font-medium text-slate-500">{frDate(d)}</p>
+                      <ul className="ml-1 mt-0.5 space-y-1">
+                        {events[d].map((e, k) => <li key={k}><button onClick={() => e.page && allerA(e.page)} className="flex items-center gap-2 text-sm text-slate-700 w-full text-left hover:text-emerald-700"><span>{e.icon}</span>{e.label}{e.page && <span className="text-slate-300 text-xs">›</span>}</button></li>)}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>}
+          </div>
+
+          <div className="text-xs text-slate-400 mt-3 space-y-1">
+            <p><span className="inline-block w-2 h-2 rounded-full bg-amber-500 align-middle mr-1"></span> Couvaison <span className="font-medium">poules</span> · <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 align-middle mx-1"></span> Couvaison <span className="font-medium">cailles</span> — icône = type : 🥚 mise · 🐣 éclosion · 🔦 mirage · 🥚 récolte couvée suivante.</p>
+            <p><span className="inline-block w-2 h-2 rounded-full bg-red-500 align-middle mr-1"></span> 🔔/⏰ rappels · <span className="inline-block w-2 h-2 rounded-full bg-purple-500 align-middle mx-1"></span> 🍗 transfert bébés · <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 align-middle mx-1"></span> 🐓 âge de ponte · <span className="inline-block w-2 h-2 rounded-full bg-orange-500 align-middle mx-1"></span> ⚠️ déclin · <span className="inline-block w-2 h-2 rounded-full bg-slate-500 align-middle mx-1"></span> 🔪 abattage prévu.</p>
+          </div>
+        </div>
+      );
+    }
+
     /* ============================================================
        LAYOUT + NAVIGATION
        ============================================================ */
@@ -5736,6 +6016,7 @@
     // leur contenu est intégré dans le tableau de bord (sections déroulantes).
     const PAGES = [
       { id: "dashboard", label: "Tableau de bord", icon: "📊", comp: Dashboard },
+      { id: "calendrier", label: "Calendrier", icon: "📅", comp: Calendrier },
       { id: "poulaillers", label: "Gestion poulailler", icon: "🏠", comp: GestionPoulaillers },
       { id: "lots",      label: "Récolte des œufs", icon: "🥚", comp: Lots },
       { id: "suivi",     label: "Suivi journalier", icon: "🌡️", comp: Suivi },
@@ -5856,7 +6137,9 @@
             </div>
           </aside>
           <main className="flex-1 p-4 sm:p-8 max-w-6xl w-full min-w-0">
-            <Current />
+            <NavContext.Provider value={allerA}>
+              <Current />
+            </NavContext.Provider>
           </main>
         </div>
       );
