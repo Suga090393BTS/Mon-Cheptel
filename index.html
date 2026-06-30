@@ -48,27 +48,16 @@
     html.nuit .bg-indigo-100 { background-color:#262b50 !important; }
   </style>
   <script>
-    // Service worker (hors-ligne) + détection de mise à jour → bandeau « Mettre à jour ».
-    // Sans effet en local (file://) ; actif une fois hébergé.
+    // PLUS de service worker : il causait des bugs de cache / mises à jour invisibles sur iPhone.
+    // L'app se charge désormais TOUJOURS en direct depuis le réseau (comme un site normal) → les
+    // mises à jour s'affichent immédiatement. On désinstalle tout SW existant + on vide ses caches.
     if ("serviceWorker" in navigator) {
-      window.__appliquerMAJ = function (worker) { if (worker && worker.postMessage) worker.postMessage({ type: "SKIP_WAITING" }); };
-      var __swRefresh = false;
-      navigator.serviceWorker.addEventListener("controllerchange", function () {
-        if (__swRefresh) return; __swRefresh = true; window.location.reload();   // nouveau SW actif → recharge
-      });
-      window.addEventListener("load", function () {
-        navigator.serviceWorker.register("sw.js").then(function (reg) {
-          function signale(w) { if (w) window.dispatchEvent(new CustomEvent("sw-maj", { detail: w })); }
-          if (reg.waiting && navigator.serviceWorker.controller) signale(reg.waiting);
-          reg.addEventListener("updatefound", function () {
-            var nw = reg.installing; if (!nw) return;
-            nw.addEventListener("statechange", function () {
-              if (nw.state === "installed" && navigator.serviceWorker.controller) signale(nw);
-            });
-          });
-          setInterval(function () { reg.update().catch(function () {}); }, 60000);   // vérifie les MAJ
-        }).catch(function () {});
-      });
+      navigator.serviceWorker.getRegistrations()
+        .then(function (rs) { rs.forEach(function (r) { r.unregister(); }); })
+        .catch(function () {});
+    }
+    if (window.caches && caches.keys) {
+      caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }).catch(function () {});
     }
   </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -5750,30 +5739,6 @@
       );
     }
 
-    // Bandeau « Mettre à jour » : apparaît quand une nouvelle version du service worker est prête.
-    function UpdateBanner() {
-      const [worker, setWorker] = useState(null);
-      const [maj, setMaj] = useState(false);
-      useEffect(() => {
-        const h = (e) => setWorker(e.detail || true);
-        window.addEventListener("sw-maj", h);
-        return () => window.removeEventListener("sw-maj", h);
-      }, []);
-      if (!worker) return null;
-      const appliquer = () => { setMaj(true); if (window.__appliquerMAJ) window.__appliquerMAJ(worker); setTimeout(() => window.location.reload(), 1500); };
-      return (
-        <div className="fixed inset-x-3 bottom-3 z-[60] mx-auto max-w-md bg-slate-900 text-white rounded-xl shadow-lg border border-slate-700 p-3 flex items-center gap-3"
-          style={{ marginBottom: "env(safe-area-inset-bottom, 0px)" }}>
-          <span className="text-xl">🆕</span>
-          <span className="text-sm flex-1">Nouvelle version disponible.</span>
-          <button onClick={appliquer} disabled={maj}
-            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium whitespace-nowrap disabled:opacity-60">
-            {maj ? "Mise à jour…" : "Mettre à jour"}
-          </button>
-        </div>
-      );
-    }
-
     function App() {
       const store = useData();
       const config = store.config || {};
@@ -5952,7 +5917,7 @@
         : phase === "sync" ? <PleinEcran msg="Synchronisation…" />
         : phase === "login" ? <LoginEcran onLogin={login} erreur={erreur} occupe={occupe} onLocal={() => setPhase("app")} />
         : <DataProvider><App /></DataProvider>;
-      return <>{contenu}<UpdateBanner /></>;
+      return contenu;
     }
 
     ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
