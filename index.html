@@ -1718,7 +1718,7 @@
               <StatCard label="Total jeunes vivants" value={vivants(jeunesPoussins) + vivants(jeunesCailleteaux)} color="purple" />
               <StatCard label="Pertes" value={morts(jeunesPoussins) + morts(jeunesCailleteaux)} color="orange" />
             </div>
-            <p className="text-xs text-slate-400 mt-3">Détail par lot et suivi quotidien dans l'onglet <span className="font-medium">Poussins et cailleteaux</span>.</p>
+            <p className="text-xs text-slate-400 mt-3">Détail par lot et suivi quotidien dans <span className="font-medium">Gestion du poulailler → onglet Bébé</span>.</p>
           </Section>
 
           {/* Stocks & matériel (fusion) */}
@@ -4480,8 +4480,8 @@
     }
 
     function GestionPoulaillers() {
-      const { poulaillers, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
-      const [vue, setVue] = useState("soins");   // onglet interne : soins | rappels | journal
+      const { poulaillers, poussins, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
+      const [vue, setVue] = useState("soins");   // onglet interne : soins | bebe | rappels | journal
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
       const today = AUJOURDHUI.toISOString().slice(0, 10);
@@ -4518,17 +4518,28 @@
       const actionsLabel = (p) => { const d = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return d.length ? d.map(a => a.label).join(", ") : (p.action || "Rappel"); };
       const th = (p) => [p.temperature !== "" && p.temperature != null ? p.temperature + "°" : null, p.humidite !== "" && p.humidite != null ? p.humidite + "%" : null].filter(Boolean).join(" · ") || "—";
 
+      // Soin du jour des BÉBÉS : on écrit dans le même stock que le suivi S1-S8 du lot (p.jours[jour]).
+      // Cocher ici = cocher dans l'onglet Bébé (et inversement) → une seule saisie.
+      const jeunesActifs = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
+      const jourBebe = (p) => { const a = ageJeune(p.date); return (a.jours == null || a.futur) ? null : (a.jours + 1); };
+      const bebeFait = (p, key) => { const n = jourBebe(p); return n == null ? false : !!(((p.jours || {})[n] || {})[key]); };
+      const toggleBebe = (i, p, key) => {
+        const n = jourBebe(p); if (n == null) return;
+        const d = (p.jours || {})[n] || {};
+        patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...d, [key]: !d[key] } } });
+      };
+
       return (
         <div>
           <PageHeader
-            title="Gestion poulailler — reproducteurs"
-            subtitle="Poules reproductrices, coqs, cailles reproductrices. Poussins & cailleteaux → onglet dédié."
-            action={<AddButton onClick={() => setOpen(true)} label="Ajouter une action" />}
+            title="Gestion du poulailler"
+            subtitle="Tout au même endroit : reproducteurs, animaux à grossir et bébés. Soins, nettoyage et traitements mutualisés."
+            action={vue !== "bebe" ? <AddButton onClick={() => setOpen(true)} label="Ajouter une action" /> : null}
           />
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["soins", "🩺 Soins du jour"], ["rappels", "🔔 Rappels" + ((retard.length + duJour.length) ? " · " + (retard.length + duJour.length) : "")], ["journal", "📜 Journal"]].map(([id, lbl]) => (
+            {[["soins", "🩺 Soin du jour"], ["bebe", "🐥 Bébé"], ["rappels", "🔔 Rappel" + ((retard.length + duJour.length) ? " · " + (retard.length + duJour.length) : "")], ["journal", "📜 Journal"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVue(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vue === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
@@ -4563,7 +4574,38 @@
           </div>
           <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »).</p>
 
+          {/* Soin du jour des BÉBÉS — même saisie que l'onglet Bébé (suivi S1-S8 du lot) */}
+          {jeunesActifs.length > 0 && <>
+            <h2 className="text-lg font-semibold mb-3">🐥 Bébés — soin du jour</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+              {jeunesActifs.map(({ p, i }) => {
+                const n = jourBebe(p);
+                return (
+                  <div key={i} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+                    <p className="text-sm font-medium text-slate-700 mb-2">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span></p>
+                    {n == null
+                      ? <p className="text-xs text-slate-400">Hors fenêtre de suivi.</p>
+                      : <div className="flex flex-wrap gap-2">
+                          {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"]].map(([k, lbl]) => {
+                            const on = bebeFait(p, k);
+                            return (
+                              <button key={k} onClick={() => toggleBebe(i, p, k)}
+                                className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
+                                {on ? "✓ " : ""}{lbl}
+                              </button>
+                            );
+                          })}
+                        </div>}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400 mb-6">Saisie unique : ces coches alimentent directement le suivi quotidien de l'onglet <span className="font-medium">Bébé</span> (température et détails via ✏️ dans Bébé).</p>
           </>}
+
+          </>}
+
+          {vue === "bebe" && <Poussins embedded />}
 
           {vue === "rappels" && <>
           {/* Rappels intelligents (calculés depuis les actions cochées) — seuls les vrais retards / du jour sont des alertes */}
@@ -4933,7 +4975,7 @@
       );
     }
 
-    function Poussins() {
+    function Poussins({ embedded }) {
       const { poussins, config, majLigne, supprimerLigne, patchLigne, ajouterAbattoir } = useData();
       const [sub, setSub] = useState("lots");           // lots | sem
       const [open, setOpen] = useState(false);
@@ -4975,8 +5017,10 @@
 
       return (
         <div>
-          <PageHeader title="Poussins & cailleteaux" subtitle="Suivi des jeunes par lot : naissances + suivi quotidien S1 à S8 (les 10 premiers jours sont mis en évidence car décisifs). Soins quotidiens centralisés dans Gestion poulailler."
-            action={sub === "lots" ? <AddButton onClick={() => setOpen(true)} label="Ajouter un lot" /> : null} />
+          {embedded
+            ? (sub === "lots" && <div className="flex justify-end mb-3"><AddButton onClick={() => setOpen(true)} label="Ajouter un lot" /></div>)
+            : <PageHeader title="Poussins & cailleteaux" subtitle="Suivi des jeunes par lot : naissances + suivi quotidien S1 à S8 (les 10 premiers jours sont mis en évidence car décisifs). Soins quotidiens centralisés dans Gestion poulailler."
+                action={sub === "lots" ? <AddButton onClick={() => setOpen(true)} label="Ajouter un lot" /> : null} />}
 
           {/* Sous-onglets */}
           <div className="flex gap-2 mb-5 flex-wrap">
@@ -5734,7 +5778,6 @@
       { id: "poulaillers", label: "Gestion poulailler", icon: "🏠", comp: GestionPoulaillers },
       { id: "lots",      label: "Récolte des œufs", icon: "🥚", comp: Lots },
       { id: "suivi",     label: "Suivi journalier", icon: "🌡️", comp: Suivi },
-      { id: "poussins",  label: "Poussins et cailleteaux", icon: "🐥", comp: Poussins },
       { id: "reproducteurs", label: "Animaux reproducteurs", icon: "🐓", comp: Reproducteurs },
       { id: "abattoir",  label: "Animaux consommation", icon: "🍗", comp: Abattoir },
       { id: "consommables", label: "Inventaire consommables", icon: "🧺", comp: InventaireConsommables },
