@@ -2403,11 +2403,13 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["recoltes", "🥚 Récoltes"], ["couveuse", "🐣 Lots en couveuse"]].map(([id, lbl]) => (
+            {[["recoltes", "🥚 Récoltes"], ["couveuse", "🐣 Lots en couveuse"], ["suivi", "🌡️ Suivi couvaison"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setOngletL(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (ongletL === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
           </div>
+
+          {ongletL === "suivi" && <Suivi embedded />}
 
           {ongletL === "couveuse" && <>
           {/* Partie A — lots */}
@@ -2651,7 +2653,7 @@
       );
     }
 
-    function Suivi() {
+    function Suivi({ embedded }) {
       const { suivis, mirages, eclosions, lots, majLigne, supprimerLigne, patchLigne } = useData();
       // open : null | "releve" | "mirage" | "eclosion"
       const [open, setOpen] = useState(null);
@@ -2697,19 +2699,22 @@
       const tiret = (v) => (v === undefined || v === null || v === "" ? "—" : v);
       const ongletBtn = (actif) => "px-4 py-2 rounded-lg text-sm font-medium border " + (actif ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50");
 
+      const actions = (
+        <div className="flex flex-wrap gap-2">
+          <AddButton onClick={() => setOpen("releve")} label="Relevé" />
+          <AddButton onClick={() => setOpen("mirage")} label="Mirage" />
+          <AddButton onClick={() => setOpen("eclosion")} label="Éclosion" />
+        </div>
+      );
       return (
         <div>
-          <PageHeader
-            title="Suivi journalier"
-            subtitle="Relevés, mirages et éclosions — affichés par espèce (poules / cailles)"
-            action={
-              <div className="flex flex-wrap gap-2">
-                <AddButton onClick={() => setOpen("releve")} label="Relevé" />
-                <AddButton onClick={() => setOpen("mirage")} label="Mirage" />
-                <AddButton onClick={() => setOpen("eclosion")} label="Éclosion" />
-              </div>
-            }
-          />
+          {embedded
+            ? <div className="flex items-center justify-between gap-2 mb-4 flex-wrap"><h2 className="text-lg font-semibold">Suivi de couvaison</h2>{actions}</div>
+            : <PageHeader
+                title="Suivi journalier"
+                subtitle="Relevés, mirages et éclosions — affichés par espèce (poules / cailles)"
+                action={actions}
+              />}
 
           {/* Sélecteur d'espèce : filtre uniquement le tableau affiché (pas un onglet du menu) */}
           <div className="flex gap-2 mb-4">
@@ -4588,6 +4593,7 @@
       const [vue, setVue] = useState("soins");   // onglet interne : soins | bebe | rappels | journal
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
+      const [bebeLot, setBebeLot] = useState(null);   // lot pré-sélectionné quand on ouvre l'onglet Bébé
       const today = AUJOURDHUI.toISOString().slice(0, 10);
 
       const nettoyages = nettoyagesAPrevoir(poulaillers, config);
@@ -4638,6 +4644,16 @@
         }
         propagerBebes(zone, key, valeur);   // même action → journée des bébés de l'enclos
       }
+      // Soin du jour des BÉBÉS par lot — écrit dans p.jours[jour] (même stock que l'onglet Bébé S1-S8)
+      const jeunesActifs = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
+      const jourBebe = (p) => { const a = ageJeune(p.date); return (a.jours == null || a.futur) ? null : (a.jours + 1); };
+      const bebeFait = (p, key) => { const n = jourBebe(p); return n == null ? false : !!(((p.jours || {})[n] || {})[key]); };
+      const toggleBebe = (i, p, key) => {
+        const n = jourBebe(p); if (n == null) return;
+        const d = (p.jours || {})[n] || {};
+        patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...d, [key]: !d[key] } } });
+      };
+      const ouvrirBebe = (i) => { setBebeLot(i); setVue("bebe"); };   // accès instantané au lot dans l'onglet Bébé
       const actionsLabel = (p) => { const d = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return d.length ? d.map(a => a.label).join(", ") : (p.action || "Rappel"); };
       const th = (p) => [p.temperature !== "" && p.temperature != null ? p.temperature + "°" : null, p.humidite !== "" && p.humidite != null ? p.humidite + "%" : null].filter(Boolean).join(" · ") || "—";
 
@@ -4684,12 +4700,43 @@
               );
             })}
           </div>
-          <p className="text-xs text-slate-400 mb-2">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »).</p>
-          <p className="text-xs text-slate-400 mb-6">🐥 Les poussins / cailleteaux qui vivent dans l'enclos des poules / cailles sont soignés <span className="font-medium">avec eux</span> (même carte ci-dessus) — pas de carte séparée. L'onglet <span className="font-medium">Bébé</span> sert au suivi fin des premières semaines (température, mortalité, S1-S8).</p>
+          <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »).</p>
+
+          {/* Soin du jour des BÉBÉS — un carré par lot. Les coches alimentent directement l'onglet Bébé (S1-S8) du lot. */}
+          {jeunesActifs.length > 0 && <>
+            <h2 className="text-lg font-semibold mb-3">🐥 Bébés — soin du jour (par lot)</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-3">
+              {jeunesActifs.map(({ p, i }) => {
+                const n = jourBebe(p);
+                return (
+                  <div key={i} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <p className="text-sm font-medium text-slate-700 min-w-0 truncate">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span></p>
+                      <button onClick={() => ouvrirBebe(i)} className="text-xs text-emerald-600 hover:underline whitespace-nowrap shrink-0">→ Bébé</button>
+                    </div>
+                    {n == null
+                      ? <p className="text-xs text-slate-400">Hors fenêtre de suivi.</p>
+                      : <div className="flex flex-wrap gap-2">
+                          {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"]].map(([k, lbl]) => {
+                            const on = bebeFait(p, k);
+                            return (
+                              <button key={k} onClick={() => toggleBebe(i, p, k)}
+                                className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
+                                {on ? "✓ " : ""}{lbl}
+                              </button>
+                            );
+                          })}
+                        </div>}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400 mb-6">Une coche ici remplit directement la journée du lot dans l'onglet <span className="font-medium">Bébé</span> (S1-S8). « → Bébé » ouvre le suivi détaillé du lot (température, mortalité…).</p>
+          </>}
 
           </>}
 
-          {vue === "bebe" && <Poussins embedded />}
+          {vue === "bebe" && <Poussins key={bebeLot} embedded initialLotIndex={bebeLot} initialSub={bebeLot != null ? "sem" : undefined} />}
 
           {vue === "rappels" && <>
           {/* Rappels intelligents (calculés depuis les actions cochées) — seuls les vrais retards / du jour sont des alertes */}
@@ -5066,9 +5113,9 @@
       );
     }
 
-    function Poussins({ embedded }) {
+    function Poussins({ embedded, initialLotIndex, initialSub }) {
       const { poussins, config, majLigne, supprimerLigne, patchLigne, ajouterAbattoir } = useData();
-      const [sub, setSub] = useState("lots");           // lots | sem
+      const [sub, setSub] = useState(initialSub || "lots");   // lots | sem (peut être pré-ouvert sur le suivi)
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
       const [jourEdit, setJourEdit] = useState(null);   // { lotIndex, p, jour }
@@ -5079,7 +5126,7 @@
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
 
       const actifsIdx = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
-      const [selS, setSelS] = useState(null);
+      const [selS, setSelS] = useState(initialLotIndex != null ? initialLotIndex : null);
       const idxS = selS != null ? selS : (actifsIdx[0] ? actifsIdx[0].i : null);
       const labelLot = (p, i) => (p.id || p.lot || ("Lot " + (i + 1))) + " · " + labelJeune(p.espece);
 
@@ -5883,8 +5930,8 @@
         add(l.dateDebut, { icon: "🥚", label: "Mise en couveuse " + l.id + " (" + l.espece + ")", color: cE, page: "lots" });
         add(dateEclosion(l.dateDebut, l.espece), { icon: "🐣", label: "Éclosion prévue " + l.id + " (" + l.espece + ")", color: cE, page: "lots" });
         const params = (normeEspece(config, l.espece).params) || {};
-        if (params.mirage1) add(dateDecalee(l.dateDebut, Number(params.mirage1)), { icon: "🔦", label: "Mirage 1 — " + l.id + " (" + l.espece + ")", color: cE, page: "suivi" });
-        if (params.mirage2) add(dateDecalee(l.dateDebut, Number(params.mirage2)), { icon: "🔦", label: "Mirage 2 — " + l.id + " (" + l.espece + ")", color: cE, page: "suivi" });
+        if (params.mirage1) add(dateDecalee(l.dateDebut, Number(params.mirage1)), { icon: "🔦", label: "Mirage 1 — " + l.id + " (" + l.espece + ")", color: cE, page: "lots" });
+        if (params.mirage2) add(dateDecalee(l.dateDebut, Number(params.mirage2)), { icon: "🔦", label: "Mirage 2 — " + l.id + " (" + l.espece + ")", color: cE, page: "lots" });
         if (l.statut === "en couveuse") {
           const duree = DUREE[l.espece] || 21;
           const cons = Number(config.conservationOeufs) || 14, delta = Number(config.deltaEclosion) || 0;
@@ -6019,7 +6066,6 @@
       { id: "calendrier", label: "Calendrier", icon: "📅", comp: Calendrier },
       { id: "poulaillers", label: "Gestion poulailler", icon: "🏠", comp: GestionPoulaillers },
       { id: "lots",      label: "Récolte des œufs", icon: "🥚", comp: Lots },
-      { id: "suivi",     label: "Suivi journalier", icon: "🌡️", comp: Suivi },
       { id: "reproducteurs", label: "Animaux reproducteurs", icon: "🐓", comp: Reproducteurs },
       { id: "abattoir",  label: "Animaux consommation", icon: "🍗", comp: Abattoir },
       { id: "consommables", label: "Inventaire consommables", icon: "🧺", comp: InventaireConsommables },
