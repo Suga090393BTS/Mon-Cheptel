@@ -1,7 +1,8 @@
 /* Service worker Cheptel — cache l'app pour un fonctionnement hors-ligne de base.
    Navigations : réseau d'abord (pour récupérer les mises à jour), cache si hors-ligne.
-   Autres ressources (icônes, librairies CDN) : cache d'abord. */
-const CACHE = "cheptel-v3";
+   Autres ressources (icônes, librairies CDN) : cache d'abord.
+   IMPORTANT : le cloud (Supabase) n'est JAMAIS mis en cache → données/auth toujours en direct. */
+const CACHE = "cheptel-v5";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
@@ -26,6 +27,9 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
+  // JAMAIS de cache pour le cloud Supabase (données + authentification) : toujours en direct.
+  // (corrige le bug « les saisies du téléphone ne s'enregistrent pas » dû à des lectures cloud en cache)
+  if (req.url.indexOf("supabase") !== -1) return;
   if (req.mode === "navigate") {
     e.respondWith(
       fetch(req)

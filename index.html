@@ -795,6 +795,16 @@
       useEffect(() => { _syncListeners.add(setS); setS(_syncState); return () => { _syncListeners.delete(setS); }; }, []);
       return s;
     }
+    // Alerte (une seule fois par session) si l'écriture locale échoue (mémoire pleine, navigation privée…).
+    // Évite l'échec SILENCIEUX : l'utilisatrice est prévenue que ses saisies ne sont pas gardées.
+    let _saveKO = false;
+    function signalerSauvegardeKO(e) {
+      try { console.error("Cheptel: échec d'écriture localStorage", e); } catch (x) {}
+      if (_saveKO) return; _saveKO = true;
+      _setSync("error");
+      try { window.alert("⚠️ Enregistrement impossible sur cet appareil (mémoire pleine, ou navigation privée).\n\nTes nouvelles saisies ne sont PAS gardées. Exporte tout de suite tes données : menu ☰ → bouton ⬇️."); } catch (x) {}
+    }
+
     // « il y a X » à partir d'une date ISO
     function tempsRelatif(iso) {
       if (!iso) return "—";
@@ -859,7 +869,7 @@
         return graine;
       });
       useEffect(() => {
-        try { localStorage.setItem(cle, JSON.stringify(data)); } catch (e) {}
+        try { localStorage.setItem(cle, JSON.stringify(data)); } catch (e) { signalerSauvegardeKO(e); }
       }, [data]);
       const ajouter = (item) => setData((prev) => prev.concat([item]));
       return [data, ajouter, setData];
@@ -926,7 +936,7 @@
         try { const b = localStorage.getItem(STORE_KEYS.config); if (b) return mergeConfig(configDefaut, JSON.parse(b)); } catch (e) {}
         return configDefaut;
       });
-      useEffect(() => { try { localStorage.setItem(STORE_KEYS.config, JSON.stringify(config)); } catch (e) {} }, [config]);
+      useEffect(() => { try { localStorage.setItem(STORE_KEYS.config, JSON.stringify(config)); } catch (e) { signalerSauvegardeKO(e); } }, [config]);
 
       // Setters par clé → CRUD générique (modifier / supprimer / patch) sur toutes les tables
       const setters = {
@@ -1554,9 +1564,11 @@
 
       return (
         <div>
-          <PageHeader title="Tableau de bord" subtitle="Tout au même endroit — déplie les sections selon tes besoins" />
+          <PageHeader title="Tableau de bord" subtitle="L'essentiel est ouvert (actions du jour, œufs) ; le reste se déplie au besoin. Un ⚠️ sur un volet replié signale une anomalie à ouvrir." />
 
-          {/* 1. ACTIONS DU JOUR (les choses importantes du jour + les retards restent visibles d'emblée) */}
+          {/* ===== VISIBLES D'EMBLÉE ===== */}
+
+          {/* Actions du jour (le plus important : à faire + retards) */}
           <Section titre={"✅ Actions du jour" + (aFaire.length ? " · " + aFaire.length : "")} defaut={true} alerte={enRetard.length}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <DashListe titre="🔴 En retard" couleur="red" items={enRetard} vide="Rien en retard 👍" />
@@ -1564,38 +1576,7 @@
             </div>
           </Section>
 
-          {/* 1bis. PROCHAINS RAPPELS — repliés par défaut (ni le jour, ni en retard → ne prend pas de place à l'ouverture) */}
-          <Section titre={"🔵 Prochains rappels" + (aVenir.length ? " · " + aVenir.length : "")} defaut={false}>
-            <DashListe titre="À venir" couleur="slate" items={aVenir} vide="Aucun rappel programmé" />
-          </Section>
-
-          {/* 2. ALERTES IMPORTANTES */}
-          <Section titre={"🚨 Alertes importantes" + (nbAlertes ? " · " + nbAlertes : "")} defaut={true} alerte={nbAlertes}>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <DashListe titre="Stocks urgents à racheter" couleur="orange" items={stocksUrgents} vide="Aucun stock urgent" />
-              <DashListe titre="Matériel à traiter" couleur="red" items={materielTraiter} vide="Aucun" />
-              <DashListe titre="Âge reproducteurs" couleur="red" items={alertesRepro} vide="Aucune alerte d'âge" />
-              <DashListe titre="Écart couvaison poule/caille" couleur="orange" items={ecartCouvaison} vide="Écarts ≥ 4 j OK" />
-              <DashListe titre="Couvaison hors normes" couleur="red" items={alertesCouv} vide="Relevés conformes aux normes" />
-            </div>
-          </Section>
-
-          {/* 3. GESTION POULAILLER — REPRODUCTEURS */}
-          <Section titre="🏠 Gestion poulailler — reproducteurs">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-3">
-              {np.map((nz) => (
-                <div key={nz.zone} className="rounded-lg border border-slate-100 p-3">
-                  <p className="text-sm font-medium text-slate-700">{nz.zone}</p>
-                  <p className="text-xs text-slate-400 mb-2">Dernier : {nz.dernier ? frDate(nz.dernier) : "—"} · tous les {nz.interv} j</p>
-                  <AlerteNettoyage st={nz} />
-                  {nz.prochainProgramme && <p className="text-xs text-slate-500 mt-2">⏰ Prochain programmé : {frDate(nz.prochainProgramme)}</p>}
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-slate-400">Détails et saisie dans l'onglet <span className="font-medium">Gestion poulailler</span>.</p>
-          </Section>
-
-          {/* 4. ŒUFS / RÉCOLTE — par espèce + totaux */}
+          {/* Œufs (suivi quotidien important) */}
           <Section titre="🥚 Œufs" defaut={true}>
             <p className="text-xs text-slate-500 mb-2 font-medium">Aujourd'hui</p>
             <div className="grid grid-cols-3 gap-4 mb-4">
@@ -1632,6 +1613,24 @@
             <p className="text-xs text-slate-400 mt-3">Stock actif = œufs en lot « en stock » ; en couveuse = œufs des lots d'incubation en cours ; consommés = collectes « consommation ». Poules et cailles comptées séparément.</p>
           </Section>
 
+          {/* ===== REPLIÉS (⚠️ si anomalie) ===== */}
+
+          {/* Alertes importantes — repliée par défaut ; le badge ⚠️ prévient s'il y en a */}
+          <Section titre={"🚨 Alertes importantes" + (nbAlertes ? " · " + nbAlertes : "")} alerte={nbAlertes}>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <DashListe titre="Stocks urgents à racheter" couleur="orange" items={stocksUrgents} vide="Aucun stock urgent" />
+              <DashListe titre="Matériel à traiter" couleur="red" items={materielTraiter} vide="Aucun" />
+              <DashListe titre="Âge reproducteurs" couleur="red" items={alertesRepro} vide="Aucune alerte d'âge" />
+              <DashListe titre="Écart couvaison poule/caille" couleur="orange" items={ecartCouvaison} vide="Écarts ≥ 4 j OK" />
+              <DashListe titre="Couvaison hors normes" couleur="red" items={alertesCouv} vide="Relevés conformes aux normes" />
+            </div>
+          </Section>
+
+          {/* Prochains rappels — repliée par défaut */}
+          <Section titre={"🔵 Prochains rappels" + (aVenir.length ? " · " + aVenir.length : "")}>
+            <DashListe titre="À venir" couleur="slate" items={aVenir} vide="Aucun rappel programmé" />
+          </Section>
+
           {/* 5. COUVAISON */}
           <Section titre={"🌡️ Couvaison" + (lotsActifs.length ? " · " + lotsActifs.length + " lot(s)" : "")} alerte={alertesCouv.length}>
             <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -1664,15 +1663,25 @@
             </div>
           </Section>
 
-          {/* 6. POUSSINS ET CAILLETEAUX — résumé en cartes (comme « Animaux »). Détails dans l'onglet dédié. */}
-          <Section titre={"🐥 Poussins et cailleteaux" + (jeunesActifs.length ? " · " + jeunesActifs.length + " lot(s)" : "")} defaut={true} alerte={alJeune.length}>
+          {/* Animaux & jeunes (fusion reproducteurs/cheptel + poussins/cailleteaux) */}
+          <Section titre="🐓 Animaux & jeunes" alerte={alJeune.length}>
+            <p className="text-xs text-slate-500 mb-2 font-medium">Reproducteurs & cheptel</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+              <StatCard label="Poules" value={(config.cheptel || cheptel).poules} />
+              <StatCard label="Coqs" value={(config.cheptel || cheptel).coqs} color="orange" />
+              <StatCard label="Cailles ♀" value={(config.cheptel || cheptel).caillesF} />
+              <StatCard label="Cailles ♂" value={(config.cheptel || cheptel).caillesM} color="orange" />
+              <StatCard label="Reproducteurs actifs" value={reproActifs} color="indigo" />
+              <StatCard label="Animaux consommation" value={consoTotal} color="purple" />
+            </div>
+
+            <p className="text-xs text-slate-500 mb-2 font-medium">Poussins & cailleteaux{jeunesActifs.length ? " · " + jeunesActifs.length + " lot(s)" : ""}</p>
             {(tachesJeunes.length > 0 || alJeune.length > 0) && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <DashListe titre="Tâches du jour (jeunes)" couleur="emerald" items={tachesJeunes} vide="Tout est fait 👍" />
                 <DashListe titre="Alertes jeunes" couleur="orange" items={alJeune} vide="—" />
               </div>
             )}
-
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <StatCard label="🐥 Poussins vivants" value={vivants(jeunesPoussins)} sub={jeunesPoussins.length + " lot(s)"} />
               <StatCard label="🐦 Cailleteaux vivants" value={vivants(jeunesCailleteaux)} color="indigo" sub={jeunesCailleteaux.length + " lot(s)"} />
@@ -1682,39 +1691,24 @@
             <p className="text-xs text-slate-400 mt-3">Détail par lot et suivi quotidien dans l'onglet <span className="font-medium">Poussins et cailleteaux</span>.</p>
           </Section>
 
-          {/* 7. ANIMAUX */}
-          <Section titre="🐓 Animaux">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Poules" value={(config.cheptel || cheptel).poules} />
-              <StatCard label="Coqs" value={(config.cheptel || cheptel).coqs} color="orange" />
-              <StatCard label="Cailles ♀" value={(config.cheptel || cheptel).caillesF} />
-              <StatCard label="Cailles ♂" value={(config.cheptel || cheptel).caillesM} color="orange" />
-              <StatCard label="Reproducteurs actifs" value={reproActifs} color="indigo" />
-              <StatCard label="Animaux consommation" value={consoTotal} color="purple" />
-            </div>
-          </Section>
-
-          {/* 8. STOCKS */}
-          <Section titre={"🧺 Stocks" + (sc.nbARacheter ? " · " + sc.nbARacheter + " à racheter" : "")}>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {/* Stocks & matériel (fusion) */}
+          <Section titre={"🧺 Stocks & matériel" + (sc.nbARacheter ? " · " + sc.nbARacheter + " à racheter" : "")}>
+            <p className="text-xs text-slate-500 mb-2 font-medium">Consommables</p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-5">
               <StatCard label="Valeur du stock" value={eur(sc.valeurStock)} />
               <StatCard label={"Dépenses conso. " + ANNEE_COURANTE} value={eur(sc.depAnnee[String(ANNEE_COURANTE)] || 0)} color="indigo" />
               <StatCard label="À racheter" value={sc.nbARacheter} color="orange" />
             </div>
-            <p className="text-xs text-slate-400 mt-3">Liste détaillée des articles à racheter dans l'onglet <span className="font-medium">Inventaire consommables</span> ; seuls les articles ⭐ urgents remontent dans « Alertes importantes ».</p>
-          </Section>
-
-          {/* 9. MATÉRIEL */}
-          <Section titre="🔧 Matériel">
+            <p className="text-xs text-slate-500 mb-2 font-medium">Matériel</p>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <StatCard label="Valeur du parc" value={eur(sm.valeurTotale)} />
               <StatCard label={"Dépenses matériel " + ANNEE_COURANTE} value={eur(sm.depenseAnneeCourante)} color="indigo" />
               <StatCard label="À traiter" value={sm.nbAReparer} color="orange" />
             </div>
-            <p className="text-xs text-slate-400 mt-3">Le détail « à réparer / à remplacer / hors service » est regroupé dans « Alertes importantes » (et l'onglet <span className="font-medium">Inventaire matériel</span>).</p>
+            <p className="text-xs text-slate-400 mt-3">Détails dans les onglets <span className="font-medium">Inventaire consommables</span> / <span className="font-medium">matériel</span> ; les articles ⭐ urgents et le matériel à traiter remontent dans « Alertes importantes ».</p>
           </Section>
 
-          {/* 10. STATISTIQUES DÉTAILLÉES */}
+          {/* STATISTIQUES DÉTAILLÉES */}
           <Section titre="📈 Statistiques détaillées">
             <StatsDetaillees />
           </Section>
