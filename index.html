@@ -293,6 +293,8 @@
       freqSoins: { eau: 1, nourriture: 1, vitamines: 30, vermiferm: 30 },  // (legacy, plus utilisé pour eau/nourriture)
       freqTraitements: JSON.parse(JSON.stringify(FREQ_TRAITEMENTS)),       // jours entre traitements par zone (reproducteurs)
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
+      articlesMasques: [],                                                 // articles masqués du stock (ex. intitulé mal écrit) — réaffichables
+      notifications: false,                                                // notification quotidienne (retards + événements du jour) à l'ouverture
       // Règle de dosage des traitements : ml de produit par litres d'eau (Fortiferm/Cocciferm/Vermiferm = 3 ml / 5 L)
       doseRule: { ml: 3, parLitres: 5 },
       // Rappel récolte des œufs pour la prochaine couvée : conservation max des œufs + marge (retard d'éclosion possible)
@@ -396,6 +398,8 @@
       out.memoireArticles = { ...(def.memoireArticles || {}), ...(saved.memoireArticles || {}) };
       // Dosage / abreuvoirs / urgents / fréquences jeunes (additif)
       out.articlesUrgents = Array.isArray(saved.articlesUrgents) ? saved.articlesUrgents : (def.articlesUrgents || []);
+      out.articlesMasques = Array.isArray(saved.articlesMasques) ? saved.articlesMasques : (def.articlesMasques || []);
+      out.notifications = !!saved.notifications;
       out.doseRule = { ...def.doseRule, ...(saved.doseRule || {}) };
       out.abreuvoirs = Array.isArray(saved.abreuvoirs) ? saved.abreuvoirs : def.abreuvoirs.map((a) => ({ ...a }));
       // « ml » toujours disponible (traitements) ; rappel récolte œufs (conservation + marge éclosion)
@@ -570,6 +574,38 @@
       if (!cands.length) return null;
       cands.sort((a, b) => Math.abs(a.length - k.length) - Math.abs(b.length - k.length));
       return mem[cands[0]];
+    }
+    // Distance d'édition (Levenshtein) entre deux libellés normalisés — détecte les fautes de frappe.
+    function distanceEdition(a, b) {
+      a = normLibelle(a); b = normLibelle(b);
+      if (a === b) return 0;
+      const m = a.length, n = b.length;
+      if (!m) return n; if (!n) return m;
+      let prev = Array.from({ length: n + 1 }, (_, j) => j);
+      for (let i = 1; i <= m; i++) {
+        const cur = [i];
+        for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        prev = cur;
+      }
+      return prev[n];
+    }
+    // Article existant dont le nom est TRÈS proche du nom tapé (faute de frappe probable) mais pas identique.
+    // Tolérance : 1 lettre d'écart (2 pour les noms longs). Renvoie le nom existant, ou null.
+    function articleProche(config, consommables, nom) {
+      const n = normLibelle(nom);
+      if (n.length < 4) return null;
+      const noms = new Set();
+      (consommables || []).forEach((c) => { if (c.article) noms.add(String(c.article).trim()); });
+      Object.values((config && config.memoireArticles) || {}).forEach((a) => { if (a && a.article) noms.add(String(a.article).trim()); });
+      let best = null, bestD = Infinity;
+      for (const cand of noms) {
+        const cn = normLibelle(cand);
+        if (cn === n) return null;   // article déjà connu tel quel → rien à signaler
+        const d = distanceEdition(cn, n);
+        const tol = Math.max(cn.length, n.length) >= 8 ? 2 : 1;
+        if (d <= tol && d < bestD) { best = cand; bestD = d; }
+      }
+      return best;
     }
     // Renvoie une nouvelle config avec l'article mémorisé/mis à jour + le fournisseur ajouté à la liste auto.
     function memoriserArticle(config, rec) {
@@ -1488,9 +1524,19 @@
        ============================================================ */
     function Dashboard() {
       const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases } = useData();
+      const allerA = useContext(NavContext);
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
       const today = AUJOURDHUI.toISOString().slice(0, 10);
+
+      // --- Aperçu calendrier : événements d'aujourd'hui + 7 prochains jours (mêmes données que la page Calendrier) ---
+      const evCal = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config);
+      const semaine = [];
+      for (let k = 0; k <= 7; k++) {
+        const d = dateDecalee(today, k);
+        if ((evCal[d] || []).length) semaine.push({ date: d, evs: evCal[d] });
+      }
+      const nbEvSemaine = semaine.reduce((s, j) => s + j.evs.length, 0);
 
       // --- Tâches du jour (poulaillers : nettoyages + rappels) ---
       const np = nettoyagesAPrevoir(poulaillers, config);
@@ -1516,22 +1562,27 @@
       // (l'éclosion peut déborder de quelques jours). Début = durée − conservation + delta (ex. poule 21−14+2 = J9).
       const conservationOeufs = Number(config.conservationOeufs) || 14;
       const deltaEclosion = Number(config.deltaEclosion) || 0;
-      const rappelsRecolte = [];
+      const recolteAVenir = [];   // débuts de récolte futurs → « Prochains rappels »
       lots.filter(l => l.statut === "en couveuse" && l.dateDebut).forEach(l => {
         const duree = DUREE[l.espece] || 21;
         const jour = joursDepuis(l.dateDebut);
         if (jour == null || jour < 0) return;
-        const debutRecolte = duree - conservationOeufs + deltaEclosion;
+        const debutRecolte = Math.max(0, duree - conservationOeufs + deltaEclosion);   // même calcul que le Calendrier
         const finRecolte = duree + deltaEclosion;                       // jusqu'à l'éclosion (+ marge)
-        if (jour >= debutRecolte && jour <= finRecolte) {
-          rappelsRecolte.push("🥚 Récolte prochaine couvée — Couveuse " + l.couveuse + " (" + l.espece + ", J" + jour + "/" + duree + ") : tu peux commencer à ramasser (les plus vieux auront < " + conservationOeufs + " j à la relance)");
+        const dateDebutRecolte = dateDecalee(l.dateDebut, debutRecolte);
+        if (jour === debutRecolte) {
+          aFaire.push("🥚 Récolte prochaine couvée — Couveuse " + l.couveuse + " (" + l.espece + ") : COMMENCE AUJOURD'HUI — ramasse les œufs pour la relance (conservation < " + conservationOeufs + " j)");
+        } else if (jour > debutRecolte && jour <= finRecolte) {
+          aFaire.push("🥚 Récolte prochaine couvée en cours — Couveuse " + l.couveuse + " (" + l.espece + ", J" + jour + "/" + duree + ") : continue de ramasser (depuis le " + frDate(dateDebutRecolte) + ")");
+        } else if (jour < debutRecolte) {
+          recolteAVenir.push("🥚 Début récolte prochaine couvée — Couveuse " + l.couveuse + " (" + l.espece + ") le " + frDate(dateDebutRecolte));
         }
       });
-      rappelsRecolte.forEach(m => aFaire.push(m));   // affichées dans « Actions du jour »
+      recolteAVenir.forEach(m => aVenir.push(m));   // visibles dans « Prochains rappels »
 
       // --- Alertes ---
       // Seuls les articles à racheter ET marqués « urgent » remontent en alerte importante (les autres restent dans l'inventaire).
-      const stocksUrgents = sc.parArticle.filter(a => a.bas && articleEstUrgent(config, a.article)).map(a => a.article + " (" + a.stock + " " + a.unite + ")");
+      const stocksUrgents = sc.parArticle.filter(a => a.bas && articleEstUrgent(config, a.article) && !articleEstMasque(config, a.article)).map(a => a.article + " (" + a.stock + " " + a.unite + ")");
       const materielTraiter = []
         .concat(sm.aReparer.map(m => m.article + " — à réparer"))
         .concat(sm.aRemplacer.map(m => m.article + " — à remplacer"))
@@ -1642,7 +1693,8 @@
 
       return (
         <div>
-          <PageHeader title="Tableau de bord" subtitle="L'essentiel est ouvert (actions du jour, œufs) ; le reste se déplie au besoin. Un ⚠️ sur un volet replié signale une anomalie à ouvrir." />
+          <PageHeader title="Tableau de bord" subtitle={"Aujourd'hui : " + frDate(today) + " — l'essentiel est ouvert, le reste se déplie. Un ⚠️ sur un volet replié signale une anomalie."}
+            action={<button onClick={() => allerA("calendrier")} className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm whitespace-nowrap">📅 Calendrier</button>} />
 
           {/* ===== VISIBLES D'EMBLÉE ===== */}
 
@@ -1652,6 +1704,29 @@
               <DashListe titre="🔴 En retard" couleur="red" items={enRetard} vide="Rien en retard 👍" />
               <DashListe titre="🟠 Aujourd'hui / bientôt" couleur="orange" items={aFaire} vide="Rien d'urgent" />
             </div>
+          </Section>
+
+          {/* Cette semaine : aperçu du calendrier (aujourd'hui + 7 jours), événements cliquables */}
+          <Section titre={"📅 Cette semaine" + (nbEvSemaine ? " · " + nbEvSemaine : "")} defaut={true}>
+            {semaine.length === 0
+              ? <p className="text-sm text-slate-400">Rien de prévu dans les 7 prochains jours.</p>
+              : <div className="space-y-3">
+                  {semaine.map((j) => (
+                    <div key={j.date}>
+                      <p className={"text-xs font-medium mb-1 " + (j.date === today ? "text-emerald-600" : "text-slate-500")}>{j.date === today ? "Aujourd'hui — " + frDate(j.date) : frDate(j.date)}</p>
+                      <ul className="ml-1 space-y-1">
+                        {j.evs.map((e, k) => (
+                          <li key={k}>
+                            <button onClick={() => e.page && allerA(e.page)} className="flex items-center gap-2 text-sm text-slate-700 w-full text-left hover:text-emerald-700">
+                              <span>{e.icon}</span><span className="min-w-0">{e.label}</span>{e.page && <span className="text-slate-300 text-xs">›</span>}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>}
+            <button onClick={() => allerA("calendrier")} className="mt-3 text-sm font-medium text-emerald-600 hover:underline">Ouvrir le calendrier complet →</button>
           </Section>
 
           {/* Œufs (suivi quotidien important) */}
@@ -1670,32 +1745,35 @@
               <StatCard label={"🐦 Cailles (" + chept.caillesF + " pondeuses)"} value={ponteCaille7 ? Math.round(ponteCaille7.taux * 100) + " %/j" : "—"} color={baissePonte.some(b => /cailles/.test(b)) ? "orange" : "emerald"} sub={ponteCaille7 ? ponteCaille7.oeufs + " œufs / 7 j" : ""} />
             </div>
 
-            <p className="text-xs text-slate-500 mb-2 font-medium">Par espèce</p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <OeufsBloc titre="Consommés (total)" poule={so.consoPoule} caille={so.consoCaille} couleur="orange" />
-              <OeufsBloc titre="Stock actif" poule={so.stockPoule} caille={so.stockCaille} couleur="emerald" />
-              <OeufsBloc titre="En couveuse" poule={so.couvPoule} caille={so.couvCaille} couleur="indigo" />
-            </div>
+            {/* Détails (stocks, consommation, lots) — repliés pour garder le tableau de bord lisible */}
+            <Section titre="📂 Détail des œufs (stocks, consommation, lots)">
+              <p className="text-xs text-slate-500 mb-2 font-medium">Par espèce</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <OeufsBloc titre="Consommés (total)" poule={so.consoPoule} caille={so.consoCaille} couleur="orange" />
+                <OeufsBloc titre="Stock actif" poule={so.stockPoule} caille={so.stockCaille} couleur="emerald" />
+                <OeufsBloc titre="En couveuse" poule={so.couvPoule} caille={so.couvCaille} couleur="indigo" />
+              </div>
 
-            <div className="grid grid-cols-3 gap-4 mt-4">
-              <StatCard label="Consommés (mois)" value={so.consoMois} color="orange" />
-              <StatCard label={"Consommés " + ANNEE_COURANTE} value={so.consoAn} color="orange" />
-              <StatCard label="Économie estimée (an)" value={eur(so.economieAn)} color="purple" />
-            </div>
+              <div className="grid grid-cols-3 gap-4 mt-4">
+                <StatCard label="Consommés (mois)" value={so.consoMois} color="orange" />
+                <StatCard label={"Consommés " + ANNEE_COURANTE} value={so.consoAn} color="orange" />
+                <StatCard label="Économie estimée (an)" value={eur(so.economieAn)} color="purple" />
+              </div>
 
-            {/* Lots en cours de stockage */}
-            <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Lots en cours de stockage</p>
-            <DashListe couleur="emerald" titre="En stock"
-              items={batchesD.filter((b) => b.statut === "en stock").map((b) => b.id + " · " + b.espece + " · " + b.total + " œufs · " + (b.premiere ? frDate(b.premiere) : "—") + " → " + (b.derniere ? frDate(b.derniere) : "—"))}
-              vide="Aucun lot en stock" />
+              {/* Lots en cours de stockage */}
+              <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Lots en cours de stockage</p>
+              <DashListe couleur="emerald" titre="En stock"
+                items={batchesD.filter((b) => b.statut === "en stock").map((b) => b.id + " · " + b.espece + " · " + b.total + " œufs · " + (b.premiere ? frDate(b.premiere) : "—") + " → " + (b.derniere ? frDate(b.derniere) : "—"))}
+                vide="Aucun lot en stock" />
 
-            {/* Lots en couvaison */}
-            <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Lots en couvaison</p>
-            <DashListe couleur="indigo" titre="En couveuse"
-              items={lots.filter((l) => l.statut === "en couveuse").map((l) => l.id + " · " + l.espece + " · " + l.nbOeufs + " œufs · mis le " + frDate(l.dateDebut))}
-              vide="Aucun lot en couveuse" />
+              {/* Lots en couvaison */}
+              <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Lots en couvaison</p>
+              <DashListe couleur="indigo" titre="En couveuse"
+                items={lots.filter((l) => l.statut === "en couveuse").map((l) => l.id + " · " + l.espece + " · " + l.nbOeufs + " œufs · mis le " + frDate(l.dateDebut))}
+                vide="Aucun lot en couveuse" />
 
-            <p className="text-xs text-slate-400 mt-3">Stock actif = œufs en lot « en stock » ; en couveuse = œufs des lots d'incubation en cours ; consommés = collectes « consommation ». Poules et cailles comptées séparément.</p>
+              <p className="text-xs text-slate-400 mt-3">Stock actif = œufs en lot « en stock » ; en couveuse = œufs des lots d'incubation en cours ; consommés = collectes « consommation ». Poules et cailles comptées séparément.</p>
+            </Section>
           </Section>
 
           {/* ===== REPLIÉS (⚠️ si anomalie) ===== */}
@@ -2403,13 +2481,18 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["recoltes", "🥚 Récoltes"], ["couveuse", "🐣 Lots en couveuse"], ["suivi", "🌡️ Suivi couvaison"]].map(([id, lbl]) => (
+            {[["recoltes", "🥚 Récoltes"], ["couveuse", "🐣 Lots en couveuse"], ["suivi", "🌡️ Suivi couvaison"], ["stats", "📊 Stats couvaison"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setOngletL(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (ongletL === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
           </div>
 
           {ongletL === "suivi" && <Suivi embedded />}
+
+          {ongletL === "stats" && <>
+          <h2 className="text-lg font-semibold mb-3">📊 Stats de couvaison</h2>
+          <StatsDetaillees couvaisonSeule />
+          </>}
 
           {ongletL === "couveuse" && <>
           {/* Partie A — lots */}
@@ -3766,8 +3849,34 @@
         : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">ok</span>;
     }
 
+    // Fusionne un article mal écrit dans le bon : tous ses mouvements sont renommés (rien n'est supprimé).
+    function FusionArticlesForm({ articles, onClose, onFusion }) {
+      const [source, setSource] = useState("");
+      const [dest, setDest] = useState("");
+      const ok = source && dest && normLibelle(source) !== normLibelle(dest);
+      const submit = (e) => { e.preventDefault(); if (!ok) return; onFusion(source, dest); onClose(); };
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <Field label="Article mal écrit (disparaîtra du stock)">
+            <select className={inputClass} value={source} onChange={(e) => setSource(e.target.value)} required>
+              <option value="">— choisir —</option>
+              {articles.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </Field>
+          <Field label="Article correct (récupère les mouvements)">
+            <select className={inputClass} value={dest} onChange={(e) => setDest(e.target.value)} required>
+              <option value="">— choisir —</option>
+              {articles.filter((a) => normLibelle(a) !== normLibelle(source)).map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </Field>
+          <p className="text-xs text-slate-400">Toutes les entrées/sorties de l'article mal écrit sont renommées vers l'article correct : le stock se recalcule tout seul. Rien n'est supprimé.</p>
+          <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
     function ConsommableForm({ onClose, mouvementInit, initial, onSave }) {
-      const { ajouterConsommable, config, setConfig } = useData();
+      const { ajouterConsommable, consommables, config, setConfig } = useData();
       const CONSO_CATS_C = config.catsConso, UNITES_C = config.unites;
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [article, setArticle] = useState(initial ? initial.article : "");
@@ -3838,6 +3947,13 @@
           <Field label="Article">
             <input className={inputClass} list="conso-articles-list" value={article} onChange={(e) => setArticle(e.target.value)} placeholder="ex. Granulé poule pondeuse" required />
             <datalist id="conso-articles-list">{articlesConnus.map((a) => <option key={a} value={a} />)}</datalist>
+            {(() => { const proche = articleProche(config, consommables, article); return proche ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs bg-orange-50 border border-orange-200 text-orange-700 rounded-lg px-2.5 py-1.5">
+                <span>⚠️ Très proche de « <span className="font-medium">{proche}</span> » — faute de frappe ?</span>
+                <button type="button" onClick={() => setArticle(proche)}
+                  className="px-2 py-0.5 rounded-lg border border-orange-300 bg-white font-medium hover:bg-orange-100 whitespace-nowrap">✓ Utiliser « {proche} »</button>
+              </div>
+            ) : null; })()}
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Catégorie">
@@ -3936,12 +4052,29 @@
     function InventaireConsommables() {
       const { consommables, config, setConfig, majLigne, supprimerLigne, patchLigne } = useData();
       const setUrgent = (article) => setConfig((c) => ({ ...c, articlesUrgents: toggleArticleUrgent(c, article) }));
+      const setMasque = (article) => setConfig((c) => ({ ...c, articlesMasques: toggleArticleMasque(c, article) }));
       const [vue, setVue] = useState("stock");   // onglet interne : stock | mouvements | depenses
       const [open, setOpen] = useState(null);   // null | "entrée" | "sortie"
       const [sortie, setSortie] = useState(null); // article sélectionné pour sortie rapide
       const [edit, setEdit] = useState(null);   // { index, rec }
       const st = statsConsommables(consommables);
-      const aRacheter = st.parArticle.filter((a) => a.bas);
+      // Articles masqués (intitulé mal écrit, doublon…) : cachés du stock, réaffichables plus bas
+      const visibles = st.parArticle.filter((a) => !articleEstMasque(config, a.article));
+      const masques = st.parArticle.filter((a) => articleEstMasque(config, a.article));
+      const aRacheter = visibles.filter((a) => a.bas);
+      const valeurStockVisible = visibles.reduce((s, a) => s + Math.max(0, a.stock) * a.prixRef, 0);
+      // Fusion d'articles : renomme tous les mouvements de « source » (mal écrit) vers « dest » (correct)
+      const [fusion, setFusion] = useState(false);
+      function fusionnerArticles(source, dest) {
+        const ns = normLibelle(source);
+        consommables.forEach((c, i) => { if (normLibelle(c.article) === ns) patchLigne("consommables", i, { article: dest }); });
+        setConfig((c) => {
+          const mem = { ...(c.memoireArticles || {}) }; delete mem[ns];
+          return { ...c, memoireArticles: mem,
+            articlesUrgents: (c.articlesUrgents || []).filter((x) => normLibelle(x) !== ns),
+            articlesMasques: (c.articlesMasques || []).filter((x) => normLibelle(x) !== ns) };
+        });
+      }
       const moisTries = Object.keys(st.depMois).sort().reverse();
       const chartData = Object.keys(st.depMois).sort().map((m) => ({ label: moisFr(m), y: st.depMois[m] }));
       const valReelle = (c) => (Number(c.quantite) || 0) * (Number(c.prixUnitaire) || 0);
@@ -3963,10 +4096,10 @@
 
           {/* Résumé chiffré */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <StatCard label="Valeur du stock" value={eur(st.valeurStock)} />
+            <StatCard label="Valeur du stock" value={eur(valeurStockVisible)} sub={masques.length ? "hors " + masques.length + " article(s) masqué(s)" : undefined} />
             <StatCard label={"Dépenses " + ANNEE_COURANTE} value={eur(st.depAnnee[String(ANNEE_COURANTE)] || 0)} color="indigo" />
             <StatCard label="Dépenses ce mois" value={eur(st.depMois[MOIS_COURANT] || 0)} color="purple" />
-            <StatCard label="À racheter" value={st.nbARacheter} color="orange" sub="stock sous le seuil" />
+            <StatCard label="À racheter" value={aRacheter.length} color="orange" sub="stock sous le seuil" />
           </div>
 
           {/* Onglets internes */}
@@ -3997,11 +4130,17 @@
           </div>
 
           {/* Stock par article + action rapide "Sortir" */}
-          <h2 className="text-lg font-semibold mb-3">Stock par article</h2>
+          <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            <h2 className="text-lg font-semibold">Stock par article</h2>
+            {st.parArticle.length >= 2 && (
+              <button onClick={() => setFusion(true)} title="Renommer tous les mouvements d'un article mal écrit vers le bon article"
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">🔀 Fusionner deux articles</button>
+            )}
+          </div>
           <Table
-            resume={(r, i) => { const a = st.parArticle[i]; return <span className={a.bas ? "font-medium text-red-600" : "font-medium"}>{a.article}</span>; }}
+            resume={(r, i) => { const a = visibles[i]; return <span className={a.bas ? "font-medium text-red-600" : "font-medium"}>{a.article}</span>; }}
             columns={["Article", "Catégorie", "Stock actuel", "Seuil", "Statut", "Urgent", "Action"]}
-            rows={st.parArticle.map((a) => {
+            rows={visibles.map((a) => {
               const u = articleEstUrgent(config, a.article);
               return [
                 <span className="font-medium">{a.article}</span>,
@@ -4013,10 +4152,36 @@
                   className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (u ? "bg-amber-100 text-amber-700 border-amber-300" : "bg-white text-slate-400 border-slate-300 hover:bg-slate-50")}>
                   {u ? "⭐ urgent" : "☆"}
                 </button>,
-                <button onClick={() => setSortie(a)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 whitespace-nowrap">↘ Sortir</button>,
+                <span className="inline-flex gap-1.5 whitespace-nowrap">
+                  <button onClick={() => setSortie(a)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 whitespace-nowrap">↘ Sortir</button>
+                  <button onClick={() => setMasque(a.article)} title="Masquer cette ligne du stock (réaffichable en bas de page)"
+                    className="px-2 py-1 rounded-lg text-xs font-medium border border-slate-300 text-slate-400 hover:bg-slate-50 whitespace-nowrap">🙈</button>
+                </span>,
               ];
             })}
           />
+          <p className="text-xs text-slate-400 mt-2">🙈 masque une ligne (ex. intitulé mal écrit) sans rien supprimer. Pour corriger vraiment un article mal nommé, modifie ou supprime ses lignes dans l'onglet <span className="font-medium">Mouvements</span>.</p>
+
+          {/* Articles masqués — repliés, réaffichables */}
+          {masques.length > 0 && (
+            <details className="bg-white rounded-xl shadow-sm border border-slate-100 mt-4 group">
+              <summary className="cursor-pointer select-none px-5 py-3 text-sm font-semibold text-slate-600 flex items-center justify-between gap-2 list-none">
+                <span>🙈 Articles masqués <span className="text-slate-400 font-normal">({masques.length})</span></span>
+                <span className="text-slate-400 text-xs transition-transform group-open:rotate-180 shrink-0">▼</span>
+              </summary>
+              <div className="px-5 pb-4">
+                <ul className="space-y-1.5">
+                  {masques.map((a, i) => (
+                    <li key={i} className="flex items-center justify-between gap-2 text-sm text-slate-500">
+                      <span className="min-w-0 truncate">{a.article} <span className="text-slate-400">· {a.stock} {a.unite}{a.categorie ? " · " + a.categorie : ""}</span></span>
+                      <button onClick={() => setMasque(a.article)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 text-slate-500 hover:bg-slate-50 whitespace-nowrap shrink-0">👁 Réafficher</button>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-slate-400 mt-2">Ces articles ne comptent plus dans « À racheter » ni dans les alertes du tableau de bord. Leurs mouvements restent visibles dans l'onglet Mouvements.</p>
+              </div>
+            </details>
+          )}
 
           </>}
 
@@ -4060,6 +4225,12 @@
           />
           <p className="text-xs text-slate-400 mt-2">Seules les <span className="font-medium">entrées</span> comptent comme dépenses. Le stock = entrées − sorties par article. Astuce : bouton <span className="font-medium">↘ Sortir</span> pour une sortie rapide.</p>
           </>}
+
+          {fusion && (
+            <Modal title="🔀 Fusionner deux articles" onClose={() => setFusion(false)}>
+              <FusionArticlesForm articles={st.parArticle.map((a) => a.article)} onClose={() => setFusion(false)} onFusion={fusionnerArticles} />
+            </Modal>
+          )}
 
           {open && (
             <Modal title={open === "sortie" ? "Sortie de stock" : "Entrée de stock"} onClose={() => setOpen(null)}>
@@ -4470,6 +4641,18 @@
       if (i >= 0) liste.splice(i, 1); else liste.push(article.trim());
       return liste;
     }
+    // Article masqué du stock (intitulé mal écrit, doublon…) ? Comparaison sur nom normalisé.
+    function articleEstMasque(config, article) {
+      return ((config && config.articlesMasques) || []).map(normLibelle).includes(normLibelle(article));
+    }
+    // Bascule l'état « masqué » d'un article. Renvoie le nouveau tableau.
+    function toggleArticleMasque(config, article) {
+      const liste = ((config && config.articlesMasques) || []).slice();
+      const n = normLibelle(article);
+      const i = liste.findIndex((x) => normLibelle(x) === n);
+      if (i >= 0) liste.splice(i, 1); else liste.push(String(article).trim());
+      return liste;
+    }
     // Normalise un libellé (tolère casse / accents / espaces superflus) pour les comparaisons
     function normLibelle(s) {
       return (s == null ? "" : String(s)).trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ");
@@ -4487,10 +4670,14 @@
       return out;
     }
     function ligneFaitAction(p, key) { return actionsDeLigne(p).has(key); }
-    // Zone « de jeunes » (poussins/cailleteaux) → gérée dans le module Poussins, exclue de Gestion poulailler
+    // Zone « de jeunes » (poussins/cailleteaux) → gérée dans le module Poussins, exclue de Gestion poulailler.
+    // Détection par MOT-CLÉ (« poussin », « caillet ») en plus de la liste config : couvre toutes les
+    // variantes de nom (« espace poussin », « poussins », « cailleteaux », « cailletaux »…).
     function estZoneJeune(zone, config) {
+      const nz = normLibelle(zone);
+      if (nz.includes("poussin") || nz.includes("caillet")) return true;   // « caillet » ne matche PAS « espace cailles »
       const set = (config && config.zonesJeunes ? config.zonesJeunes : ["espace poussins"]).map(normLibelle);
-      return set.includes(normLibelle(zone));
+      return set.includes(nz);
     }
     // Zones adultes = zones hors zones de jeunes
     function zonesAdultes(config) {
@@ -4644,16 +4831,6 @@
         }
         propagerBebes(zone, key, valeur);   // même action → journée des bébés de l'enclos
       }
-      // Soin du jour des BÉBÉS par lot — écrit dans p.jours[jour] (même stock que l'onglet Bébé S1-S8)
-      const jeunesActifs = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
-      const jourBebe = (p) => { const a = ageJeune(p.date); return (a.jours == null || a.futur) ? null : (a.jours + 1); };
-      const bebeFait = (p, key) => { const n = jourBebe(p); return n == null ? false : !!(((p.jours || {})[n] || {})[key]); };
-      const toggleBebe = (i, p, key) => {
-        const n = jourBebe(p); if (n == null) return;
-        const d = (p.jours || {})[n] || {};
-        patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...d, [key]: !d[key] } } });
-      };
-      const ouvrirBebe = (i) => { setBebeLot(i); setVue("bebe"); };   // accès instantané au lot dans l'onglet Bébé
       const actionsLabel = (p) => { const d = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return d.length ? d.map(a => a.label).join(", ") : (p.action || "Rappel"); };
       const th = (p) => [p.temperature !== "" && p.temperature != null ? p.temperature + "°" : null, p.humidite !== "" && p.humidite != null ? p.humidite + "%" : null].filter(Boolean).join(" · ") || "—";
 
@@ -4700,39 +4877,8 @@
               );
             })}
           </div>
-          <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »).</p>
-
-          {/* Soin du jour des BÉBÉS — un carré par lot. Les coches alimentent directement l'onglet Bébé (S1-S8) du lot. */}
-          {jeunesActifs.length > 0 && <>
-            <h2 className="text-lg font-semibold mb-3">🐥 Bébés — soin du jour (par lot)</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-3">
-              {jeunesActifs.map(({ p, i }) => {
-                const n = jourBebe(p);
-                return (
-                  <div key={i} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <p className="text-sm font-medium text-slate-700 min-w-0 truncate">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span></p>
-                      <button onClick={() => ouvrirBebe(i)} className="text-xs text-emerald-600 hover:underline whitespace-nowrap shrink-0">→ Bébé</button>
-                    </div>
-                    {n == null
-                      ? <p className="text-xs text-slate-400">Hors fenêtre de suivi.</p>
-                      : <div className="flex flex-wrap gap-2">
-                          {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"]].map(([k, lbl]) => {
-                            const on = bebeFait(p, k);
-                            return (
-                              <button key={k} onClick={() => toggleBebe(i, p, k)}
-                                className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
-                                {on ? "✓ " : ""}{lbl}
-                              </button>
-                            );
-                          })}
-                        </div>}
-                  </div>
-                );
-              })}
-            </div>
-            <p className="text-xs text-slate-400 mb-6">Une coche ici remplit directement la journée du lot dans l'onglet <span className="font-medium">Bébé</span> (S1-S8). « → Bébé » ouvre le suivi détaillé du lot (température, mortalité…).</p>
-          </>}
+          <p className="text-xs text-slate-400 mb-2">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »).</p>
+          <p className="text-xs text-slate-400 mb-6">🐥 Les soins des bébés se gèrent dans l'onglet <span className="font-medium">Bébé</span>. Cocher eau / nourriture / nettoyage d'un enclos ci-dessus coche aussi automatiquement la journée des bébés qui y vivent.</p>
 
           </>}
 
@@ -5288,20 +5434,26 @@
     }
 
     /* ---------- Statistiques ---------- */
-    // Contenu « Statistiques détaillées » (réutilisé dans le tableau de bord)
-    function StatsDetaillees() {
+    // Contenu « Statistiques détaillées » (tableau de bord + onglet Stats de « Récolte des œufs »).
+    // couvaisonSeule : n'affiche que la partie couvaison (sans les dépenses par année).
+    function StatsDetaillees({ couvaisonSeule }) {
       const { lots, mirages, eclosions, consommables, materiel } = useData();
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
-      const parLot = lots.map((l) => ({ l, r: recapSuivi(l, mirages, eclosions) }));
+      const parLot = lots.map((l) => ({ l, r: recapSuivi(l, mirages, eclosions) }))
+        .sort((a, b) => (b.l.dateDebut || "").localeCompare(a.l.dateDebut || ""));   // le plus récent en haut
       const annees = Array.from(new Set(Object.keys(sc.depAnnee).concat(Object.keys(sm.depAnnee)))).sort().reverse();
-      // Bilan de couvée agrégé par espèce (fertilité / éclosion / réussite globale)
+      // Bilan de couvée agrégé par espèce (fertilité / éclosion / réussite globale).
+      // Chaque taux n'utilise que les lots qui ONT la donnée (mirage fait / éclosion faite),
+      // sinon un lot en cours compterait comme « 0 % d'éclosion ».
       const bilanEspece = {};
       parLot.forEach(({ l, r }) => {
         if (!r) return;
         const e = l.espece || "?";
-        const b = bilanEspece[e] || (bilanEspece[e] = { oeufs: 0, fecondes: 0, nes: 0 });
-        b.oeufs += r.nbOeufs || 0; b.fecondes += r.fecondes || 0; b.nes += r.nes || 0;
+        const b = bilanEspece[e] || (bilanEspece[e] = { oeufs: 0, fecondes: 0, nes: 0, oeufsMir: 0, oeufsEcl: 0, fecondesEcl: 0 });
+        b.oeufs += r.nbOeufs || 0;
+        if (r.hasMirage) { b.fecondes += r.fecondes || 0; b.oeufsMir += r.nbOeufs || 0; }
+        if (r.hasEclosion) { b.nes += r.nes || 0; b.oeufsEcl += r.nbOeufs || 0; b.fecondesEcl += r.fecondes || 0; }
       });
       const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) + " %" : "—");
       const especesBilan = Object.keys(bilanEspece);
@@ -5316,27 +5468,30 @@
                   const b = bilanEspece[e];
                   return [
                     <span className="font-medium capitalize">{e}</span>,
-                    b.oeufs || "—", b.fecondes || "—", b.nes || "—",
-                    pct(b.fecondes, b.oeufs), pct(b.nes, b.fecondes), pct(b.nes, b.oeufs),
+                    b.oeufs || "—", b.oeufsMir ? b.fecondes : "—", b.oeufsEcl ? b.nes : "—",
+                    pct(b.fecondes, b.oeufsMir), pct(b.nes, b.fecondesEcl), pct(b.nes, b.oeufsEcl),
                   ];
                 })}
               />}
           <p className="text-xs text-slate-400 mt-1 mb-6">Fertilité = fécondés / incubés · Éclosion = nés / fécondés · Réussite globale = nés / incubés.</p>
 
-          <h3 className="text-sm font-semibold text-slate-600 mb-2">Taux par lot</h3>
+          <h3 className="text-sm font-semibold text-slate-600 mb-2">Taux par lot <span className="text-slate-400 font-normal">(du plus récent au plus ancien)</span></h3>
           <Table
-            columns={["Lot", "Espèce", "Œufs", "Fécondés", "Nés", "Fertilité", "Éclosion", "Réussite"]}
+            columns={["Lot", "Espèce", "Mise en couveuse", "Œufs", "Fécondés", "Nés", "Fertilité", "Éclosion", "Réussite", "Statut"]}
             rows={parLot.map(({ l, r }) => [
               <span className="font-medium">{l.id}</span>,
               l.espece,
+              frDate(l.dateDebut),
               r.nbOeufs || "—",
               r.fecondes != null ? r.fecondes : "—",
               r.nes != null ? r.nes : "—",
-              r.tauxFec != null ? r.tauxFec + " %" : "—",
-              r.tauxEcl != null ? r.tauxEcl + " %" : "—",
-              r.tauxGlobal != null ? r.tauxGlobal + " %" : "—",
+              r.tauxFec != null ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">{r.tauxFec} %</span> : "—",
+              r.tauxEcl != null ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">{r.tauxEcl} %</span> : "—",
+              r.tauxGlobal != null ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">{r.tauxGlobal} %</span> : "—",
+              <StatusBadge statut={l.statut} />,
             ])}
           />
+          {!couvaisonSeule && <>
           <h3 className="text-sm font-semibold text-slate-600 mb-2 mt-6">Dépenses par année</h3>
           <Table
             columns={["Année", "Consommables", "Matériel", "Total"]}
@@ -5345,6 +5500,7 @@
               return [an, eur(c), eur(m), <span className="font-medium">{eur(c + m)}</span>];
             })}
           />
+          </>}
         </div>
       );
     }
@@ -5359,7 +5515,11 @@
         const st = statutLotStock[e.lotStock];
         return st === "mis en couveuse" ? "mis en couveuse" : (st === "archivé" ? "archivé" : "en stock");
       };
-      const lotsTermines = lots.map((l, i) => ({ l, i })).filter(x => x.l.statut === "terminé");
+      // Lots terminés + résultats de couvée (fécondés / nés / taux) + date d'éclosion réelle
+      const lotsTermines = lots.map((l, i) => ({ l, i }))
+        .filter(x => x.l.statut === "terminé")
+        .map(x => ({ ...x, rec: recapSuivi(x.l, mirages, eclosions), dateEcl: eclosions.filter(e => e.lot === x.l.id && e.date).map(e => e.date).sort().pop() || null }))
+        .sort((a, b) => (b.l.dateDebut || "").localeCompare(a.l.dateDebut || ""));
       const materielRemplace = materiel.map((m, i) => ({ m, i })).filter(x => x.m.etat === "remplacé");
 
       // --- Résumé automatique de la période (sans IA : calculé depuis les données) ---
@@ -5433,16 +5593,21 @@
           </>}
 
           {vue === "lots" && <>
-          <h2 className="text-lg font-semibold mb-3">Lots terminés</h2>
+          <h2 className="text-lg font-semibold mb-3">Lots terminés <span className="text-slate-400 font-normal text-sm">— résultats de couvée</span></h2>
           <Table
-            resume={(r, k) => { const l = lotsTermines[k].l; return <><span className="font-medium">{l.id}</span> — {l.espece}<span className="text-slate-400"> · {l.nbOeufs} œufs</span></>; }}
-            columns={["Lot", "Espèce", "Couveuse", "Mise en couveuse", "Œufs", ""]}
-            rows={lotsTermines.map(({ l, i }) => [
-              <span className="font-medium">{l.id}</span>, l.espece, "Couveuse " + l.couveuse, frDate(l.dateDebut), l.nbOeufs,
+            resume={(r, k) => { const { l, rec } = lotsTermines[k]; return <><span className="font-medium">{l.id}</span> — {l.espece}<span className="text-slate-400"> · {l.nbOeufs} œufs{rec.nes != null ? " · " + rec.nes + " né(s)" : ""}</span></>; }}
+            columns={["Lot", "Espèce", "Couveuse", "Mise en couveuse", "Éclosion", "Œufs", "Fécondés", "Nés", "Réussite", ""]}
+            rows={lotsTermines.map(({ l, i, rec, dateEcl }) => [
+              <span className="font-medium">{l.id}</span>, l.espece, "Couveuse " + l.couveuse, frDate(l.dateDebut),
+              dateEcl ? frDate(dateEcl) : "—",
+              l.nbOeufs,
+              rec.fecondes != null ? rec.fecondes + (rec.tauxFec != null ? " (" + rec.tauxFec + " %)" : "") : "—",
+              rec.nes != null ? <span className="font-medium text-emerald-600">{rec.nes}{rec.tauxEcl != null ? " (" + rec.tauxEcl + " %)" : ""}</span> : "—",
+              rec.tauxGlobal != null ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">{rec.tauxGlobal} %</span> : "—",
               <RowActions onDelete={() => supprimerLigne("lots", i)} />,
             ])}
           />
-          <p className="text-xs text-slate-400 mt-3">Un lot passe ici quand son statut devient « terminé ».</p>
+          <p className="text-xs text-slate-400 mt-3">Un lot passe ici quand son statut devient « terminé ». Fécondés (fertilité) = dernier mirage · Nés (taux d'éclosion) = nés ÷ fécondés · Réussite = nés ÷ œufs incubés.</p>
           </>}
 
           {vue === "materiel" && <>
@@ -5573,6 +5738,33 @@
           {cat === "general" && <>
           {/* Connexion cloud */}
           <CloudReglages />
+
+          {/* Notifications */}
+          <h2 className="text-lg font-semibold mb-3">🔔 Notifications</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8">
+            <label className="flex items-start gap-2 text-sm text-slate-700">
+              <input type="checkbox" className="w-4 h-4 mt-0.5" checked={!!config.notifications} onChange={(e) => {
+                const on = e.target.checked;
+                if (!on) { setConfig((c) => ({ ...c, notifications: false })); return; }
+                if (typeof Notification === "undefined") { alert("Ce navigateur ne permet pas les notifications."); return; }
+                if (Notification.permission === "granted") setConfig((c) => ({ ...c, notifications: true }));
+                else Notification.requestPermission().then((p) => {
+                  if (p === "granted") setConfig((c) => ({ ...c, notifications: true }));
+                  else alert("Notifications refusées par le navigateur. Autorise-les dans les réglages du navigateur / téléphone puis réessaie.");
+                });
+              }} />
+              <span><span className="font-medium">Notification quotidienne</span> — à la première ouverture de l'app chaque jour : retards, soins et événements du jour (éclosion, début de récolte, mirage…).</span>
+            </label>
+            <div className="flex items-center gap-2 mt-3 flex-wrap">
+              <button type="button" onClick={() => {
+                if (typeof Notification === "undefined") { alert("Ce navigateur ne permet pas les notifications."); return; }
+                if (Notification.permission !== "granted") { alert("Active d'abord la case ci-dessus (autorisation)."); return; }
+                envoyerNotification("🐔 Cheptel — test", "Les notifications fonctionnent 👍");
+              }} className="px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-300 text-slate-600 hover:bg-slate-50">Envoyer un test</button>
+              <span className="text-xs text-slate-400">Aucun serveur : la notification part quand tu ouvres l'app.</span>
+            </div>
+            <p className="text-xs text-slate-400 mt-2">📱 iPhone : installe d'abord l'app sur l'écran d'accueil (Partager → « Sur l'écran d'accueil ») ; selon la version d'iOS, ces notifications locales peuvent être limitées. Android : fonctionne avec l'app installée ou dans Chrome.</p>
+          </div>
           </>}
 
           {cat === "listes" && <>
@@ -5908,19 +6100,48 @@
     // Contexte de navigation : permet à une page (ex. Calendrier) de demander l'ouverture d'une autre page.
     const NavContext = createContext(() => {});
 
-    // Calendrier mensuel : couvaisons (mise en couveuse + éclosion prévue + mirages),
-    // début de récolte des œufs pour la couvée suivante, et rappels (nettoyage / traitements / manuels).
-    // Chaque événement a une `page` cible → cliquable pour s'y rendre.
-    function Calendrier() {
-      const allerA = useContext(NavContext);
+    // ===== Notifications locales (PWA) =====
+    // Envoie une notification système : via le service worker si présent (Android/PWA), sinon Notification directe.
+    function envoyerNotification(titre, corps) {
+      if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
+      const opts = { body: corps, icon: "icon-192.png", badge: "icon-192.png", tag: "cheptel-jour" };
+      const direct = () => { try { new Notification(titre, opts); return true; } catch (e) { return false; } };
+      try {
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+          navigator.serviceWorker.getRegistration()
+            .then((reg) => { if (reg && reg.showNotification) reg.showNotification(titre, opts); else direct(); })
+            .catch(direct);
+          return true;
+        }
+        return direct();
+      } catch (e) { return direct(); }
+    }
+    // À la première ouverture de la journée : notifie retards + soins + événements du jour (1 seule notification).
+    function NotificationsDaemon() {
       const { lots, poulaillers, poussins, reproducteurs, abattoir, config } = useData();
-      const now = new Date();
-      const [vue, setVue] = useState({ y: now.getFullYear(), m: now.getMonth() });
-      const [jourSel, setJourSel] = useState(AUJOURDHUI_ISO);
-      const pad = (n) => String(n).padStart(2, "0");
-      const isoDate = (y, m, d) => y + "-" + pad(m + 1) + "-" + pad(d);
+      useEffect(() => {
+        if (!config.notifications) return;
+        if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+        if (localStorage.getItem("cheptel_notif_jour") === AUJOURDHUI_ISO) return;   // déjà notifié aujourd'hui
+        const lignes = [];
+        nettoyagesAPrevoir(poulaillers, config).forEach((n) => { if (n.code === "retard") lignes.push("🔴 Nettoyer " + n.zone + " (retard)"); });
+        rappelsIntelligents(poulaillers, config).forEach((r) => {
+          if (r.action === "nettoyage") return;   // géré par la ligne ci-dessus
+          if (r.code === "retard") lignes.push("🔴 " + r.label + " — " + r.zone);
+          else if (r.code === "aujourdhui") lignes.push("🟠 " + r.label + " — " + r.zone);
+        });
+        (evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config)[AUJOURDHUI_ISO] || [])
+          .forEach((e) => lignes.push(e.icon + " " + e.label));
+        if (!lignes.length) return;
+        if (envoyerNotification("🐔 Cheptel — aujourd'hui", lignes.slice(0, 8).join("\n") + (lignes.length > 8 ? "\n…" : "")))
+          localStorage.setItem("cheptel_notif_jour", AUJOURDHUI_ISO);
+      }, [config.notifications]);
+      return null;
+    }
 
-      // Collecte de tous les événements datés → { "YYYY-MM-DD": [ {icon,label,color} ] }
+    // Construit tous les événements datés de l'élevage → { "YYYY-MM-DD": [ {icon,label,color,page} ] }.
+    // Partagé entre la page Calendrier et l'aperçu « Cette semaine » du tableau de bord.
+    function evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config) {
       const events = {};
       const add = (date, ev) => { if (!date) return; (events[date] = events[date] || []).push(ev); };
       // Couvaisons : couleur par ESPÈCE (poule = ambre, caille = indigo) → repère la couveuse d'un coup d'œil.
@@ -5960,6 +6181,22 @@
         if (!a.abattagePrevu || a.abattageReel) return;   // déjà abattu → on n'affiche plus
         add(a.abattagePrevu, { icon: "🔪", label: "Abattage prévu — " + (a.lot || a.espece || "lot") + (a.nombre ? " (" + a.nombre + ")" : ""), color: "slate", page: "abattoir" });
       });
+      return events;
+    }
+
+    // Calendrier mensuel : couvaisons (mise en couveuse + éclosion prévue + mirages),
+    // début de récolte des œufs pour la couvée suivante, et rappels (nettoyage / traitements / manuels).
+    // Chaque événement a une `page` cible → cliquable pour s'y rendre.
+    function Calendrier() {
+      const allerA = useContext(NavContext);
+      const { lots, poulaillers, poussins, reproducteurs, abattoir, config } = useData();
+      const now = new Date();
+      const [vue, setVue] = useState({ y: now.getFullYear(), m: now.getMonth() });
+      const [jourSel, setJourSel] = useState(AUJOURDHUI_ISO);
+      const pad = (n) => String(n).padStart(2, "0");
+      const isoDate = (y, m, d) => y + "-" + pad(m + 1) + "-" + pad(d);
+
+      const events = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config);
 
       const dot = { indigo: "bg-indigo-500", emerald: "bg-emerald-500", amber: "bg-amber-500", orange: "bg-orange-500", red: "bg-red-500", purple: "bg-purple-500", slate: "bg-slate-500" };
       const chip = { indigo: "bg-indigo-100 text-indigo-700", emerald: "bg-emerald-100 text-emerald-700", amber: "bg-amber-100 text-amber-700", orange: "bg-orange-100 text-orange-700", red: "bg-red-100 text-red-700", purple: "bg-purple-100 text-purple-700", slate: "bg-slate-200 text-slate-700" };
@@ -6140,6 +6377,7 @@
       const allerA = (id) => { setPage(id); setMenuOuvert(false); };
       return (
         <div className="sm:flex min-h-screen">
+          <NotificationsDaemon />
           {/* Barre du haut (mobile uniquement) : bouton menu ☰.
               padding-top = safe-area pour ne pas passer sous la barre d'état / le notch du téléphone. */}
           <div className="sm:hidden sticky top-0 z-40 flex items-center gap-2 bg-slate-900 text-white px-3 pb-3"
