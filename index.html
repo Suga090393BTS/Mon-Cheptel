@@ -518,6 +518,9 @@
 
     // --- Inventaires : repères de temps + helpers de calcul ---
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
+    // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
+    // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
+    const APP_VERSION = "v66 — 03/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -6418,6 +6421,7 @@
             {/* Sauvegarde (compacte) — les onglets gardent la priorité */}
             <div className="mt-auto pt-3 border-t border-slate-800">
               <SaveIndicator />
+              <p className="text-[10px] text-slate-500 text-center mt-2" title="Version de l'app — doit changer après chaque publication GitHub">{APP_VERSION}</p>
             </div>
           </aside>
           <main className="flex-1 p-4 sm:p-8 max-w-6xl w-full min-w-0">
