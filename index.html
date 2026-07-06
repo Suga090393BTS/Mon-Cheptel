@@ -297,6 +297,12 @@
       notifications: false,                                                // notification quotidienne (retards + événements du jour) à l'ouverture
       // Règle de dosage des traitements : ml de produit par litres d'eau (Fortiferm/Cocciferm/Vermiferm = 3 ml / 5 L)
       doseRule: { ml: 3, parLitres: 5 },
+      // Identité de l'élevage — en-tête du registre d'élevage imprimable (Réglages → Général)
+      elevage: { nom: "", detenteur: "", adresse: "" },
+      // Âge d'abattage conseillé (en semaines) par espèce → date suggérée dans Animaux consommation
+      agesAbattage: { poule: 18, caille: 8 },
+      // Durée maximum conseillée au congélateur (mois) → alerte sur les lots abattus stockés
+      dureeCongel: 9,
       // Couleurs de bagues EN STOCK par taille (mm) — listes de l'onglet Identification, modifiable dans Réglages
       couleursBagues: {
         "8":  ["noir", "bleu clair", "bleu foncé", "orange", "rose", "vert", "rouge", "violet", "blanc", "jaune"],
@@ -526,7 +532,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v77 — 06/07/2026";
+    const APP_VERSION = "v78 — 06/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1587,6 +1593,77 @@
       });
       return { oeufs, jours, pondeuses, taux: oeufs / (pondeuses * jours) };
     }
+    // Prévision de ponte selon l'ÂGE des pondeuses (seuils config.agesRepro) × ponte de leur race.
+    // Facteur d'âge : trop jeune 0 · âge optimal 1 · déclin 0,7 · âgée 0,4. Race inconnue → base
+    // moyenne (poule 250 œufs/an, caille 300). Renvoie { oeufsJour, nb, detail:[{nom,n,facteur,parJour}] }.
+    function previsionPonte(reproducteurs, races, config, grp) {
+      const espF = grp === "caille" ? "caille femelle" : "poule";
+      const cherche = (nom) => races.find((r) => r.race === nom) || races.find((r) => splitRaceCouleur(r.race).base === nom) || null;
+      let oeufsJour = 0, nb = 0; const detail = [];
+      (reproducteurs || []).filter((r) => r.statut === "actif" && r.espece === espF).forEach((r) => {
+        const n = Math.max(1, Number(r.nombre) || 1);
+        nb += n;
+        const a = alerteAgeRepro(r, config);
+        const facteur = !a ? 1 : (a.code === "jeune" ? 0 : (a.code === "optimal" ? 1 : (a.code === "declin" ? 0.7 : 0.4)));
+        const race = cherche(r.race || "");
+        const ponteAn = (race && Number(race.ponte_moyenne_an)) || (grp === "caille" ? 300 : 250);
+        const parJour = (ponteAn / 365) * facteur * n;
+        oeufsJour += parJour;
+        detail.push({ nom: r.nom || "(lot)", n, facteur, parJour, age: a ? a.code : null });
+      });
+      return { oeufsJour, nb, detail };
+    }
+    // Date d'abattage SUGGÉRÉE d'un lot de consommation : naissance + config.agesAbattage (semaines)
+    function abattageSuggere(a, config) {
+      if (!a.naissance) return null;
+      const sem = ((config && config.agesAbattage) || {})[a.espece === "caille" ? "caille" : "poule"] || (a.espece === "caille" ? 8 : 18);
+      return dateDecalee(a.naissance, sem * 7);
+    }
+    // REGISTRE D'ÉLEVAGE : événements réglementaires reconstruits depuis les données existantes —
+    // entrées (naissances, achats), sorties (abattages), mortalité (jeunes + reproducteurs),
+    // traitements (soins des zones + traitements des lots de jeunes). Tri du plus récent au plus ancien.
+    function lignesRegistre({ poussins, reproducteurs, abattoir, poulaillers, breederPurchases }) {
+      const out = [];
+      const push = (date, cat, nature, espece, nombre, detail) => { if (date) out.push({ date: String(date).slice(0, 10), cat, nature, espece: espece || "—", nombre: (nombre === "" || nombre == null) ? "" : Number(nombre) || 0, detail: detail || "" }); };
+      const espJ = (p) => (p.espece === "caille" ? "caille" : "poule");
+      const lblTrait = (k) => ((ACTIONS_COCHES.find((a) => a.key === k) || {}).label || k);
+      (poussins || []).forEach((p) => {
+        push(p.date, "Entrée", "Naissance", espJ(p), p.nes !== "" && p.nes != null ? p.nes : p.nombre, "Lot " + (p.id || "—"));
+        Object.keys(p.jours || {}).forEach((n) => {
+          const m = Number(((p.jours || {})[n] || {}).morts) || 0;
+          if (m > 0) push(dateDecalee(p.date, Number(n) - 1), "Mortalité", "Perte jeunes", espJ(p), m, "Lot " + (p.id || "—") + " · J" + n);
+        });
+        Object.keys(p.traitements || {}).forEach((k) => push(p.traitements[k], "Traitement", lblTrait(k), espJ(p), "", "Lot " + (p.id || "—") + " (jeunes)"));
+      });
+      (breederPurchases || []).forEach((b) => push(b.date, "Entrée", "Achat", b.espece, b.nombre, (b.type || "achat") + (b.fournisseur ? " — " + b.fournisseur : "")));
+      (abattoir || []).forEach((a) => { if (a.abattageReel) push(a.abattageReel, "Sortie", "Abattage", a.espece, a.nombre, "Lot " + (a.lot || "—")); });
+      (reproducteurs || []).forEach((r) => { if (r.statut === "décédé" && r.dateFin) push(r.dateFin, "Mortalité", "Décès reproducteur", r.espece, r.nombre || 1, r.nom || ""); });
+      (poulaillers || []).forEach((pl) => {
+        TRAITEMENTS.filter((k) => ligneFaitAction(pl, k)).forEach((k) => {
+          const q = pl.quantites && pl.quantites[k];
+          push(pl.date, "Traitement", lblTrait(k), "—", "", (pl.zone || "") + (q !== "" && q != null ? " · " + q + " ml" : ""));
+        });
+      });
+      out.sort((a, b) => b.date.localeCompare(a.date));
+      return out;
+    }
+    // Impression du registre (fenêtre dédiée → PDF via « imprimer »)
+    function imprimerRegistre(lignes, config) {
+      const el = (config && config.elevage) || {};
+      const esc = (s) => String(s == null ? "" : s).replace(/</g, "&lt;");
+      const rows = lignes.map((l) => "<tr><td>" + frDate(l.date) + "</td><td>" + esc(l.cat) + "</td><td>" + esc(l.nature) + "</td><td>" + esc(l.espece) + "</td><td>" + (l.nombre === "" ? "" : l.nombre) + "</td><td>" + esc(l.detail) + "</td></tr>").join("");
+      const w = window.open("", "_blank");
+      if (!w) { alert("Autorise les fenêtres pop-up pour imprimer le registre."); return; }
+      w.document.write("<html><head><title>Registre d'élevage</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;margin:24px;color:#0f172a}h1{font-size:18px;margin:0 0 4px}p{color:#475569;margin:2px 0}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{border:1px solid #cbd5e1;padding:4px 6px;text-align:left;vertical-align:top}th{background:#f1f5f9}</style></head><body>" +
+        "<h1>Registre d'élevage</h1>" +
+        "<p>" + esc(el.nom || "") + (el.detenteur ? " — détenteur : " + esc(el.detenteur) : "") + "</p>" +
+        (el.adresse ? "<p>" + esc(el.adresse) + "</p>" : "") +
+        "<p>Édité le " + frDate(new Date().toISOString().slice(0, 10)) + " · " + lignes.length + " événement(s)</p>" +
+        "<table><thead><tr><th>Date</th><th>Catégorie</th><th>Nature</th><th>Espèce</th><th>Nb</th><th>Détail</th></tr></thead><tbody>" + rows + "</tbody></table>" +
+        "</body></html>");
+      w.document.close(); w.focus();
+      setTimeout(() => w.print(), 300);
+    }
     // Lignées « à risque » de consanguinité : lignées (non vides) ayant ≥ 2 reproducteurs ACTIFS
     // → à ne pas accoupler entre eux. Renvoie [{ lignee, noms:[] }].
     function ligneesRisque(reproducteurs) {
@@ -1604,7 +1681,7 @@
        PAGES
        ============================================================ */
     function Dashboard() {
-      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases } = useData();
+      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases, races } = useData();
       const allerA = useContext(NavContext);
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
@@ -1822,6 +1899,27 @@
               <StatCard label={"🐔 Poules (" + chept.poules + " pondeuses)"} value={pontePoule7 ? Math.round(pontePoule7.taux * 100) + " %/j" : "—"} color={baissePonte.some(b => /poules/.test(b)) ? "orange" : "emerald"} sub={pontePoule7 ? pontePoule7.oeufs + " œufs / 7 j" : ""} />
               <StatCard label={"🐦 Cailles (" + chept.caillesF + " pondeuses)"} value={ponteCaille7 ? Math.round(ponteCaille7.taux * 100) + " %/j" : "—"} color={baissePonte.some(b => /cailles/.test(b)) ? "orange" : "emerald"} sub={ponteCaille7 ? ponteCaille7.oeufs + " œufs / 7 j" : ""} />
             </div>
+
+            {/* Prévision de ponte selon l'ÂGE des pondeuses (fiches reproducteurs : naissance + race) */}
+            {(() => {
+              const prevP = previsionPonte(reproducteurs, races, config, "poule");
+              const prevC = previsionPonte(reproducteurs, races, config, "caille");
+              if (!prevP.nb && !prevC.nb) return null;
+              const carte = (label, prev, reel) => {
+                const prevu7 = Math.round(prev.oeufsJour * 7);
+                const enBaisse = reel && prevu7 > 0 && reel.oeufs < prevu7 * 0.6;
+                return <StatCard label={label} value={prev.nb ? "~" + prevu7 + " œufs / 7 j" : "—"}
+                  color={enBaisse ? "orange" : "indigo"}
+                  sub={(reel ? "réel : " + reel.oeufs : "pas de récolte") + " · " + prev.nb + " pondeuse(s) selon l'âge" + (enBaisse ? " ⚠️ réel bien plus bas" : "")} />;
+              };
+              return <>
+                <p className="text-xs text-slate-500 mb-2 font-medium">🔮 Prévision de ponte selon l'âge <span className="font-normal text-slate-400">(fiches reproducteurs : naissance × race × seuils d'âge des Réglages)</span></p>
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  {carte("🐔 Poules — prévu", prevP, pontePoule7)}
+                  {carte("🐦 Cailles — prévu", prevC, ponteCaille7)}
+                </div>
+              </>;
+            })()}
 
             {/* Détails (stocks, consommation, lots) — repliés pour garder le tableau de bord lisible */}
             <Section titre="📂 Détail des œufs (stocks, consommation, lots)">
@@ -4012,11 +4110,71 @@
       );
     }
 
+    // Carnet de santé individuel d'un reproducteur : événements datés (maladie, traitement, vaccin…)
+    // stockés sur la fiche (`reproducteurs[].sante = [{date, type, description}]`).
+    const TYPES_SANTE = ["maladie", "blessure", "traitement", "vaccin", "vermifuge", "mue", "comportement", "guérison", "autre"];
+    const SANTE_CLS = { maladie: "bg-red-100 text-red-700", blessure: "bg-orange-100 text-orange-700", traitement: "bg-blue-100 text-blue-700", vaccin: "bg-indigo-100 text-indigo-700", vermifuge: "bg-purple-100 text-purple-700", mue: "bg-amber-100 text-amber-700", comportement: "bg-slate-100 text-slate-600", "guérison": "bg-emerald-100 text-emerald-700", autre: "bg-slate-100 text-slate-600" };
+    function CarnetSante({ index, onClose }) {
+      const { reproducteurs, patchLigne } = useData();
+      const rec = reproducteurs[index] || {};   // lecture fraîche → la liste se met à jour après chaque ajout
+      const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+      const [type, setType] = useState("maladie");
+      const [description, setDescription] = useState("");
+      const entrees = (rec.sante || []).map((e, i) => ({ e, i })).sort((a, b) => (b.e.date || "").localeCompare(a.e.date || ""));
+      const ajouter = (ev) => {
+        ev.preventDefault();
+        if (!description.trim()) return;
+        patchLigne("reproducteurs", index, { sante: (rec.sante || []).concat([{ date, type, description: description.trim() }]) });
+        setDescription("");
+      };
+      const retirer = (i) => patchLigne("reproducteurs", index, { sante: (rec.sante || []).filter((_, k) => k !== i) });
+      return (
+        <div className="space-y-4">
+          <form onSubmit={ajouter} className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Date">
+                <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
+              </Field>
+              <Field label="Type">
+                <select className={inputClass} value={type} onChange={(e) => setType(e.target.value)}>
+                  {TYPES_SANTE.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </Field>
+            </div>
+            <Field label="Description (symptômes, produit et dose, remarque…)">
+              <textarea className={inputClass} rows="2" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="ex. boite légèrement — patte droite ; ou : Vermifuge X, 0,5 ml" />
+            </Field>
+            <div className="flex justify-end">
+              <button type="submit" className="px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium">+ Ajouter au carnet</button>
+            </div>
+          </form>
+          {entrees.length === 0
+            ? <p className="text-sm text-slate-400">Aucun événement de santé enregistré — c'est bon signe 👍</p>
+            : <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {entrees.map(({ e, i }) => (
+                  <div key={i} className="flex items-start gap-2 bg-white border border-slate-100 rounded-lg p-2.5 shadow-sm">
+                    <span className={"px-2 py-0.5 rounded-full text-xs font-medium shrink-0 " + (SANTE_CLS[e.type] || SANTE_CLS.autre)}>{e.type}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-slate-400">{frDate(e.date)}</p>
+                      <p className="text-sm text-slate-700 break-words">{e.description}</p>
+                    </div>
+                    <button onClick={() => retirer(i)} title="Supprimer" className="text-slate-300 hover:text-red-500 shrink-0">🗑</button>
+                  </div>
+                ))}
+              </div>}
+          <div className="flex justify-end">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50">Fermer</button>
+          </div>
+        </div>
+      );
+    }
+
     function Reproducteurs() {
       const { reproducteurs, config, majLigne, supprimerLigne, patchLigne } = useData();
       const [vue, setVue] = useState("animaux");   // "animaux" | "achats"
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);   // { index, rec }
+      const [sante, setSante] = useState(null);  // { index } → carnet de santé
       const [q, setQ] = useState("");
       const [filtre, setFiltre] = useState("tous");
 
@@ -4093,7 +4251,13 @@
               <StatutAnimal statut={r.statut} />,
               frDate(r.dateFin),
               <ObsCell texte={r.obs} titre={"Observation — " + r.nom} onSave={(v) => patchLigne("reproducteurs", i, { obs: v })} />,
-              <RowActions onEdit={() => setEdit({ index: i, rec: r })} onDelete={() => supprimerLigne("reproducteurs", i)} />,
+              <RowActions onEdit={() => setEdit({ index: i, rec: r })} onDelete={() => supprimerLigne("reproducteurs", i)}
+                extra={
+                  <button onClick={() => setSante({ index: i })} title="Carnet de santé"
+                    className={"px-1.5 py-0.5 rounded text-xs " + ((r.sante || []).length ? "text-red-600 hover:bg-red-50 font-medium" : "text-slate-400 hover:bg-slate-100")}>
+                    🩺{(r.sante || []).length ? " " + r.sante.length : ""}
+                  </button>
+                } />,
             ])}
           />
           {open && (
@@ -4106,6 +4270,11 @@
               <ReproducteurForm initial={edit.rec} onSave={(rec) => majLigne("reproducteurs", edit.index, rec)} onClose={() => setEdit(null)} />
             </Modal>
           )}
+          {sante && (
+            <Modal title={"🩺 Carnet de santé — " + ((reproducteurs[sante.index] || {}).nom || "reproducteur")} onClose={() => setSante(null)}>
+              <CarnetSante index={sante.index} onClose={() => setSante(null)} />
+            </Modal>
+          )}
           </>}
         </div>
       );
@@ -4113,7 +4282,7 @@
 
     /* ---------- Animaux destinés à l'abattoir ---------- */
     function AbattoirForm({ onClose, initial, onSave }) {
-      const { races, ajouterAbattoir } = useData();
+      const { races, ajouterAbattoir, config } = useData();
       const [lot, setLot] = useState(initial ? (initial.lot || "") : "");
       const [espece, setEspece] = useState(initial ? initial.espece : "poule");
       const [race, setRace] = useState(initial ? (initial.race || "") : "");
@@ -4122,13 +4291,22 @@
       const [statut, setStatut] = useState(initial ? initial.statut : "en croissance");
       const [abattagePrevu, setAbattagePrevu] = useState(initial ? (initial.abattagePrevu || "") : "");
       const [abattageReel, setAbattageReel] = useState(initial ? (initial.abattageReel || "") : "");
+      const [poidsVif, setPoidsVif] = useState(initial && initial.poidsVif ? String(initial.poidsVif) : "");
+      const [poidsCarcasse, setPoidsCarcasse] = useState(initial && initial.poidsCarcasse ? String(initial.poidsCarcasse) : "");
+      const [nbCongele, setNbCongele] = useState(initial && initial.nbCongele != null && initial.nbCongele !== "" ? String(initial.nbCongele) : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
+      const suggere = abattageSuggere({ naissance, espece }, config);
+      const rendement = (Number(poidsVif) > 0 && Number(poidsCarcasse) > 0) ? Math.round((Number(poidsCarcasse) / Number(poidsVif)) * 100) : null;
 
       function submit(e) {
         e.preventDefault();
         const rec = {
+          ...(initial || {}),   // préserve les pesées et champs annexes en édition
           lot: lot.trim(), espece, race, naissance, nombre: Number(nombre) || 0,
-          statut, abattagePrevu, abattageReel, obs: obs.trim(),
+          statut, abattagePrevu, abattageReel,
+          poidsVif: Number(poidsVif) || "", poidsCarcasse: Number(poidsCarcasse) || "",
+          nbCongele: nbCongele === "" ? "" : Math.max(0, Number(nbCongele) || 0),
+          obs: obs.trim(),
         };
         (onSave || ajouterAbattoir)(rec);
         onClose();
@@ -4173,11 +4351,29 @@
           <div className="grid grid-cols-2 gap-3">
             <Field label="Abattage prévu">
               <input type="date" className={inputClass} value={abattagePrevu} onChange={(e) => setAbattagePrevu(e.target.value)} />
+              {suggere && <p className="text-xs text-slate-400 mt-1">💡 Suggéré : {frDate(suggere)} ({(config.agesAbattage || {})[espece === "caille" ? "caille" : "poule"] || (espece === "caille" ? 8 : 18)} sem — modifiable dans Réglages)
+                {!abattagePrevu && <button type="button" onClick={() => setAbattagePrevu(suggere)} className="ml-1 text-emerald-600 hover:underline">utiliser</button>}</p>}
             </Field>
             <Field label="Abattage réel">
               <input type="date" className={inputClass} value={abattageReel} onChange={(e) => setAbattageReel(e.target.value)} />
             </Field>
           </div>
+          {/* À l'abattage : poids moyens (g) → rendement carcasse + mise au congélateur */}
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Poids vif moyen (g)">
+              <input type="number" min="0" className={inputClass} value={poidsVif} onChange={(e) => setPoidsVif(e.target.value)} placeholder="ex. 2400" />
+            </Field>
+            <Field label="Poids carcasse moyen (g)">
+              <input type="number" min="0" className={inputClass} value={poidsCarcasse} onChange={(e) => setPoidsCarcasse(e.target.value)} placeholder="ex. 1650" />
+            </Field>
+            <Field label="Rendement">
+              <input className={inputClass + " bg-slate-100"} value={rendement != null ? rendement + " %" : "—"} readOnly />
+            </Field>
+          </div>
+          <Field label="Mis au congélateur (nombre)">
+            <input type="number" min="0" className={inputClass} value={nbCongele} onChange={(e) => setNbCongele(e.target.value)} placeholder={statut === "abattu" && nombre ? "ex. " + nombre : ""} />
+            <p className="text-xs text-slate-400 mt-1">Le stock congélateur se décompte avec le bouton « −1 » du tableau à chaque sujet consommé.</p>
+          </Field>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
@@ -4186,33 +4382,119 @@
       );
     }
 
+    // Pesées régulières d'un lot de consommation (poids moyen en g) — courbe de croissance simple
+    function PeseesLot({ index, onClose }) {
+      const { abattoir, patchLigne } = useData();
+      const a = abattoir[index] || {};   // lecture fraîche
+      const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+      const [poids, setPoids] = useState("");
+      const pesees = (a.pesees || []).slice().sort((x, y) => (x.date || "").localeCompare(y.date || ""));
+      const ajouter = (e) => {
+        e.preventDefault();
+        const p = Number(poids) || 0; if (!p) return;
+        patchLigne("abattoir", index, { pesees: (a.pesees || []).concat([{ date, poids: p }]) });
+        setPoids("");
+      };
+      const retirer = (i) => patchLigne("abattoir", index, { pesees: (a.pesees || []).filter((_, k) => k !== i) });
+      return (
+        <div className="space-y-4">
+          <form onSubmit={ajouter} className="flex gap-2 items-end bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <Field label="Date"><input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+            <Field label="Poids moyen (g)"><input type="number" min="0" className={inputClass} value={poids} onChange={(e) => setPoids(e.target.value)} placeholder="ex. 1850" /></Field>
+            <button type="submit" className="px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium whitespace-nowrap">+ Peser</button>
+          </form>
+          {pesees.length === 0
+            ? <p className="text-sm text-slate-400">Aucune pesée. Pèse régulièrement (ex. 1×/semaine) pour suivre la croissance et choisir le bon moment d'abattage.</p>
+            : <table className="w-full text-sm">
+                <thead className="text-slate-500 text-left"><tr><th className="px-2 py-1 font-medium">Date</th><th className="px-2 py-1 font-medium">Poids moyen</th><th className="px-2 py-1 font-medium">Évolution</th><th></th></tr></thead>
+                <tbody>
+                  {pesees.map((p, i) => {
+                    const prec = pesees[i - 1];
+                    const delta = prec ? p.poids - prec.poids : null;
+                    const idxOrig = (a.pesees || []).findIndex((x) => x.date === p.date && x.poids === p.poids);
+                    return (
+                      <tr key={i} className="border-t border-slate-100">
+                        <td className="px-2 py-1">{frDate(p.date)}</td>
+                        <td className="px-2 py-1 font-medium">{p.poids} g</td>
+                        <td className="px-2 py-1">{delta == null ? "—" : <span className={delta >= 0 ? "text-emerald-600" : "text-red-600"}>{delta >= 0 ? "+" : ""}{delta} g</span>}</td>
+                        <td className="px-2 py-1 text-right"><button onClick={() => retirer(idxOrig)} className="text-slate-300 hover:text-red-500">🗑</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>}
+          <div className="flex justify-end">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50">Fermer</button>
+          </div>
+        </div>
+      );
+    }
+
     function Abattoir() {
-      const { abattoir, majLigne, supprimerLigne, patchLigne } = useData();
+      const { abattoir, config, majLigne, supprimerLigne, patchLigne } = useData();
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
+      const [pesees, setPesees] = useState(null);   // { index } → modale des pesées
+      const today = AUJOURDHUI_ISO;
+      // Stock congélateur : lots abattus avec nbCongele > 0 ; alerte si plus vieux que config.dureeCongel (mois)
+      const dureeCongel = Number(config.dureeCongel) || 9;
+      const auCongel = abattoir.map((a, i) => ({ a, i })).filter(({ a }) => Number(a.nbCongele) > 0);
+      const totalCongel = auCongel.reduce((s, { a }) => s + Number(a.nbCongele), 0);
+      const moisCongel = (a) => a.abattageReel ? Math.floor((joursDepuis(a.abattageReel) || 0) / 30.44) : null;
+      const plusVieux = auCongel.map(({ a }) => moisCongel(a)).filter((m) => m != null).sort((x, y) => y - x)[0];
+      const enRetardAbattage = abattoir.filter((a) => a.statut !== "abattu" && a.statut !== "décédé" && abattageSuggere(a, config) && abattageSuggere(a, config) < today).length;
       return (
         <div>
           <PageHeader
             title="Animaux destinés à l'abattoir"
-            subtitle="Lots élevés pour la consommation"
+            subtitle="Lots élevés pour la consommation — pesées, rendement carcasse et stock congélateur"
             action={<AddButton onClick={() => setOpen(true)} label="Ajouter un animal ou lot" />}
           />
+
+          {/* Résumé : congélateur + retards d'abattage */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-5">
+            <StatCard label="🧊 Au congélateur" value={totalCongel} color="indigo" sub={auCongel.length ? auCongel.length + " lot(s)" : "rien en stock"} />
+            <StatCard label="Plus ancien au congél." value={plusVieux != null ? plusVieux + " mois" : "—"} color={plusVieux != null && plusVieux >= dureeCongel ? "red" : "slate"} sub={"consommer avant " + dureeCongel + " mois (Réglages)"} />
+            <StatCard label="Abattage dépassé" value={enRetardAbattage} color={enRetardAbattage ? "orange" : "emerald"} sub="lots au-delà de l'âge conseillé" />
+          </div>
+
           <Table
-            resume={(r, k) => { const a = abattoir[k]; return <><span className="font-medium">{a.lot || "—"}</span> — {a.espece}<span className="text-slate-400"> · {a.nombre} · {a.statut}</span></>; }}
-            columns={["Lot", "Espèce", "Race", "Naissance", "Nombre", "Statut", "Abattage prévu", "Abattage réel", "Obs", ""]}
-            rows={abattoir.map((a, i) => [
-              <span className="font-medium">{a.lot || "—"}</span>,
-              a.espece,
-              a.race || "—",
-              frDate(a.naissance),
-              a.nombre,
-              <StatutAnimal statut={a.statut} />,
-              frDate(a.abattagePrevu),
-              frDate(a.abattageReel),
-              <ObsCell texte={a.obs} titre="Observation" onSave={(v) => patchLigne("abattoir", i, { obs: v })} />,
-              <RowActions onEdit={() => setEdit({ index: i, rec: a })} onDelete={() => supprimerLigne("abattoir", i)} />,
-            ])}
+            resume={(r, k) => { const a = abattoir[k]; return <><span className="font-medium">{a.lot || "—"}</span> — {a.espece}<span className="text-slate-400"> · {a.nombre} · {a.statut}{Number(a.nbCongele) > 0 ? " · 🧊 " + a.nbCongele : ""}</span></>; }}
+            columns={["Lot", "Espèce", "Race", "Naissance", "Nombre", "Statut", "Suggéré", "Abattage prévu", "Abattage réel", "⚖️ Poids", "🧊 Congél.", "Obs", ""]}
+            rows={abattoir.map((a, i) => {
+              const sug = abattageSuggere(a, config);
+              const sugDepasse = sug && sug < today && a.statut !== "abattu" && a.statut !== "décédé";
+              const dern = (a.pesees || []).slice().sort((x, y) => (x.date || "").localeCompare(y.date || "")).pop();
+              const rend = (Number(a.poidsVif) > 0 && Number(a.poidsCarcasse) > 0) ? Math.round((a.poidsCarcasse / a.poidsVif) * 100) : null;
+              const mc = moisCongel(a);
+              return [
+                <span className="font-medium">{a.lot || "—"}</span>,
+                a.espece,
+                a.race || "—",
+                frDate(a.naissance),
+                a.nombre,
+                <StatutAnimal statut={a.statut} />,
+                sug ? <span className={"whitespace-nowrap text-xs " + (sugDepasse ? "text-red-600 font-medium" : "text-slate-500")}>{frDate(sug)}{sugDepasse ? " ⚠️" : ""}</span> : "—",
+                frDate(a.abattagePrevu),
+                frDate(a.abattageReel),
+                <span className="whitespace-nowrap text-xs">
+                  {a.statut === "abattu" && Number(a.poidsCarcasse) > 0
+                    ? <>carc. <span className="font-medium">{a.poidsCarcasse} g</span>{rend != null ? " · " + rend + " %" : ""}</>
+                    : (dern ? <><span className="font-medium">{dern.poids} g</span> <span className="text-slate-400">({frDate(dern.date)})</span></> : <span className="text-slate-300">—</span>)}
+                  <button onClick={() => setPesees({ index: i })} title="Pesées du lot" className="ml-1 px-1 py-0.5 rounded hover:bg-slate-100">⚖️</button>
+                </span>,
+                Number(a.nbCongele) > 0
+                  ? <span className={"whitespace-nowrap text-xs " + (mc != null && mc >= dureeCongel ? "text-red-600 font-medium" : "")}>
+                      🧊 {a.nbCongele}{mc != null ? " · " + mc + " mois" : ""}{mc != null && mc >= dureeCongel ? " ⚠️" : ""}
+                      <button onClick={() => patchLigne("abattoir", i, { nbCongele: Math.max(0, Number(a.nbCongele) - 1) })} title="1 sujet consommé" className="ml-1 px-1.5 py-0.5 rounded border border-slate-300 hover:bg-slate-50">−1</button>
+                    </span>
+                  : <span className="text-slate-300 text-xs">—</span>,
+                <ObsCell texte={a.obs} titre="Observation" onSave={(v) => patchLigne("abattoir", i, { obs: v })} />,
+                <RowActions onEdit={() => setEdit({ index: i, rec: a })} onDelete={() => supprimerLigne("abattoir", i)} />,
+              ];
+            })}
           />
+          <p className="text-xs text-slate-400 mt-2">« Suggéré » = naissance + âge d'abattage conseillé (Réglages : {(config.agesAbattage || {}).poule || 18} sem poule · {(config.agesAbattage || {}).caille || 8} sem caille). ⚖️ = pesées régulières du lot (poids moyen). 🧊 « −1 » à chaque sujet sorti du congélateur ; alerte au-delà de {dureeCongel} mois.</p>
           {open && (
             <Modal title="Nouvel animal / lot abattoir" onClose={() => setOpen(false)}>
               <AbattoirForm onClose={() => setOpen(false)} />
@@ -4221,6 +4503,11 @@
           {edit && (
             <Modal title="Modifier la ligne abattoir" onClose={() => setEdit(null)}>
               <AbattoirForm initial={edit.rec} onSave={(rec) => majLigne("abattoir", edit.index, rec)} onClose={() => setEdit(null)} />
+            </Modal>
+          )}
+          {pesees && (
+            <Modal title={"⚖️ Pesées — " + ((abattoir[pesees.index] || {}).lot || "lot")} onClose={() => setPesees(null)}>
+              <PeseesLot index={pesees.index} onClose={() => setPesees(null)} />
             </Modal>
           )}
         </div>
@@ -6277,7 +6564,7 @@
 
     /* ---------- Historique / archives ---------- */
     function Historique() {
-      const { lots, materiel, suivis, mirages, eclosions, collectes, poulaillers, consommables, lotsStock, supprimerLigne } = useData();
+      const { lots, materiel, suivis, mirages, eclosions, collectes, poulaillers, consommables, lotsStock, supprimerLigne, reproducteurs, poussins, abattoir, breederPurchases, config } = useData();
       const statutLotStock = {}; (lotsStock || []).forEach((l) => { statutLotStock[l.id] = l.statut; });
       const statutFinal = (e) => {
         if (e.destination === "consommation") return "consommé";
@@ -6294,7 +6581,8 @@
 
       // --- Résumé automatique de la période (sans IA : calculé depuis les données) ---
       const [jours, setJours] = useState(30);
-      const [vue, setVue] = useState("recoltes");   // onglet interne : recoltes | lots | materiel
+      const [vue, setVue] = useState("recoltes");   // onglet interne : recoltes | lots | materiel | registre
+      const [anRegistre, setAnRegistre] = useState("");   // filtre d'année du registre ("" = année la plus récente, "tout")
       const depuis = new Date(AUJOURDHUI); depuis.setDate(depuis.getDate() - Number(jours));
       const dansPeriode = (d) => d && new Date(d) >= depuis && new Date(d) <= AUJOURDHUI;
       const somme = (arr, f) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
@@ -6340,7 +6628,7 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["recoltes", "🥚 Récoltes"], ["lots", "🐣 Lots terminés"], ["materiel", "🔧 Matériel remplacé"]].map(([id, lbl]) => (
+            {[["recoltes", "🥚 Récoltes"], ["lots", "🐣 Lots terminés"], ["materiel", "🔧 Matériel remplacé"], ["registre", "📋 Registre d'élevage"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVue(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vue === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
@@ -6393,6 +6681,45 @@
           />
           <p className="text-xs text-slate-400 mt-3">Un matériel passe ici quand il est marqué « remplacé ».</p>
           </>}
+
+          {vue === "registre" && (() => {
+            // Registre d'élevage : reconstruit automatiquement depuis les données déjà saisies
+            const toutes = lignesRegistre({ poussins, reproducteurs, abattoir, poulaillers, breederPurchases });
+            const annees = Array.from(new Set(toutes.map((l) => l.date.slice(0, 4)))).sort().reverse();
+            const anSel = String(anRegistre || (annees[0] || ""));
+            const lignesR = anRegistre === "tout" ? toutes : toutes.filter((l) => l.date.slice(0, 4) === anSel);
+            const catCls = { "Entrée": "bg-emerald-100 text-emerald-700", "Sortie": "bg-orange-100 text-orange-700", "Mortalité": "bg-red-100 text-red-700", "Traitement": "bg-blue-100 text-blue-700" };
+            return <>
+              <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                <h2 className="text-lg font-semibold">📋 Registre d'élevage <span className="text-sm font-normal text-slate-400">— entrées, sorties, mortalité, traitements</span></h2>
+                <div className="flex gap-2 items-center">
+                  <select className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={anRegistre || anSel} onChange={(e) => setAnRegistre(e.target.value)}>
+                    {annees.map((a) => <option key={a} value={a}>{a}</option>)}
+                    <option value="tout">Tout</option>
+                  </select>
+                  <button onClick={() => imprimerRegistre(lignesR.slice().reverse(), config)}
+                    className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm whitespace-nowrap">🖨 Imprimer / PDF</button>
+                </div>
+              </div>
+              {!(config.elevage && (config.elevage.nom || config.elevage.detenteur)) &&
+                <p className="text-xs text-amber-600 mb-3">💡 Renseigne le nom de l'élevage et le détenteur dans <span className="font-medium">Réglages → Général → Mon élevage</span> : ils apparaîtront en en-tête du registre imprimé.</p>}
+              {lignesR.length === 0
+                ? <p className="text-sm text-slate-400">Aucun événement sur cette période. Le registre se remplit tout seul à partir de tes saisies (naissances, achats, abattages, décès, pertes de jeunes, traitements).</p>
+                : <Table
+                    resume={(r, k) => { const l = lignesR[k]; return <>{frDate(l.date)} — <span className="font-medium">{l.nature}</span><span className="text-slate-400"> · {l.detail}</span></>; }}
+                    columns={["Date", "Catégorie", "Nature", "Espèce", "Nb", "Détail"]}
+                    rows={lignesR.map((l) => [
+                      frDate(l.date),
+                      <span className={"px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap " + (catCls[l.cat] || "bg-slate-100 text-slate-600")}>{l.cat}</span>,
+                      l.nature,
+                      l.espece,
+                      l.nombre === "" ? "—" : l.nombre,
+                      <span className="text-xs">{l.detail}</span>,
+                    ])}
+                  />}
+              <p className="text-xs text-slate-400 mt-3">Registre reconstruit automatiquement (rien à saisir en double) : naissances et pertes des lots de jeunes, achats de reproducteurs, abattages, décès de reproducteurs, traitements Fortiferm/Cocciferm/Vermiferm (zones + jeunes). « Imprimer / PDF » ouvre une page propre → choisis « Enregistrer en PDF » dans la fenêtre d'impression.</p>
+            </>;
+          })()}
         </div>
       );
     }
@@ -6607,6 +6934,34 @@
             <span className="text-xs text-slate-400">
               Ex. boîte de 6 à 2,10 € → 0,35 €/œuf · boîte de 10 à 3,00 € → 0,30 €/œuf. Sert à estimer l'économie sur les œufs consommés.
             </span>
+          </div>
+
+          {/* Identité de l'élevage — en-tête du registre d'élevage imprimé */}
+          <h2 className="text-lg font-semibold mb-3">🏡 Mon élevage (en-tête du registre)</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[["nom", "Nom de l'élevage", "ex. Ferme de Taverny"], ["detenteur", "Détenteur", "ton nom"], ["adresse", "Adresse", "rue, ville"]].map(([k, lbl, ph]) => (
+              <label key={k} className="text-xs text-slate-500">{lbl}
+                <input className={inputClass + " mt-1"} value={(config.elevage || {})[k] || ""} placeholder={ph}
+                  onChange={(e) => setConfig((c) => ({ ...c, elevage: { ...(c.elevage || {}), [k]: e.target.value } }))} />
+              </label>
+            ))}
+          </div>
+
+          {/* Abattage & congélateur */}
+          <h2 className="text-lg font-semibold mb-3">🍗 Abattage & congélateur</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <label className="text-xs text-slate-500">Âge d'abattage poule (semaines)
+              <input type="number" min="0" className={numCls + " mt-1 block"} value={(config.agesAbattage || {}).poule != null ? config.agesAbattage.poule : 18}
+                onChange={(e) => setConfig((c) => ({ ...c, agesAbattage: { ...(c.agesAbattage || {}), poule: Number(e.target.value) || 0 } }))} />
+            </label>
+            <label className="text-xs text-slate-500">Âge d'abattage caille (semaines)
+              <input type="number" min="0" className={numCls + " mt-1 block"} value={(config.agesAbattage || {}).caille != null ? config.agesAbattage.caille : 8}
+                onChange={(e) => setConfig((c) => ({ ...c, agesAbattage: { ...(c.agesAbattage || {}), caille: Number(e.target.value) || 0 } }))} />
+            </label>
+            <label className="text-xs text-slate-500">Durée max congélateur (mois)
+              <input type="number" min="0" className={numCls + " mt-1 block"} value={config.dureeCongel != null ? config.dureeCongel : 9}
+                onChange={(e) => setConfig((c) => ({ ...c, dureeCongel: Number(e.target.value) || 0 }))} />
+            </label>
           </div>
 
           </>}
