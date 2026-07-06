@@ -520,7 +520,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v70 — 06/07/2026";
+    const APP_VERSION = "v71 — 06/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -758,10 +758,46 @@
     // - lien "Category:xxx"   → null (pas d'image directe → on affichera une vignette + le lien source)
     function imageAffichable(url) {
       if (!url) return null;
+      if (/^data:image\//.test(url)) return url;   // photo perso téléversée (stockée en base64)
       const f = url.match(/\/wiki\/File:(.+)$/);
       if (f) return "https://commons.wikimedia.org/wiki/Special:FilePath/" + f[1];
       if (/\.(jpe?g|png|gif|webp)$/i.test(url)) return url;
       return null;
+    }
+    // Lit une photo choisie par l'utilisateur, la réduit (max 700 px) et la compresse en JPEG
+    // → chaîne base64 assez légère pour le localStorage / la synchro. cb(dataUrl).
+    function lireImageCompressee(file, cb) {
+      if (!file || !/^image\//.test(file.type)) return;
+      const img = new Image();
+      img.onload = () => {
+        const max = 700;
+        const ratio = Math.min(1, max / Math.max(img.width, img.height));
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(img.width * ratio));
+        cv.height = Math.max(1, Math.round(img.height * ratio));
+        cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+        URL.revokeObjectURL(img.src);
+        cb(cv.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = URL.createObjectURL(file);
+    }
+    // Champ « photo » réutilisable : bouton 📷 (téléverse + compresse), aperçu, suppression.
+    function PhotoPicker({ value, onChange }) {
+      const src = imageAffichable(value);
+      return (
+        <div className="flex items-center gap-3">
+          {src
+            ? <img src={src} alt="aperçu" className="w-16 h-16 object-cover rounded-lg border border-slate-200 bg-slate-50" />
+            : <span className="w-16 h-16 flex items-center justify-center rounded-lg border border-dashed border-slate-300 text-2xl text-slate-300">📷</span>}
+          <div className="flex flex-col gap-1">
+            <label className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium cursor-pointer text-center whitespace-nowrap">
+              📷 Choisir une photo
+              <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) lireImageCompressee(f, onChange); e.target.value = ""; }} />
+            </label>
+            {src && <button type="button" onClick={() => onChange("")} className="text-xs text-red-500 hover:underline">Supprimer la photo</button>}
+          </div>
+        </div>
+      );
     }
 
     /* ============================================================
@@ -3139,14 +3175,19 @@
           <Field label="Signes de reconnaissance">
             <textarea className={inputClass} rows="2" value={signes} onChange={(e) => setSignes(e.target.value)} />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Image (URL ou lien Wikimedia)">
-              <input className={inputClass} value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://…" />
-            </Field>
-            <Field label="Source image">
-              <input className={inputClass} value={sourceImage} onChange={(e) => setSourceImage(e.target.value)} />
-            </Field>
-          </div>
+          <Field label="Photo (la tienne, depuis l'appareil / la galerie)">
+            <PhotoPicker value={imageUrl} onChange={(v) => { setImageUrl(v); setSourceImage(v ? "Photo perso" : "Wikimedia Commons"); }} />
+          </Field>
+          {!/^data:image\//.test(imageUrl) && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="… ou lien d'image (URL / Wikimedia, facultatif)">
+                <input className={inputClass} value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://…" />
+              </Field>
+              <Field label="Source image">
+                <input className={inputClass} value={sourceImage} onChange={(e) => setSourceImage(e.target.value)} />
+              </Field>
+            </div>
+          )}
           <Field label="Couleurs / variétés possibles (séparées par des virgules)">
             <input className={inputClass} value={couleurs} onChange={(e) => setCouleurs(e.target.value)} placeholder="ex. blanche, bleue, fauve" />
           </Field>
@@ -3194,14 +3235,22 @@
       const [couleurs, setCouleurs] = useState(couleursDeRace(race));
       const [nouvelle, setNouvelle] = useState("");
       const [noteperso, setNoteperso] = useState(race.noteperso || "");
+      const [imageUrl, setImageUrl] = useState(race.image_url || "");
       const ajouter = () => { const v = nouvelle.trim(); if (v && !couleurs.includes(v)) { setCouleurs([...couleurs, v]); setNouvelle(""); } };
       const retirer = (c) => setCouleurs(couleurs.filter((x) => x !== c));
-      const enregistrer = () => { patchLigne("races", index, { couleurs, noteperso: noteperso.trim() }); onClose(); };
-      const src = imageAffichable(race.image_url);
+      const enregistrer = () => {
+        const patch = { couleurs, noteperso: noteperso.trim() };
+        if (imageUrl !== (race.image_url || "")) { patch.image_url = imageUrl; patch.source_image = /^data:image\//.test(imageUrl) ? "Photo perso" : race.source_image; }
+        patchLigne("races", index, patch);
+        onClose();
+      };
+      const src = imageAffichable(imageUrl);
       const info = (lbl, val) => <div><span className="text-slate-400">{lbl} :</span> {val || "—"}</div>;
       return (
         <div className="space-y-4">
           {src && <img src={src} alt={race.race} className="w-full max-h-60 object-contain rounded-lg bg-slate-50" />}
+          {/* Changer / ajouter sa propre photo (remplace l'image actuelle après « Enregistrer ») */}
+          <PhotoPicker value={imageUrl} onChange={setImageUrl} />
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
             {info("Espèce", race.espece === "caille" ? "Caille" : "Poule / coq")}
             {info("Type", race.categorie)}
@@ -3344,6 +3393,143 @@
       );
     }
 
+    /* ---------- Catalogue : simulateur de croisements ---------- */
+    const QUALITES_ORD = ["faible", "moyenne", "bonne", "excellente"];
+    // Estimation d'un croisement entre deux races du catalogue (indicatif) :
+    // moyenne des deux parents + légère vigueur hybride sur la ponte, qualités ordinales moyennées,
+    // et particularités d'œufs détectées par le nom de race (gène œuf bleu = dominant ; Marans = foncé).
+    function estimeCroisement(racePere, raceMere, races) {
+      const cherche = (nom) => races.find((r) => r.race === nom) || races.find((r) => splitRaceCouleur(r.race).base === nom) || null;
+      const p = cherche(racePere), m = cherche(raceMere);
+      const num = (v) => { const n = Number(v); return isFinite(n) && n > 0 ? n : null; };
+      const moy = (a, b) => (a != null && b != null ? (a + b) / 2 : (a != null ? a : b));
+      const moyQual = (a, b) => {
+        const ia = QUALITES_ORD.indexOf(a), ib = QUALITES_ORD.indexOf(b);
+        if (ia < 0 && ib < 0) return null;
+        if (ia < 0) return b; if (ib < 0) return a;
+        return QUALITES_ORD[Math.round((ia + ib) / 2)];
+      };
+      const pure = racePere && racePere === raceMere;
+      const ponteBase = moy(num(p && p.ponte_moyenne_an), num(m && m.ponte_moyenne_an));
+      const noms = (racePere + " " + raceMere).toLowerCase();
+      const notes = [];
+      if (!pure) {
+        notes.push("Vigueur hybride : les croisés F1 sont souvent un peu plus robustes et productifs que la moyenne des parents.");
+        notes.push("Attention : un F1 ne se reproduit pas « fidèlement » — ses petits (F2) seront très variables.");
+      }
+      if (/araucana|ameraucana|legbar/.test(noms)) notes.push("🥚 Gène « œuf bleu » (dominant) : les filles pondront des œufs bleutés ou verts (olive si croisé avec une race à œufs foncés).");
+      if (/marans|welsumer|penedesenca/.test(noms)) notes.push("🥚 Parent à œufs foncés : les filles pondront des œufs plus colorés que la moyenne (mais moins foncés qu'une Marans pure).");
+      return {
+        p, m, pure,
+        ponte: ponteBase != null ? Math.round(ponteBase * (pure ? 1 : 1.05)) : null,
+        poidsF: moy(num(p && p.poids_femelle_kg), num(m && m.poids_femelle_kg)),
+        poidsM: moy(num(p && p.poids_male_kg), num(m && m.poids_male_kg)),
+        mere: moyQual(p && p.qualite_mere, m && m.qualite_mere),
+        chair: moyQual(p && p.aptitude_chair, m && m.aptitude_chair),
+        notes,
+      };
+    }
+    // Carte de résultat d'un croisement
+    function CarteCroisement({ titre, sousTitre, racePere, raceMere, races, alerteLignee }) {
+      const e = estimeCroisement(racePere, raceMere, races);
+      const kg = (v) => (v != null ? (Math.round(v * 100) / 100) + " kg" : "—");
+      const manquantes = [!e.p && racePere, !e.m && raceMere].filter(Boolean);
+      return (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+          <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+            <h3 className="font-semibold leading-tight">{titre}</h3>
+            {e.pure
+              ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 whitespace-nowrap">race pure</span>
+              : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 whitespace-nowrap">croisé F1</span>}
+          </div>
+          {sousTitre && <p className="text-xs text-slate-400 mb-2">{sousTitre}</p>}
+          {alerteLignee && <p className="text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1 mb-2">⚠️ Même lignée des deux côtés — risque de consanguinité, croisement déconseillé.</p>}
+          {manquantes.length > 0
+            ? <p className="text-sm text-slate-500">Race{manquantes.length > 1 ? "s" : ""} <span className="font-medium">{manquantes.join(" et ")}</span> introuvable{manquantes.length > 1 ? "s" : ""} au catalogue — ajoute-la pour obtenir une estimation.</p>
+            : <>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-sm text-slate-600 mb-2">
+                <span>🥚 Ponte estimée : <span className="font-medium">{e.ponte != null ? "~" + e.ponte + " /an" : "—"}</span></span>
+                <span>⚖️ Adultes : ♀ {kg(e.poidsF)} · ♂ {kg(e.poidsM)}</span>
+                <span>🐣 Qualité de mère : <span className="font-medium">{e.mere || "—"}</span></span>
+                <span>🍗 Chair : <span className="font-medium">{e.chair || "—"}</span></span>
+              </div>
+              {e.pure
+                ? <p className="text-xs text-slate-500">Même race des deux côtés : descendance conforme au standard de la race.</p>
+                : e.notes.map((n, i) => <p key={i} className="text-xs text-slate-500 mb-0.5">• {n}</p>)}
+            </>}
+        </div>
+      );
+    }
+    // Page « Croisements » : simule le croisement de MES mâles reproducteurs avec MES femelles,
+    // + un essai libre entre deux races du catalogue.
+    function CatalogueCroisements() {
+      const { races, reproducteurs } = useData();
+      const actifs = reproducteurs.map((r, i) => ({ r, i })).filter(({ r }) => r.statut === "actif");
+      const grp = (esp) => ((esp || "").includes("caille") ? "caille" : "poule");
+      const males = actifs.filter(({ r }) => r.espece === "coq" || r.espece === "caille mâle");
+      const [pereSel, setPereSel] = useState(0);
+      const pere = males[Math.min(pereSel, Math.max(0, males.length - 1))];
+      const femelles = pere ? actifs.filter(({ r }) => (r.espece === "poule" || r.espece === "caille femelle") && grp(r.espece) === grp(pere.r.espece)) : [];
+      // Essai libre : deux races du catalogue (même espèce)
+      const [espLibre, setEspLibre] = useState("poule");
+      const basesLibres = Array.from(new Set(races.filter((r) => r.espece === espLibre).map((r) => splitRaceCouleur(r.race).base))).sort((a, b) => a.localeCompare(b));
+      const [libre1, setLibre1] = useState("");
+      const [libre2, setLibre2] = useState("");
+      const l1 = libre1 || basesLibres[0] || "", l2 = libre2 || basesLibres[1] || basesLibres[0] || "";
+      return (
+        <div>
+          <h2 className="text-lg font-semibold mb-1">🧬 Mes croisements possibles</h2>
+          <p className="text-xs text-slate-500 mb-3">Choisis un mâle : chaque carte simule sa descendance avec une de tes femelles reproductrices (races lues dans l'onglet Animaux reproducteurs, estimation depuis le catalogue).</p>
+          {males.length === 0
+            ? <p className="text-sm text-slate-400 mb-6">Aucun coq / mâle actif dans Animaux reproducteurs. Ajoute ton coq (avec sa race) pour simuler ses croisements.</p>
+            : <>
+              <div className="max-w-xs mb-4">
+                <Field label="Père (mâle reproducteur)">
+                  <select className={inputClass} value={pereSel} onChange={(e) => setPereSel(Number(e.target.value))}>
+                    {males.map(({ r }, k) => <option key={k} value={k}>{r.nom || "Mâle " + (k + 1)} — {r.race || "race ?"} ({r.espece})</option>)}
+                  </select>
+                </Field>
+              </div>
+              {!pere.r.race && <p className="text-sm text-amber-600 mb-4">Ce mâle n'a pas de race renseignée — complète sa fiche pour obtenir des estimations.</p>}
+              {femelles.length === 0
+                ? <p className="text-sm text-slate-400 mb-6">Aucune femelle reproductrice active de la même espèce.</p>
+                : <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+                    {femelles.map(({ r }, k) => (
+                      <CarteCroisement key={k}
+                        titre={(pere.r.race || "?") + " × " + (r.race || "?")}
+                        sousTitre={"♂ " + (pere.r.nom || "coq") + " × ♀ " + (r.nom || "poule") + (r.nombre > 1 ? " (" + r.nombre + ")" : "")}
+                        racePere={pere.r.race || ""} raceMere={r.race || ""} races={races}
+                        alerteLignee={!!(pere.r.lignee && r.lignee && normLibelle(pere.r.lignee) === normLibelle(r.lignee))} />
+                    ))}
+                  </div>}
+            </>}
+
+          <h2 className="text-lg font-semibold mb-1">🔬 Essai libre (deux races du catalogue)</h2>
+          <p className="text-xs text-slate-500 mb-3">Pour tester un croisement avant d'acheter un reproducteur.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl mb-4">
+            <Field label="Espèce">
+              <select className={inputClass} value={espLibre} onChange={(e) => { setEspLibre(e.target.value); setLibre1(""); setLibre2(""); }}>
+                <option value="poule">Poule / coq</option>
+                <option value="caille">Caille</option>
+              </select>
+            </Field>
+            <Field label="Race du père">
+              <select className={inputClass} value={l1} onChange={(e) => setLibre1(e.target.value)}>
+                {basesLibres.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </Field>
+            <Field label="Race de la mère">
+              <select className={inputClass} value={l2} onChange={(e) => setLibre2(e.target.value)}>
+                {basesLibres.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </Field>
+          </div>
+          {l1 && l2 && <div className="max-w-xl"><CarteCroisement titre={l1 + " × " + l2} racePere={l1} raceMere={l2} races={races} /></div>}
+          <p className="text-xs text-slate-400 mt-6">Estimations indicatives : moyenne des deux races (+ ~5 % de vigueur hybride sur la ponte pour un croisé). La génétique réelle (couleurs, caractères dominants) peut donner des résultats différents.</p>
+        </div>
+      );
+    }
+
     function Catalogue() {
       const { races, patchLigne } = useData();
       const [open, setOpen] = useState(false);
@@ -3388,7 +3574,7 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["races", "📖 Races"], ["plumages", "🎨 Plumages"], ["oeufs", "🥚 Types d'œufs"]].map(([id, lbl]) => (
+            {[["races", "📖 Races"], ["plumages", "🎨 Plumages"], ["oeufs", "🥚 Types d'œufs"], ["croisements", "🧬 Croisements"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVueCat(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vueCat === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
@@ -3396,6 +3582,7 @@
 
           {vueCat === "plumages" && <CataloguePlumages />}
           {vueCat === "oeufs" && <CatalogueOeufs />}
+          {vueCat === "croisements" && <CatalogueCroisements />}
 
           {vueCat === "races" && <>
           {aNettoyer > 0 && (
