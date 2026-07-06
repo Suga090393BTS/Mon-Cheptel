@@ -297,6 +297,12 @@
       notifications: false,                                                // notification quotidienne (retards + événements du jour) à l'ouverture
       // Règle de dosage des traitements : ml de produit par litres d'eau (Fortiferm/Cocciferm/Vermiferm = 3 ml / 5 L)
       doseRule: { ml: 3, parLitres: 5 },
+      // Couleurs de bagues EN STOCK par taille (mm) — listes de l'onglet Identification, modifiable dans Réglages
+      couleursBagues: {
+        "8":  ["noir", "bleu clair", "bleu foncé", "orange", "rose", "vert", "rouge", "violet", "blanc", "jaune"],
+        "12": ["rouge", "bleu", "vert"],
+        "16": ["jaune", "violet", "vert", "bleu", "rouge"],
+      },
       // Rappel récolte des œufs pour la prochaine couvée : conservation max des œufs + marge (retard d'éclosion possible)
       conservationOeufs: 14,   // jours max de conservation d'un œuf avant remise en incubation
       deltaEclosion: 2,        // marge : l'éclosion peut déborder de quelques jours au-delà de la durée théorique
@@ -520,7 +526,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v74 — 06/07/2026";
+    const APP_VERSION = "v77 — 06/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -825,8 +831,10 @@
       poussins:      "cheptel_poussins_v1",
       lotsStock:     "cheptel_lotsstock_v1",
       breederPurchases: "cheptel_breeder_purchases_v1",
+      sujets:        "cheptel_sujets_v1",   // identification individuelle (bagues, sexage, croisement)
       config:        "cheptel_config_v1",
     };
+    const sujetsSeed = [];
 
     // Export : télécharge un fichier JSON contenant toutes les collections
     function exporterDonnees(store) {
@@ -1035,6 +1043,7 @@
       const [poussins, ajouterPoussin, setPoussins] = useCollection(STORE_KEYS.poussins, poussinsSeed);
       const [lotsStock, ajouterLotStock, setLotsStock] = useCollection(STORE_KEYS.lotsStock, lotsStockSeed);
       const [breederPurchases, ajouterBreederPurchase, setBreederPurchases] = useCollection(STORE_KEYS.breederPurchases, breederPurchasesSeed);
+      const [sujets, ajouterSujet, setSujets] = useCollection(STORE_KEYS.sujets, sujetsSeed);
 
       // Base de données / réglages : objet config persistant, fusionné avec les défauts
       const [config, setConfig] = useState(() => {
@@ -1049,7 +1058,7 @@
         races: setRaces, reproducteurs: setReproducteurs, abattoir: setAbattoir,
         collectes: setCollectes, consommables: setConsommables, materiel: setMateriel,
         poulaillers: setPoulaillers, poussins: setPoussins, lotsStock: setLotsStock,
-        breederPurchases: setBreederPurchases,
+        breederPurchases: setBreederPurchases, sujets: setSujets,
       };
 
       const store = {
@@ -1067,6 +1076,7 @@
         poussins, ajouterPoussin,
         lotsStock, ajouterLotStock,
         breederPurchases, ajouterBreederPurchase,
+        sujets, ajouterSujet,
         config, setConfig, resetConfig: () => setConfig(configDefaut),
         majLigne: (cle, index, item) => setters[cle]((prev) => prev.map((x, i) => (i === index ? item : x))),
         patchLigne: (cle, index, patch) => setters[cle]((prev) => prev.map((x, i) => (i === index ? { ...x, ...patch } : x))),
@@ -1089,7 +1099,7 @@
       useEffect(() => {
         if (premierRendu.current) { premierRendu.current = false; return; }  // ne pas re-pousser ce qu'on vient de charger
         pushCloudDiffere();
-      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, config]);
+      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, config]);
 
       return <DataContext.Provider value={store}>{children}</DataContext.Provider>;
     }
@@ -5264,6 +5274,174 @@
       return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">ok (dans {st.reste} j)</span>;
     }
 
+    /* ---------- Identification (bagues, sexage, croisement par sujet) ---------- */
+    const COULEURS_BAGUE_HEX = { jaune: "#facc15", vert: "#22c55e", bleu: "#3b82f6", "bleu clair": "#7dd3fc", "bleu fonce": "#1d4ed8", rouge: "#ef4444", blanc: "#f8fafc", noir: "#1e293b", violet: "#a855f7", orange: "#f97316", rose: "#ec4899", gris: "#94a3b8" };
+    function PastilleBague({ couleur }) {
+      if (!couleur) return <span className="text-slate-300 text-xs">—</span>;
+      const hex = COULEURS_BAGUE_HEX[normLibelle(couleur)] || "#e2e8f0";
+      return (
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs">
+          <span className="w-3.5 h-3.5 rounded-full border border-slate-300 inline-block shrink-0" style={{ backgroundColor: hex }} />{couleur}
+        </span>
+      );
+    }
+    // Couleurs de bagues EN STOCK par taille — normalise l'ancien format (tableau unique) et
+    // garantit les 3 tailles. Résultat : { "8": [...], "12": [...], "16": [...] }.
+    function palettesBagues(config) {
+      const c = config && config.couleursBagues;
+      if (Array.isArray(c)) return { "8": [], "12": c.slice(), "16": c.slice() };   // ancien format
+      const def = { "8": ["noir", "bleu clair", "bleu foncé", "orange", "rose", "vert", "rouge", "violet", "blanc", "jaune"], "12": ["rouge", "bleu", "vert"], "16": ["jaune", "violet", "vert", "bleu", "rouge"] };
+      return { ...def, ...(c || {}) };
+    }
+    // Couleur de bague d'un lot de jeunes : ROULEMENT automatique, par espèce et dans l'ordre des
+    // lots. On tourne sur les couleurs disponibles À LA FOIS en 12 et 16 mm (un sujet du lot peut
+    // ainsi garder la couleur du lot même s'il passe de 12 à 16 mm).
+    function couleurBagueLot(config, poussins, lotIdx) {
+      const pal = palettesBagues(config);
+      const commun = (pal["12"] || []).filter((x) => (pal["16"] || []).map(normLibelle).includes(normLibelle(x)));
+      const palette = commun.length ? commun : ((pal["16"] || []).length ? pal["16"] : (pal["12"] || []));
+      if (!palette.length) return "";
+      const esp = (p) => (p.espece === "caille" ? "caille" : "poule");
+      const cible = poussins[lotIdx];
+      if (!cible) return palette[0];
+      const rang = poussins.filter((p, i) => i < lotIdx && esp(p) === esp(cible)).length;
+      return palette[rang % palette.length];
+    }
+
+    function Identification() {
+      const { poussins, sujets, reproducteurs, config, ajouterSujet, patchLigne, supprimerLigne } = useData();
+      const [espI, setEspI] = useState("poule");     // poule (poules/coqs) | caille
+      const [secI, setSecI] = useState("jeunes");    // jeunes | repro
+      const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
+      const pal = palettesBagues(config);
+      // Couleurs proposées selon la taille de bague choisie (mon stock réel) ;
+      // sans taille → toutes les couleurs possibles. La couleur déjà posée reste listée même hors stock.
+      const couleursPour = (taille, actuelle) => {
+        const base = (taille && pal[taille]) ? pal[taille] : Array.from(new Set([].concat(pal["8"] || [], pal["12"] || [], pal["16"] || [])));
+        return (actuelle && !base.map(normLibelle).includes(normLibelle(actuelle))) ? [actuelle].concat(base) : base;
+      };
+      const grpP = (p) => (p.espece === "caille" ? "caille" : "poule");
+      const grpR = (esp) => ((esp || "").includes("caille") ? "caille" : "poule");
+      const selCls = "border border-slate-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white";
+
+      // Lots de jeunes de l'espèce qui ont DÉPASSÉ la fenêtre de suivi (nS semaines) — à identifier
+      const lotsAges = poussins.map((p, i) => ({ p, i })).filter(({ p }) => {
+        if (grpP(p) !== espI || p.statut !== "en croissance") return false;
+        const a = ageJeune(p.date);
+        return a.jours != null && !a.futur && a.jours > nS * 7;
+      });
+      const sujetsDe = (lotId) => sujets.map((s, i) => ({ s, i })).filter(({ s }) => s.lot === lotId);
+      // Crée une fiche par sujet vivant manquant du lot (numéro auto LOT-01, couleur du lot pré-remplie)
+      const creerFiches = (p, i) => {
+        const existants = sujetsDe(p.id).length;
+        const manque = Math.max(0, (Number(p.nombre) || 0) - existants);
+        const coul = couleurBagueLot(config, poussins, i);
+        for (let k = 0; k < manque; k++) {
+          ajouterSujet({ espece: espI, lot: p.id, numero: p.id + "-" + String(existants + k + 1).padStart(2, "0"), croisement: "", sexe: "?", bagueTaille: "", bagueCouleur: coul, obs: "" });
+        }
+      };
+      const reprosEsp = reproducteurs.map((r, i) => ({ r, i })).filter(({ r }) => r.statut === "actif" && grpR(r.espece) === espI);
+      const btnCls = (actif) => "px-3 py-1.5 rounded-lg text-sm border " + (actif ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50");
+
+      return (
+        <div>
+          {/* Espèce puis catégorie */}
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <span className="text-xs text-slate-400">Espèce :</span>
+            <button onClick={() => setEspI("poule")} className={btnCls(espI === "poule")}>🐔 Poules / Coqs</button>
+            <button onClick={() => setEspI("caille")} className={btnCls(espI === "caille")}>🐦 Cailles</button>
+            <span className="text-xs text-slate-400 ml-3">Catégorie :</span>
+            <button onClick={() => setSecI("jeunes")} className={btnCls(secI === "jeunes")}>🐥 Jeunes</button>
+            <button onClick={() => setSecI("repro")} className={btnCls(secI === "repro")}>🐓 Reproducteurs</button>
+          </div>
+
+          {espI === "caille" && !(pal["8"] || []).length && (
+            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-4">🐦 Cailles : aucune couleur de bague 8 mm en stock (Réglages → Soins & rappels → Bagues) — tu peux déjà préparer le sexage et les croisements.</p>
+          )}
+
+          {/* Règle des bagues */}
+          <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-4">
+            💡 <span className="font-medium">Règle des bagues :</span> reproducteur = adulte → toujours <span className="font-medium">16 mm</span>. Sujet destiné à l'abattage : <span className="font-medium">12 mm</span> si abattu avant que ses pattes ne grossissent ; si elles deviennent trop grosses, remplace par une <span className="font-medium">16 mm</span> (change simplement la taille ici). Couleur = roulement automatique par lot.
+          </p>
+
+          {secI === "jeunes" && <>
+            <h2 className="text-lg font-semibold mb-3">🐥 Jeunes à identifier <span className="text-sm font-normal text-slate-400">(lots au-delà de {nS} semaines)</span></h2>
+            {lotsAges.length === 0
+              ? <p className="text-sm text-slate-400 mb-6">Aucun lot de {espI === "caille" ? "cailleteaux" : "poussins"} n'a dépassé {nS} semaines. Les lots apparaissent ici quand les jeunes sont assez grands pour être distingués et bagués.</p>
+              : lotsAges.map(({ p, i }) => {
+                  const lignesS = sujetsDe(p.id);
+                  const coul = couleurBagueLot(config, poussins, i);
+                  const manque = Math.max(0, (Number(p.nombre) || 0) - lignesS.length);
+                  const croisOpts = Array.from(new Set(((p.croisements || []).map((c) => c.nom)).concat(suggestionsCroisements(reproducteurs, p.espece)))).filter(Boolean);
+                  const dlId = "crois-sujets-" + p.id;
+                  return (
+                    <div key={p.id} className="mb-6">
+                      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                        <h3 className="text-sm font-semibold text-slate-600">Lot {p.id} <span className="font-normal text-slate-400">· {ageJeune(p.date).label} · {p.nombre} vivant(s) · couleur du lot :</span> <PastilleBague couleur={coul} /></h3>
+                        {manque > 0 && (
+                          <button onClick={() => creerFiches(p, i)} className="px-3 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap">+ Créer {manque} fiche{manque > 1 ? "s" : ""} sujet{manque > 1 ? "s" : ""}</button>
+                        )}
+                      </div>
+                      <datalist id={dlId}>{croisOpts.map((c) => <option key={c} value={c} />)}</datalist>
+                      {lignesS.length === 0
+                        ? <p className="text-sm text-slate-400">Clique sur « + Créer » : une fiche par sujet vivant (n° auto, couleur du lot pré-remplie).</p>
+                        : <Table
+                            resume={(r, k) => { const s = lignesS[k].s; return <><span className="font-medium">{s.numero}</span> · {s.sexe}{s.bagueTaille ? " · " + s.bagueTaille + " mm " + (s.bagueCouleur || "") : " · à baguer"}{s.croisement ? " · 🧬 " + codeCroisement(s.croisement) : ""}</>; }}
+                            columns={["N°", "Croisement supposé", "Sexage", "Bague", "Couleur", "Obs", ""]}
+                            rows={lignesS.map(({ s, i: si }) => [
+                              <input className={selCls + " w-24 font-medium"} value={s.numero} onChange={(e) => patchLigne("sujets", si, { numero: e.target.value })} />,
+                              <input className={selCls + " w-40"} list={dlId} value={s.croisement} onChange={(e) => patchLigne("sujets", si, { croisement: e.target.value })} placeholder="ex. Marans × Sussex" />,
+                              <select className={selCls} value={s.sexe || "?"} onChange={(e) => patchLigne("sujets", si, { sexe: e.target.value })}>
+                                {["?", "mâle", "femelle"].map((x) => <option key={x} value={x}>{x === "mâle" ? "♂ mâle" : x === "femelle" ? "♀ femelle" : "? à confirmer"}</option>)}
+                              </select>,
+                              <select className={selCls} value={s.bagueTaille || ""} onChange={(e) => patchLigne("sujets", si, { bagueTaille: e.target.value })}>
+                                <option value="">à baguer</option>
+                                {(espI === "caille" ? ["8"] : ["12", "16"]).map((t) => <option key={t} value={t}>{t} mm</option>)}
+                              </select>,
+                              <span className="flex items-center gap-1.5">
+                                <select className={selCls} value={s.bagueCouleur || ""} onChange={(e) => patchLigne("sujets", si, { bagueCouleur: e.target.value })}>
+                                  <option value="">—</option>
+                                  {couleursPour(s.bagueTaille, s.bagueCouleur).map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                                <PastilleBague couleur={s.bagueCouleur} />
+                              </span>,
+                              <ObsCell texte={s.obs} titre={"Observation — " + s.numero} onSave={(v) => patchLigne("sujets", si, { obs: v })} />,
+                              <RowActions onDelete={() => supprimerLigne("sujets", si)} />,
+                            ])}
+                          />}
+                    </div>
+                  );
+                })}
+            <p className="text-xs text-slate-400">Le croisement supposé propose ceux notés sur le lot + les croisements possibles avec tes reproducteurs. Supprime la fiche d'un sujet abattu/vendu (le lot, lui, se gère dans l'onglet Bébé).</p>
+          </>}
+
+          {secI === "repro" && <>
+            <h2 className="text-lg font-semibold mb-3">🐓 Reproducteurs <span className="text-sm font-normal text-slate-400">(adultes → bague {espI === "caille" ? "8" : "16"} mm)</span></h2>
+            {reprosEsp.length === 0
+              ? <p className="text-sm text-slate-400">Aucun reproducteur actif de cette espèce.</p>
+              : <Table
+                  resume={(r, k) => { const x = reprosEsp[k].r; return <><span className="font-medium">{x.nom}</span> · {x.espece}{x.bagueCouleur ? " · bague " + x.bagueCouleur : " · à baguer"}</>; }}
+                  columns={["Nom", "Espèce", "Race", "Taille", "Couleur", "N° bague"]}
+                  rows={reprosEsp.map(({ r, i }) => [
+                    <span className="font-medium">{r.nom}</span>,
+                    r.espece,
+                    r.race || "—",
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 whitespace-nowrap">{espI === "caille" ? "8 mm" : "16 mm"}</span>,
+                    <span className="flex items-center gap-1.5">
+                      <select className={selCls} value={r.bagueCouleur || ""} onChange={(e) => patchLigne("reproducteurs", i, { bagueCouleur: e.target.value })}>
+                        <option value="">—</option>
+                        {couleursPour(espI === "caille" ? "8" : "16", r.bagueCouleur).map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <PastilleBague couleur={r.bagueCouleur} />
+                    </span>,
+                    <input className={selCls + " w-24"} value={r.bagueNum || ""} onChange={(e) => patchLigne("reproducteurs", i, { bagueNum: e.target.value })} placeholder="n°" />,
+                  ])}
+                />}
+          </>}
+        </div>
+      );
+    }
+
     function GestionPoulaillers() {
       const { poulaillers, poussins, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
       const [vue, setVue] = useState("soins");   // onglet interne : soins | bebe | rappels | journal
@@ -5327,7 +5505,7 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["soins", "🩺 Soin du jour"], ["bebe", "🐥 Bébé"], ["rappels", "🔔 Rappel" + ((retard.length + duJour.length) ? " · " + (retard.length + duJour.length) : "")], ["journal", "📜 Journal"]].map(([id, lbl]) => (
+            {[["soins", "🩺 Soin du jour"], ["bebe", "🐥 Bébé"], ["identif", "🏷️ Identification"], ["rappels", "🔔 Rappel" + ((retard.length + duJour.length) ? " · " + (retard.length + duJour.length) : "")], ["journal", "📜 Journal"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVue(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vue === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
@@ -5418,6 +5596,8 @@
           </>}
 
           {vue === "bebe" && <Poussins key={bebeLot} embedded initialLotIndex={bebeLot} initialSub={bebeLot != null ? "sem" : undefined} />}
+
+          {vue === "identif" && <Identification />}
 
           {vue === "rappels" && <>
           {/* Rappels intelligents (calculés depuis les actions cochées) — seuls les vrais retards / du jour sont des alertes */}
@@ -6680,6 +6860,24 @@
             ))}
           </div>
           <p className="text-xs text-slate-400 mb-8">Les zones cochées (poussins / cailleteaux) sont retirées de « Gestion poulailler » et suivies par lot dans « Poussins & cailleteaux ». L'historique reste conservé.</p>
+
+          {/* Bagues : couleurs en stock par taille (listes de l'onglet Identification) */}
+          <h2 className="text-lg font-semibold mb-3">🏷️ Bagues — couleurs en stock par taille</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-2 space-y-3">
+            {["8", "12", "16"].map((t) => {
+              const pal = palettesBagues(config);
+              return (
+                <div key={t} className="flex items-center gap-3 flex-wrap">
+                  <span className="text-sm font-medium text-slate-600 w-16 shrink-0">{t} mm</span>
+                  <input className={inputClass + " flex-1 min-w-[200px]"} value={(pal[t] || []).join(", ")}
+                    onChange={(e) => setConfig((c) => ({ ...c, couleursBagues: { ...palettesBagues(c), [t]: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) } }))}
+                    placeholder={t === "8" ? "pas encore commandées" : "ex. rouge, bleu, vert"} />
+                  <span className="flex gap-1">{(pal[t] || []).map((c2) => <PastilleBague key={c2} couleur={c2} />)}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs text-slate-400 mb-8">Couleurs séparées par des virgules — ce sont les listes proposées dans Gestion poulailler → Identification. Le roulement automatique des lots utilise les couleurs disponibles à la fois en 12 et 16 mm (le sujet garde sa couleur s'il passe en 16 mm).</p>
           </>}
 
           <p className="text-xs text-slate-400 mt-6">Sauvegarde automatique. Exportez vos données (barre latérale) pour conserver une copie.</p>
