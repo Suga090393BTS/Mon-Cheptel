@@ -520,7 +520,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v71 — 06/07/2026";
+    const APP_VERSION = "v74 — 06/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -3094,36 +3094,38 @@
       return COULEURS_PAR_RACE[base] || COULEURS_PAR_RACE[r.race] || [];
     }
 
-    function RaceForm({ onClose }) {
+    function RaceForm({ onClose, initial, onSave }) {
       const { ajouterRace } = useData();
-      const [espece, setEspece] = useState("poule");
-      const [race, setRace] = useState("");
-      const [categorie, setCategorie] = useState("ponte");
-      const [ponteAn, setPonteAn] = useState("");
-      const [poidsF, setPoidsF] = useState("");
-      const [poidsM, setPoidsM] = useState("");
-      const [mere, setMere] = useState("moyenne");
-      const [chair, setChair] = useState("moyenne");
-      const [signes, setSignes] = useState("");
-      const [imageUrl, setImageUrl] = useState("");
-      const [sourceImage, setSourceImage] = useState("Wikimedia Commons");
-      const [notes, setNotes] = useState("");
-      const [couleurs, setCouleurs] = useState("");
-      const [noteperso, setNoteperso] = useState("");
+      const [espece, setEspece] = useState(initial ? (initial.espece === "caille" ? "caille" : "poule") : "poule");
+      const [race, setRace] = useState(initial ? initial.race : "");
+      const [categorie, setCategorie] = useState(initial ? initial.categorie : "ponte");
+      const [ponteAn, setPonteAn] = useState(initial && initial.ponte_moyenne_an !== "" && initial.ponte_moyenne_an != null ? String(initial.ponte_moyenne_an) : "");
+      const [poidsF, setPoidsF] = useState(initial && initial.poids_femelle_kg !== "" && initial.poids_femelle_kg != null ? String(initial.poids_femelle_kg) : "");
+      const [poidsM, setPoidsM] = useState(initial && initial.poids_male_kg !== "" && initial.poids_male_kg != null ? String(initial.poids_male_kg) : "");
+      const [mere, setMere] = useState(initial ? (initial.qualite_mere || "moyenne") : "moyenne");
+      const [chair, setChair] = useState(initial ? (initial.aptitude_chair || "moyenne") : "moyenne");
+      const [signes, setSignes] = useState(initial ? (initial.signes_reconnaissance || "") : "");
+      const [imageUrl, setImageUrl] = useState(initial ? (initial.image_url || "") : "");
+      const [sourceImage, setSourceImage] = useState(initial ? (initial.source_image || "") : "Wikimedia Commons");
+      const [notes, setNotes] = useState(initial ? (initial.notes || "") : "");
+      const [couleurs, setCouleurs] = useState(initial ? (initial.couleurs || []).join(", ") : "");
+      const [noteperso, setNoteperso] = useState(initial ? (initial.noteperso || "") : "");
 
       function submit(e) {
         e.preventDefault();
         // espèce coq = mêmes races que poule → on stocke "poule" dans le catalogue
         const especeCat = espece === "coq" ? "poule" : espece;
-        const id = (especeCat + "_" + race + "_" + Date.now()).toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        const id = initial && initial.id ? initial.id : (especeCat + "_" + race + "_" + Date.now()).toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
         const couleursArr = couleurs.split(",").map((c) => c.trim()).filter(Boolean);
-        ajouterRace({
+        const rec = {
+          ...(initial || {}),            // préserve les champs non gérés par le formulaire
           id, espece: especeCat, race: race.trim(), categorie,
           ponte_moyenne_an: Number(ponteAn) || "", poids_femelle_kg: Number(poidsF) || "", poids_male_kg: Number(poidsM) || "",
           qualite_mere: mere, aptitude_chair: chair, signes_reconnaissance: signes.trim(),
           image_url: imageUrl.trim(), source_image: sourceImage.trim(), notes: notes.trim(),
           couleurs: couleursArr, noteperso: noteperso.trim(),
-        });
+        };
+        (onSave || ajouterRace)(rec);
         onClose();
       }
       const qualites = ["faible", "moyenne", "bonne", "excellente"];
@@ -3230,7 +3232,7 @@
     };
 
     // Fiche détaillée d'une race : infos + couleurs/variétés éditables + note perso
-    function FicheRace({ race, index, onClose }) {
+    function FicheRace({ race, index, onClose, onEdit }) {
       const { patchLigne } = useData();
       const [couleurs, setCouleurs] = useState(couleursDeRace(race));
       const [nouvelle, setNouvelle] = useState("");
@@ -3279,9 +3281,15 @@
             <textarea className={inputClass} rows="2" value={noteperso} onChange={(e) => setNoteperso(e.target.value)} placeholder="lignée, éleveur, remarque…" />
           </Field>
           {race.source_image && <a href={race.source_image} target="_blank" rel="noreferrer" className="text-xs text-emerald-600 hover:underline block">Source photo : Wikimedia Commons ↗</a>}
-          <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-600">Fermer</button>
-            <button type="button" onClick={enregistrer} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white">Enregistrer</button>
+          <div className="flex justify-between items-center gap-2 pt-1 flex-wrap">
+            {/* Édition complète (tous les champs : liens, ponte, poids, notes…) via le formulaire de race */}
+            {onEdit
+              ? <button type="button" onClick={onEdit} className="px-3 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 text-sm whitespace-nowrap">✏️ Modifier la fiche</button>
+              : <span />}
+            <div className="flex gap-2">
+              <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-600">Fermer</button>
+              <button type="button" onClick={enregistrer} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white">Enregistrer</button>
+            </div>
           </div>
         </div>
       );
@@ -3443,7 +3451,7 @@
               : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 whitespace-nowrap">croisé F1</span>}
           </div>
           {sousTitre && <p className="text-xs text-slate-400 mb-2">{sousTitre}</p>}
-          {alerteLignee && <p className="text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1 mb-2">⚠️ Même lignée des deux côtés — risque de consanguinité, croisement déconseillé.</p>}
+          {alerteLignee && <p className="text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1 mb-2">{typeof alerteLignee === "string" ? alerteLignee : "⚠️ Même lignée des deux côtés — risque de consanguinité, croisement déconseillé."}</p>}
           {manquantes.length > 0
             ? <p className="text-sm text-slate-500">Race{manquantes.length > 1 ? "s" : ""} <span className="font-medium">{manquantes.join(" et ")}</span> introuvable{manquantes.length > 1 ? "s" : ""} au catalogue — ajoute-la pour obtenir une estimation.</p>
             : <>
@@ -3470,6 +3478,24 @@
       const [pereSel, setPereSel] = useState(0);
       const pere = males[Math.min(pereSel, Math.max(0, males.length - 1))];
       const femelles = pere ? actifs.filter(({ r }) => (r.espece === "poule" || r.espece === "caille femelle") && grp(r.espece) === grp(pere.r.espece)) : [];
+      // UNE carte par RACE de femelle (pas par poule) : deux poules de la même race donnent le même
+      // croisement → on regroupe et on liste les poules concernées sur la carte.
+      const groupesFemelles = (() => {
+        const map = {};
+        femelles.forEach(({ r }) => {
+          const cle = normLibelle(r.race || "?");
+          if (!map[cle]) map[cle] = { race: r.race || "", poules: [] };
+          map[cle].poules.push(r);
+        });
+        return Object.values(map);
+      })();
+      const libellePoules = (g) => g.poules.map((r) => (r.nom || "poule") + (Number(r.nombre) > 1 ? " (×" + r.nombre + ")" : "")).join(", ");
+      const nbPoules = (g) => g.poules.reduce((s, r) => s + (Number(r.nombre) || 1), 0);
+      const alerteGroupe = (g) => {
+        if (!pere || !pere.r.lignee) return null;
+        const memes = g.poules.filter((r) => r.lignee && normLibelle(r.lignee) === normLibelle(pere.r.lignee)).map((r) => r.nom || "poule");
+        return memes.length ? "⚠️ Même lignée que le père (" + memes.join(", ") + ") — risque de consanguinité avec cette/ces poule(s)." : null;
+      };
       // Essai libre : deux races du catalogue (même espèce)
       const [espLibre, setEspLibre] = useState("poule");
       const basesLibres = Array.from(new Set(races.filter((r) => r.espece === espLibre).map((r) => splitRaceCouleur(r.race).base))).sort((a, b) => a.localeCompare(b));
@@ -3479,7 +3505,7 @@
       return (
         <div>
           <h2 className="text-lg font-semibold mb-1">🧬 Mes croisements possibles</h2>
-          <p className="text-xs text-slate-500 mb-3">Choisis un mâle : chaque carte simule sa descendance avec une de tes femelles reproductrices (races lues dans l'onglet Animaux reproducteurs, estimation depuis le catalogue).</p>
+          <p className="text-xs text-slate-500 mb-3">Choisis un mâle : une carte par RACE de femelle (les poules de la même race donnent le même croisement — elles sont listées ensemble sur la carte).</p>
           {males.length === 0
             ? <p className="text-sm text-slate-400 mb-6">Aucun coq / mâle actif dans Animaux reproducteurs. Ajoute ton coq (avec sa race) pour simuler ses croisements.</p>
             : <>
@@ -3494,12 +3520,12 @@
               {femelles.length === 0
                 ? <p className="text-sm text-slate-400 mb-6">Aucune femelle reproductrice active de la même espèce.</p>
                 : <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                    {femelles.map(({ r }, k) => (
+                    {groupesFemelles.map((g, k) => (
                       <CarteCroisement key={k}
-                        titre={(pere.r.race || "?") + " × " + (r.race || "?")}
-                        sousTitre={"♂ " + (pere.r.nom || "coq") + " × ♀ " + (r.nom || "poule") + (r.nombre > 1 ? " (" + r.nombre + ")" : "")}
-                        racePere={pere.r.race || ""} raceMere={r.race || ""} races={races}
-                        alerteLignee={!!(pere.r.lignee && r.lignee && normLibelle(pere.r.lignee) === normLibelle(r.lignee))} />
+                        titre={(pere.r.race || "?") + " × " + (g.race || "?")}
+                        sousTitre={"♂ " + (pere.r.nom || "coq") + " × ♀ " + libellePoules(g) + (nbPoules(g) > 1 ? " — " + nbPoules(g) + " poules, même résultat" : "")}
+                        racePere={pere.r.race || ""} raceMere={g.race || ""} races={races}
+                        alerteLignee={alerteGroupe(g)} />
                     ))}
                   </div>}
             </>}
@@ -3531,10 +3557,11 @@
     }
 
     function Catalogue() {
-      const { races, patchLigne } = useData();
+      const { races, patchLigne, majLigne } = useData();
       const [open, setOpen] = useState(false);
       const [zoom, setZoom] = useState(null);   // race dont on agrandit la photo
       const [fiche, setFiche] = useState(null);  // { race, index } fiche détaillée
+      const [editRace, setEditRace] = useState(null);  // { race, index } → formulaire complet (crayon ✏️ de la fiche)
       const [espece, setEspece] = useState("tous");
       const [categorie, setCategorie] = useState("tous");
       const [recherche, setRecherche] = useState("");
@@ -3654,7 +3681,13 @@
 
           {fiche && (
             <Modal title={fiche.race.race} onClose={() => setFiche(null)}>
-              <FicheRace race={fiche.race} index={fiche.index} onClose={() => setFiche(null)} />
+              <FicheRace race={fiche.race} index={fiche.index} onClose={() => setFiche(null)} onEdit={() => { setEditRace(fiche); setFiche(null); }} />
+            </Modal>
+          )}
+
+          {editRace && (
+            <Modal title={"Modifier — " + editRace.race.race} onClose={() => setEditRace(null)}>
+              <RaceForm initial={editRace.race} onSave={(rec) => majLigne("races", editRace.index, rec)} onClose={() => setEditRace(null)} />
             </Modal>
           )}
 
@@ -5521,6 +5554,35 @@
       return <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${a.etape.cls}`}>{a.etape.label}</span>;
     }
 
+    // Code court d'un croisement supposé : « Marans × Sussex » → « MAR×SUS » (3 lettres de chaque côté)
+    function codeCroisement(nom) {
+      const parts = String(nom || "").split(/[x×]/i).map((s) => s.trim()).filter(Boolean);
+      const abr = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase() || "?";
+      if (parts.length < 2) return abr(parts[0] || nom);
+      return abr(parts[0]) + "×" + abr(parts[1]);
+    }
+    // Croisements possibles pour un lot de jeunes, calculés depuis MES reproducteurs actifs :
+    // chaque mâle × chaque race de femelle (de la même espèce que le lot).
+    function suggestionsCroisements(reproducteurs, especeLot) {
+      const grpLot = especeLot === "caille" ? "caille" : "poule";
+      const grpDe = (esp) => ((esp || "").includes("caille") ? "caille" : "poule");
+      const actifs = (reproducteurs || []).filter((r) => r.statut === "actif" && r.race && grpDe(r.espece) === grpLot);
+      const males = actifs.filter((r) => r.espece === "coq" || r.espece === "caille mâle");
+      const femRaces = Array.from(new Set(actifs.filter((r) => r.espece === "poule" || r.espece === "caille femelle").map((r) => r.race)));
+      const out = [];
+      males.forEach((m) => femRaces.forEach((f) => { const nom = m.race + " × " + f; if (!out.includes(nom)) out.push(nom); }));
+      return out;
+    }
+    // Pastille d'un croisement supposé : code court + nombre éventuel (nom complet au survol)
+    function BadgeCroisement({ c }) {
+      return (
+        <span title={c.nom + (c.nombre ? " — " + c.nombre + " jeune(s)" : "")}
+          className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 whitespace-nowrap">
+          🧬 {codeCroisement(c.nom)}{c.nombre ? " ×" + c.nombre : ""}
+        </span>
+      );
+    }
+
     function PoussinForm({ onClose, initial, onSave }) {
       const { lots, reproducteurs, poussins, ajouterPoussin, genPoussinId } = useData();
       const ligneesConnues = Array.from(new Set([].concat((reproducteurs || []).map(r => r.lignee), (poussins || []).map(p => p.lignee)).map(x => (x || "").trim()).filter(Boolean))).sort();
@@ -5533,6 +5595,10 @@
       const [morts, setMorts] = useState(initial && initial.morts != null ? String(initial.morts) : "0");
       const [statut, setStatut] = useState(initial ? initial.statut : "en croissance");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
+      // Croisements supposés (saisis quand les jeunes deviennent reconnaissables) : [{ nom, nombre }]
+      const [croisements, setCroisements] = useState(initial && Array.isArray(initial.croisements) ? initial.croisements.map((c) => ({ nom: c.nom || "", nombre: c.nombre != null ? String(c.nombre) : "" })) : []);
+      const suggCrois = suggestionsCroisements(reproducteurs, espece);
+      const majCrois = (k, champ, v) => setCroisements((cs) => cs.map((c, i) => (i === k ? { ...c, [champ]: v } : c)));
       const idGenere = initial && initial.id ? initial.id : genPoussinId(espece, date);
       function submit(e) {
         e.preventDefault();
@@ -5541,6 +5607,7 @@
           id: idGenere, date, espece, lot, lignee: lignee.trim(),
           nes: nes === "" ? "" : (Number(nes) || 0),
           nombre: Number(nombre) || 0, morts: Number(morts) || 0, statut, obs: obs.trim(),
+          croisements: croisements.map((c) => ({ nom: c.nom.trim(), nombre: Number(c.nombre) || "" })).filter((c) => c.nom),
         };
         (onSave || ajouterPoussin)(rec);
         onClose();
@@ -5590,6 +5657,24 @@
             <datalist id="poussin-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
             <p className="text-xs text-slate-400 mt-1">À reporter sur l'animal s'il devient reproducteur → évite les accouplements entre proches.</p>
           </Field>
+          {/* Croisements supposés — à remplir quand les jeunes sont assez grands pour être reconnus */}
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-1">🧬 Croisements supposés <span className="font-normal text-slate-400">(quand tu arrives à les distinguer)</span></p>
+            {croisements.map((c, k) => (
+              <div key={k} className="flex gap-2 mb-2">
+                <input list="croisements-sugg-list" className={inputClass + " flex-1 min-w-0"} value={c.nom}
+                  onChange={(e) => majCrois(k, "nom", e.target.value)} placeholder="ex. Marans × Sussex" />
+                <input type="number" min="0" className={inputClass + " w-20"} value={c.nombre}
+                  onChange={(e) => majCrois(k, "nombre", e.target.value)} placeholder="nb" title="Nombre de jeunes concernés (facultatif)" />
+                <button type="button" onClick={() => setCroisements((cs) => cs.filter((_, i) => i !== k))}
+                  className="px-2 rounded-lg text-red-500 hover:bg-red-50" title="Retirer">×</button>
+              </div>
+            ))}
+            <datalist id="croisements-sugg-list">{suggCrois.map((s) => <option key={s} value={s} />)}</datalist>
+            <button type="button" onClick={() => setCroisements((cs) => cs.concat([{ nom: "", nombre: "" }]))}
+              className="text-sm text-emerald-600 hover:underline">+ Ajouter un croisement supposé</button>
+            <p className="text-xs text-slate-400 mt-1">Choisis dans la liste (croisements possibles avec tes reproducteurs) ou écris librement. Le lot affiche un code court, ex. <span className="font-medium">MAR×SUS</span> = Marans × Sussex.</p>
+          </div>
           <p className="text-xs text-slate-400">L'étape est calculée automatiquement selon l'âge (date de naissance).</p>
           <Field label="Observation">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
@@ -5823,8 +5908,8 @@
                 <StatCard label="Lots en suivi" value={actifsIdx.length} color="purple" />
               </div>
               <Table
-                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {p.nombre} viv.</span></>; }}
-                columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "Obs", "Actions"]}
+                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); const cr = (p.croisements || []).map((c) => codeCroisement(c.nom)).join(" "); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {p.nombre} viv.{cr ? " · 🧬 " + cr : ""}</span></>; }}
+                columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "🧬 Croisements", "Obs", "Actions"]}
                 rows={lignes.map(({ p, i }) => {
                   const a = ageJeune(p.date);
                   const pret = a.jours != null && a.jours > nS * 7;
@@ -5838,6 +5923,9 @@
                     Number(p.morts) || 0,
                     <EtapeJeune birthDate={p.date} />,
                     <StatutAnimal statut={p.statut} />,
+                    (p.croisements || []).length
+                      ? <span className="flex flex-wrap gap-1">{p.croisements.map((c, k2) => <BadgeCroisement key={k2} c={c} />)}</span>
+                      : <span className="text-slate-300 text-xs">—</span>,
                     <ObsCell texte={p.obs} titre="Observation" onSave={(v) => patchLigne("poussins", i, { obs: v })} />,
                     <RowActions
                       onEdit={() => setEdit({ index: i, rec: p })}
