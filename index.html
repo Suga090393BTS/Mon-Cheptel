@@ -520,7 +520,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v68 — 03/07/2026";
+    const APP_VERSION = "v69 — 06/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -637,23 +637,55 @@
     }
 
     // Statistiques matériel : coût rattaché UNIQUEMENT à l'année d'achat (jamais recompté).
+    // Répartition des états d'une ligne de matériel : { etat: nb d'unités }.
+    // Une ligne peut regrouper plusieurs unités identiques (ex. 8 thermomètres) dont les états
+    // diffèrent (7 bon + 1 hors service). Rétro-compatible : sans m.etats, tout est dans m.etat.
+    function repartitionEtats(m) {
+      const q = Number(m.quantite) || 0;
+      const out = {};
+      if (m.etats && typeof m.etats === "object") {
+        let reste = q;
+        ETATS_MATERIEL.forEach((e) => {
+          const n = Math.min(reste, Math.max(0, Math.round(Number(m.etats[e]) || 0)));
+          if (n > 0) { out[e] = n; reste -= n; }
+        });
+        if (reste > 0) out[m.etat || "bon"] = (out[m.etat || "bon"] || 0) + reste;  // unités non ventilées → état principal
+        return out;
+      }
+      if (q > 0) out[m.etat || "bon"] = q;
+      return out;
+    }
+    // Unités en état de marche = neuf + bon + à surveiller
+    function nbEnMarche(m) {
+      const r = repartitionEtats(m);
+      return (r["neuf"] || 0) + (r["bon"] || 0) + (r["à surveiller"] || 0);
+    }
+    // Sous le seuil d'alerte (même logique que les consommables : seuil > 0 et unités en marche <= seuil)
+    function materielSousSeuil(m) {
+      const s = Number(m.seuil) || 0;
+      return s > 0 && nbEnMarche(m) <= s;
+    }
     function statsMateriel(materiel) {
       const depAnnee = {};
       let valeurTotale = 0;
-      const aReparer = [], horsService = [], aRemplacer = [];
+      // Listes PAR UNITÉ : { m, nb, q } = nb unités concernées sur q au total (ex. 1 HS sur 8)
+      const aReparer = [], horsService = [], aRemplacer = [], sousSeuil = [];
+      let nbAReparer = 0;
       materiel.forEach((m) => {
         const valeurReelle = (Number(m.quantite) || 0) * (Number(m.prixUnitaire) || 0);
         const paye = Math.max(0, valeurReelle - (Number(m.remise) || 0));  // prix réellement payé (remise déduite)
         valeurTotale += valeurReelle;                                       // « valeur réelle » du parc conservée
         depAnnee[annee(m.dateAchat)] = (depAnnee[annee(m.dateAchat)] || 0) + paye;
-        if (m.etat === "à réparer") aReparer.push(m);
-        else if (m.etat === "hors service") horsService.push(m);
-        else if (m.etat === "à remplacer") aRemplacer.push(m);
+        if (m.etat === "remplacé") return;   // ligne sortie du parc : plus d'alerte
+        const rep = repartitionEtats(m);
+        const q = Number(m.quantite) || 0;
+        const push = (arr, etat) => { const nb = rep[etat] || 0; if (nb > 0) { arr.push({ m, nb, q }); nbAReparer += nb; } };
+        push(aReparer, "à réparer"); push(horsService, "hors service"); push(aRemplacer, "à remplacer");
+        if (materielSousSeuil(m)) sousSeuil.push({ m, marche: nbEnMarche(m) });
       });
       return {
         depAnnee, valeurTotale, depenseAnneeCourante: depAnnee[String(ANNEE_COURANTE)] || 0,
-        aReparer, horsService, aRemplacer,
-        nbAReparer: aReparer.length + horsService.length + aRemplacer.length,
+        aReparer, horsService, aRemplacer, sousSeuil, nbAReparer,
       };
     }
 
@@ -1003,7 +1035,7 @@
         majLigne: (cle, index, item) => setters[cle]((prev) => prev.map((x, i) => (i === index ? item : x))),
         patchLigne: (cle, index, patch) => setters[cle]((prev) => prev.map((x, i) => (i === index ? { ...x, ...patch } : x))),
         supprimerLigne: (cle, index) => setters[cle]((prev) => prev.filter((_, i) => i !== index)),
-        majMaterielEtat: (index, etat) => setMateriel((prev) => prev.map((m, i) => (i === index ? { ...m, etat } : m))),
+        majMaterielEtat: (index, etat) => setMateriel((prev) => prev.map((m, i) => (i === index ? { ...m, etat, etats: null } : m))),  // état global → efface la ventilation par unité
         genLotId: (espece, dateIso) => genLotId(lots, espece, dateIso),
         genLotStockId: (espece, dateIso) => genLotStockId(lotsStock, espece, dateIso),
         genPoussinId: (espece, dateIso) => genPoussinId(poussins, espece, dateIso),
@@ -1586,10 +1618,14 @@
       // --- Alertes ---
       // Seuls les articles à racheter ET marqués « urgent » remontent en alerte importante (les autres restent dans l'inventaire).
       const stocksUrgents = sc.parArticle.filter(a => a.bas && articleEstUrgent(config, a.article) && !articleEstMasque(config, a.article)).map(a => a.article + " (" + a.stock + " " + a.unite + ")");
+      // Matériel : seules les lignes marquées ⭐ urgent remontent en alerte importante (comme les
+      // consommables) ; le reste est visible dans Inventaire matériel → À traiter. « (1/8) » = 1 unité sur 8.
+      const libMat = ({ m, nb, q }, suffixe) => m.article + (q > 1 ? " (" + nb + "/" + q + ")" : "") + " — " + suffixe;
       const materielTraiter = []
-        .concat(sm.aReparer.map(m => m.article + " — à réparer"))
-        .concat(sm.aRemplacer.map(m => m.article + " — à remplacer"))
-        .concat(sm.horsService.map(m => m.article + " — hors service"));
+        .concat(sm.aReparer.filter(x => x.m.urgent).map(x => libMat(x, "à réparer")))
+        .concat(sm.aRemplacer.filter(x => x.m.urgent).map(x => libMat(x, "à remplacer")))
+        .concat(sm.horsService.filter(x => x.m.urgent).map(x => libMat(x, "hors service")))
+        .concat(sm.sousSeuil.filter(x => x.m.urgent).map(x => x.m.article + " — " + x.marche + " en état de marche (seuil " + x.m.seuil + ")"));
       // Alertes d'âge des reproducteurs actifs (trop jeunes ou âgés)
       const alertesRepro = reproducteurs
         .filter(r => r.statut === "actif")
@@ -1785,7 +1821,7 @@
           <Section titre={"🚨 Alertes importantes" + (nbAlertes ? " · " + nbAlertes : "")} alerte={nbAlertes}>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <DashListe titre="Stocks urgents à racheter" couleur="orange" items={stocksUrgents} vide="Aucun stock urgent" />
-              <DashListe titre="Matériel à traiter" couleur="red" items={materielTraiter} vide="Aucun" />
+              <DashListe titre="Matériel urgent à traiter" couleur="red" items={materielTraiter} vide="Aucun (le non-urgent reste dans Inventaire matériel → À traiter)" />
               <DashListe titre="Âge reproducteurs" couleur="red" items={alertesRepro} vide="Aucune alerte d'âge" />
               <DashListe titre="Écart couvaison poule/caille" couleur="orange" items={ecartCouvaison} vide="Écarts ≥ 4 j OK" />
               <DashListe titre="Couvaison hors normes" couleur="red" items={alertesCouv} vide="Relevés conformes aux normes" />
@@ -4255,15 +4291,28 @@
     }
 
     /* ---------- Inventaire matériel ---------- */
+    const ETAT_MATERIEL_CLS = {
+      "neuf": "bg-emerald-100 text-emerald-700",
+      "bon": "bg-blue-100 text-blue-700",
+      "à surveiller": "bg-amber-100 text-amber-700",
+      "à réparer": "bg-orange-100 text-orange-700",
+      "hors service": "bg-red-100 text-red-700",
+    };
     function EtatMateriel({ etat }) {
-      const map = {
-        "neuf": "bg-emerald-100 text-emerald-700",
-        "bon": "bg-blue-100 text-blue-700",
-        "à surveiller": "bg-amber-100 text-amber-700",
-        "à réparer": "bg-orange-100 text-orange-700",
-        "hors service": "bg-red-100 text-red-700",
-      };
-      return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${map[etat] || "bg-slate-100 text-slate-600"}`}>{etat}</span>;
+      return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ETAT_MATERIEL_CLS[etat] || "bg-slate-100 text-slate-600"}`}>{etat}</span>;
+    }
+    // Pastilles de répartition des états d'une ligne multi-unités (ex. « 7 bon · 1 hors service »)
+    function EtatsLigne({ m }) {
+      const rep = repartitionEtats(m);
+      const etats = ETATS_MATERIEL.filter((e) => rep[e]);
+      if (etats.length <= 1) return <EtatMateriel etat={etats[0] || m.etat} />;
+      return (
+        <span className="flex flex-wrap gap-1">
+          {etats.map((e) => (
+            <span key={e} className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${ETAT_MATERIEL_CLS[e] || "bg-slate-100 text-slate-600"}`}>{rep[e]} {e}</span>
+          ))}
+        </span>
+      );
     }
 
     function MaterielForm({ onClose, initial, onSave }) {
@@ -4278,6 +4327,8 @@
       const [etat, setEtat] = useState(initial ? initial.etat : "neuf");
       const [dateHorsService, setDateHorsService] = useState(initial ? (initial.dateHorsService || "") : "");
       const [fournisseur, setFournisseur] = useState(initial ? (initial.fournisseur || "") : "");
+      const [seuil, setSeuil] = useState(initial && Number(initial.seuil) > 0 ? String(initial.seuil) : "");
+      const [urgent, setUrgent] = useState(initial ? !!initial.urgent : false);
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
       const valeurReelle = (Number(quantite) || 0) * (Number(prixUnitaire) || 0);
       const prixPaye = Math.max(0, valeurReelle - (Number(remise) || 0));
@@ -4290,7 +4341,11 @@
           quantite: Number(quantite) || 0, prixUnitaire: Number(prixUnitaire) || 0,
           remise: Number(remise) || 0,
           etat, dateHorsService: etat === "hors service" ? dateHorsService : "",
-          fournisseur: fournisseur.trim(), obs: obs.trim(),
+          fournisseur: fournisseur.trim(),
+          seuil: Number(seuil) || 0, urgent,
+          // La ventilation par unité (ex. 1 HS sur 8) se garde telle quelle — elle s'édite via le bouton États du tableau
+          ...(initial && initial.etats && initial.etat === etat ? { etats: initial.etats } : {}),
+          obs: obs.trim(),
         };
         if (rec.fournisseur) setConfig((c) => ({ ...c, fournisseurs: memoriserFournisseur(c, rec.fournisseur) }));
         (onSave || ajouterMateriel)(rec);
@@ -4346,10 +4401,59 @@
               </Field>
             )}
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Seuil d'alerte (en état de marche)">
+              <input type="number" min="0" className={inputClass} value={seuil} onChange={(e) => setSeuil(e.target.value)} placeholder="ex. 2 — vide = pas d'alerte" />
+            </Field>
+            <Field label="Priorité">
+              <label className="flex items-center gap-2 text-sm mt-2 cursor-pointer">
+                <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} />
+                ⭐ Urgent (remonte en alertes importantes)
+              </label>
+            </Field>
+          </div>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
           <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
+    // Ventilation des états d'une ligne multi-unités (ex. 8 thermomètres = 7 bon + 1 hors service).
+    // Le total doit faire exactement la quantité de la ligne.
+    function EtatsRepartitionForm({ m, onSave, onClose }) {
+      const q = Number(m.quantite) || 0;
+      const [rep, setRep] = useState(() => { const init = repartitionEtats(m); const o = {}; ETATS_MATERIEL.forEach((e) => { o[e] = init[e] || 0; }); return o; });
+      const total = ETATS_MATERIEL.reduce((s, e) => s + (Number(rep[e]) || 0), 0);
+      const ok = total === q;
+      const setN = (e, v) => setRep((r) => ({ ...r, [e]: v === "" ? "" : Math.max(0, Math.round(Number(v) || 0)) }));
+      function submit(ev) {
+        ev.preventDefault();
+        if (!ok) return;
+        const etats = {}; ETATS_MATERIEL.forEach((e) => { const n = Number(rep[e]) || 0; if (n > 0) etats[e] = n; });
+        // État principal de la ligne = celui qui compte le plus d'unités (sert au résumé et à l'ancien modèle)
+        const principal = ETATS_MATERIEL.slice().sort((a, b) => (etats[b] || 0) - (etats[a] || 0))[0] || m.etat;
+        onSave({ etats, etat: principal });
+        onClose();
+      }
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <p className="text-sm text-slate-600"><span className="font-medium">{m.article}</span> — {q} unité{q > 1 ? "s" : ""} au total. Indique combien d'unités sont dans chaque état.</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {ETATS_MATERIEL.map((e) => (
+              <Field key={e} label={e}>
+                <input type="number" min="0" max={q} className={inputClass} value={rep[e]} onChange={(ev) => setN(e, ev.target.value)} />
+              </Field>
+            ))}
+          </div>
+          <p className={"text-sm font-medium " + (ok ? "text-emerald-600" : "text-red-600")}>
+            Total : {total} / {q}{ok ? " ✓" : " — ajuste pour arriver à " + q}
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50">Annuler</button>
+            <button type="submit" disabled={!ok} className={"px-4 py-2 text-sm rounded-lg text-white font-medium " + (ok ? "bg-emerald-600 hover:bg-emerald-700" : "bg-slate-300 cursor-not-allowed")}>Enregistrer</button>
+          </div>
         </form>
       );
     }
@@ -4359,12 +4463,15 @@
       const [vue, setVue] = useState("parc");   // onglet interne : parc | traiter
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
+      const [etatsEdit, setEtatsEdit] = useState(null);   // { index, m } → modale de ventilation des états
       const st = statsMateriel(materiel);
       const valReelle = (m) => (Number(m.quantite) || 0) * (Number(m.prixUnitaire) || 0);
       const cout = (m) => Math.max(0, valReelle(m) - (Number(m.remise) || 0));   // prix payé (remise déduite)
       // index d'origine conservé pour la modification d'état après tri ; on masque les "remplacé"
       const lignes = materiel.map((m, i) => ({ m, i })).filter(x => x.m.etat !== "remplacé").sort((a, b) => b.m.dateAchat.localeCompare(a.m.dateAchat));
-      const aTraiter = (titre, items, couleur) => <DashListe titre={titre} items={items.map(m => m.article)} couleur={couleur} vide="Aucun" />;
+      // Libellé « Thermomètre (1/8) » quand seule une partie des unités de la ligne est concernée
+      const libNb = ({ m, nb, q }) => m.article + (q > 1 ? " (" + nb + "/" + q + ")" : "");
+      const aTraiter = (titre, items, couleur) => <DashListe titre={titre} items={items.map(libNb)} couleur={couleur} vide="Aucun" />;
 
       return (
         <div>
@@ -4378,7 +4485,7 @@
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
             <StatCard label={"Dépenses matériel " + ANNEE_COURANTE} value={eur(st.depenseAnneeCourante)} color="indigo" />
             <StatCard label="Valeur totale du parc" value={eur(st.valeurTotale)} sub="cumul de tous les achats" />
-            <StatCard label="À traiter" value={st.nbAReparer} color="orange" sub="réparer / remplacer / hors service" />
+            <StatCard label="À traiter" value={st.nbAReparer} color="orange" sub="unités à réparer / remplacer / HS" />
           </div>
 
           {/* Onglets internes */}
@@ -4389,31 +4496,54 @@
             ))}
           </div>
 
-          {vue === "traiter" && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+          {vue === "traiter" && <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
               {aTraiter("À réparer", st.aReparer, "orange")}
               {aTraiter("À remplacer", st.aRemplacer, "orange")}
               {aTraiter("Hors service", st.horsService, "red")}
             </div>
-          )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+              <DashListe titre="Sous le seuil d'alerte" couleur="red"
+                items={st.sousSeuil.map(({ m, marche }) => m.article + " — " + marche + " en état de marche (seuil " + m.seuil + ")")}
+                vide="Aucun matériel sous son seuil" />
+            </div>
+            <p className="text-xs text-slate-400 mb-2">Seuls les matériels marqués ⭐ urgent remontent dans les « Alertes importantes » du tableau de bord — les autres restent listés ici.</p>
+          </>}
 
           {vue === "parc" && <>
           <Table
-            resume={(r, k) => { const m = lignes[k].m; return <><span className="font-medium">{m.article}</span> <span className="text-slate-400">— {m.etat}</span></>; }}
-            columns={["Date d'achat", "Article", "Catégorie", "Qté", "Prix u.", "Coût", "État", "Âge", "Obs", "Actions"]}
+            resume={(r, k) => { const m = lignes[k].m; const rep = repartitionEtats(m); const etats = ETATS_MATERIEL.filter(e => rep[e]); return <>{m.urgent ? "⭐ " : ""}<span className="font-medium">{m.article}</span> <span className="text-slate-400">— {etats.map(e => rep[e] + " " + e).join(" · ") || m.etat}</span></>; }}
+            columns={["Date d'achat", "Article", "Catégorie", "Qté", "En marche", "Prix u.", "Coût", "État", "Âge", "Obs", "Actions"]}
             rows={lignes.map(({ m, i }) => [
               frDate(m.dateAchat),
-              <span className="font-medium">{m.article}</span>,
+              <span className="flex items-center gap-1">
+                <button onClick={() => patchLigne("materiel", i, { urgent: !m.urgent })}
+                  title={m.urgent ? "Urgent : en panne/sous seuil → alerte importante (clic pour retirer)" : "Marquer urgent (alerte importante si panne/sous seuil)"}
+                  className={"text-sm " + (m.urgent ? "" : "opacity-40 hover:opacity-100")}>{m.urgent ? "⭐" : "☆"}</button>
+                <span className="font-medium">{m.article}</span>
+              </span>,
               m.categorie,
               m.quantite,
+              (() => {
+                const em = nbEnMarche(m), q = Number(m.quantite) || 0, sous = materielSousSeuil(m);
+                return (
+                  <span className={"whitespace-nowrap " + (sous ? "text-red-600 font-medium" : (em < q ? "text-amber-600" : "text-slate-600"))}>
+                    {em}/{q}{Number(m.seuil) > 0 ? <span className="text-xs text-slate-400"> · seuil {m.seuil}</span> : null}{sous ? " ⚠️" : ""}
+                  </span>
+                );
+              })(),
               eur(m.prixUnitaire),
               Number(m.remise) > 0
                 ? <span className="whitespace-nowrap"><span className="line-through text-slate-400 mr-1">{eur(valReelle(m))}</span><span className="font-medium">{eur(cout(m))}</span></span>
                 : <span className="font-medium">{eur(cout(m))}</span>,
-              <select value={m.etat} onChange={(e) => majMaterielEtat(i, e.target.value)}
-                className="border border-slate-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500">
-                {ETATS_MATERIEL.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>,
+              (Number(m.quantite) || 0) > 1
+                ? <button onClick={() => setEtatsEdit({ index: i, m })} title="Ventiler les états des unités (ex. 1 hors service sur 8)" className="text-left flex items-center gap-1 hover:opacity-80">
+                    <EtatsLigne m={m} /><span className="text-slate-400 text-xs">✏️</span>
+                  </button>
+                : <select value={m.etat} onChange={(e) => majMaterielEtat(i, e.target.value)}
+                    className="border border-slate-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    {ETATS_MATERIEL.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>,
               <span className="whitespace-nowrap">{ageMateriel(m)}</span>,
               <ObsCell texte={m.obs} titre={"Observation — " + m.article} onSave={(v) => patchLigne("materiel", i, { obs: v })} />,
               <RowActions
@@ -4430,7 +4560,7 @@
             ])}
           />
           <p className="text-xs text-slate-400 mt-2">
-            « Âge » = temps depuis l'achat (figé à la mise hors service si renseignée). Coût compté la seule année d'achat. Actions : ✓ marquer réparé · ↻ marquer remplacé (sort des listes) · ✏️ modifier · 🗑 supprimer.
+            « Âge » = temps depuis l'achat (figé à la mise hors service si renseignée). Coût compté la seule année d'achat. « En marche » = unités neuves + bonnes + à surveiller ; ⚠️ rouge si au niveau du seuil d'alerte ou en dessous. Sur une ligne à plusieurs unités, clique sur l'État pour ventiler (ex. 1 hors service sur 8). ⭐ = urgent (remonte en alertes importantes). Actions : ✓ marquer réparé · ↻ marquer remplacé (sort des listes) · ✏️ modifier · 🗑 supprimer.
           </p>
           </>}
 
@@ -4442,6 +4572,11 @@
           {edit && (
             <Modal title={"Modifier — " + edit.rec.article} onClose={() => setEdit(null)}>
               <MaterielForm initial={edit.rec} onSave={(rec) => majLigne("materiel", edit.index, rec)} onClose={() => setEdit(null)} />
+            </Modal>
+          )}
+          {etatsEdit && (
+            <Modal title={"États — " + etatsEdit.m.article} onClose={() => setEtatsEdit(null)}>
+              <EtatsRepartitionForm m={etatsEdit.m} onSave={(patch) => patchLigne("materiel", etatsEdit.index, patch)} onClose={() => setEtatsEdit(null)} />
             </Modal>
           )}
         </div>
