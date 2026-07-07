@@ -532,7 +532,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v79 — 06/07/2026";
+    const APP_VERSION = "v80 — 07/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -3404,31 +3404,59 @@
     }
 
     /* ---------- Catalogue : pages de référence Plumages & Œufs ---------- */
-    // Références statiques (indicatives) — plumages des poules/coqs et des cailles.
-    const PLUMAGES_POULE = [
-      { nom: "Blanc uni", desc: "Plumage entièrement blanc.", ex: "Leghorn, Sussex blanche, Gauloise blanche", c: ["#f8fafc"] },
-      { nom: "Noir uni", desc: "Noir à reflets verts métalliques.", ex: "Orpington noire, Ayam Cemani, Gauloise noire", c: ["#1e293b"] },
+    // Références statiques — TOUS les grands coloris/motifs reconnus dans les standards avicoles,
+    // en 3 familles pour les poules/coqs : unicolores · motifs à deux zones · dessins de plume.
+    const PLUMAGES_POULE_UNIS = [
+      { nom: "Blanc", desc: "Plumage entièrement blanc.", ex: "Leghorn, Sussex blanche, Gauloise blanche", c: ["#f8fafc"] },
+      { nom: "Noir", desc: "Noir à reflets verts métalliques.", ex: "Orpington noire, Ayam Cemani, Gauloise noire", c: ["#1e293b"] },
       { nom: "Fauve", desc: "Roux doré uniforme.", ex: "Orpington fauve, Cochin fauve", c: ["#d97706"] },
-      { nom: "Rouge / acajou", desc: "Brun-rouge profond.", ex: "Rhode Island Red, New Hampshire", c: ["#9a3412"] },
-      { nom: "Bleu", desc: "Gris ardoise, souvent liseré plus foncé. Ne se reproduit pas à 100 % (bleu × bleu → bleu, noir ou splash).", ex: "Andalouse bleue, Orpington bleue", c: ["#64748b"] },
-      { nom: "Coucou / barré", desc: "Bandes transversales grises et blanches sur toute la plume.", ex: "Coucou de Rennes, Plymouth Rock barrée", c: ["#94a3b8", "#f1f5f9"] },
-      { nom: "Herminé", desc: "Corps blanc (ou fauve), camail et queue noirs — comme l'hermine.", ex: "Sussex herminée, Brahma herminée", c: ["#f8fafc", "#1e293b"] },
-      { nom: "Perdrix", desc: "Poule brune striée façon perdrix ; coq à camail doré et poitrine noire.", ex: "Marans, Brahma perdrix, Wyandotte perdrix", c: ["#92400e", "#451a03"] },
-      { nom: "Saumoné", desc: "Poule à poitrine saumon, dos gris-brun ; coq contrasté. Existe en doré et argenté.", ex: "Faverolles saumonée", c: ["#fda4af", "#a8a29e"] },
-      { nom: "Froment", desc: "Couleur « blé » : poule crème-froment, coq rouge à queue noire.", ex: "Marans froment, combattants", c: ["#fde68a", "#b45309"] },
-      { nom: "Mille-fleurs", desc: "Fond acajou pointé de noir et de blanc en bout de plume.", ex: "Sabelpoot mille-fleurs, Pékin mille-fleurs", c: ["#b45309", "#1e293b", "#f8fafc"] },
-      { nom: "Caillouté", desc: "Taches blanches irrégulières en bout de plume sur fond coloré.", ex: "Houdan, Ancône", c: ["#334155", "#f8fafc"] },
-      { nom: "Pailleté / crayonné", desc: "Dessins réguliers (paillettes ou fins traits concentriques) sur fond clair.", ex: "Hamburg pailleté, Brahma crayonnée", c: ["#e2e8f0", "#1e293b"] },
-      { nom: "Doré / argenté", desc: "Camail et dos dorés (ou argentés/blancs), motifs variables selon la race.", ex: "Sebright doré, Leghorn argentée", c: ["#f59e0b", "#e5e7eb"] },
+      { nom: "Rouge / acajou", desc: "Brun-rouge profond et brillant.", ex: "Rhode Island Red, New Hampshire", c: ["#9a3412"] },
+      { nom: "Bleu (liseré)", desc: "Gris ardoise, chaque plume bordée plus foncé. Ne se reproduit pas à 100 % : bleu × bleu → bleu, noir ou splash.", ex: "Andalouse bleue, Orpington bleue", c: ["#64748b"] },
+      { nom: "Lavande", desc: "Gris-bleu clair UNIFORME (sans liseré) — contrairement au bleu, se reproduit fidèlement.", ex: "Orpington lavande, Pékin lavande, Araucana lavande", c: ["#a5b4fc"] },
+      { nom: "Splash", desc: "Fond très clair « éclaboussé » de taches gris-bleu — issu du croisement bleu × bleu.", ex: "Orpington splash, Marans splash", c: ["#e2e8f0", "#64748b"] },
+      { nom: "Chocolat", desc: "Brun chocolat uniforme (gène lié au sexe).", ex: "Orpington chocolat, Serama chocolat", c: ["#5b3a29"] },
+      { nom: "Gris perle", desc: "Gris clair uniforme.", ex: "Pékin gris perle", c: ["#cbd5e1"] },
+      { nom: "Isabelle", desc: "Beige crème doux et uniforme.", ex: "Pékin isabelle, Leghorn isabelle", c: ["#e7c48b"] },
+    ];
+    const PLUMAGES_POULE_ZONES = [
+      { nom: "Herminé (colombien)", desc: "Corps blanc, camail et queue noirs — comme l'hermine.", ex: "Sussex herminée, Brahma herminée, Wyandotte herminée", c: ["#f8fafc", "#1e293b"] },
+      { nom: "Fauve herminé noir", desc: "Comme l'herminé mais sur fond fauve.", ex: "Brahma fauve herminé noir, Cochin", c: ["#d97706", "#1e293b"] },
+      { nom: "Noir cuivré", desc: "Noire à camail (et dos du coq) cuivre rouge.", ex: "Marans noir-cuivré — la plus connue", c: ["#1e293b", "#b45309"] },
+      { nom: "Bouleau (birchen)", desc: "Noir à camail argenté/blanc.", ex: "Marans noire à camail argenté, combattant bouleau", c: ["#1e293b", "#e5e7eb"] },
+      { nom: "Rouge à queue noire", desc: "Corps rouge/fauve, queue et rémiges noires.", ex: "New Hampshire, nain allemand rouge", c: ["#b45309", "#1e293b"] },
+      { nom: "Pile (pyle)", desc: "Dessin du perdrix mais le noir est remplacé par du blanc.", ex: "Combattant anglais pile, Leghorn pile", c: ["#f8fafc", "#b45309"] },
+      { nom: "Froment", desc: "Couleur « blé » : poule crème-froment, coq rouge sombre à poitrine noire.", ex: "Marans froment, combattants, Araucana froment", c: ["#fde68a", "#b45309"] },
+      { nom: "Pie / panaché (exchequer)", desc: "Grandes taches noires et blanches irrégulières réparties sur tout le corps.", ex: "Leghorn exchequer, Orpington pie", c: ["#1e293b", "#f8fafc"] },
+    ];
+    const PLUMAGES_POULE_DESSINS = [
+      { nom: "Coucou", desc: "Bandes transversales floues gris/blanc cassé sur chaque plume.", ex: "Coucou de Rennes, Marans coucou, Coucou des Flandres", c: ["#94a3b8", "#f1f5f9"] },
+      { nom: "Barré", desc: "Bandes transversales NETTES noir/blanc (plus contrastées que le coucou).", ex: "Plymouth Rock barrée", c: ["#334155", "#f8fafc"] },
+      { nom: "Perdrix (doré)", desc: "Poule brune finement striée ; coq à camail doré et poitrine noire — le coloris « sauvage ».", ex: "Marans, Brahma perdrix, Italienne perdrix", c: ["#92400e", "#451a03"] },
+      { nom: "Perdrix argenté", desc: "Perdrix dont le doré est remplacé par du blanc argenté.", ex: "Brahma perdrix argenté, Leghorn argentée", c: ["#94a3b8", "#451a03"] },
+      { nom: "Perdrix maillé", desc: "Perdrix à dessin en croissants (mailles) réguliers sur la poule.", ex: "Wyandotte perdrix maillée doré", c: ["#92400e", "#78350f"] },
+      { nom: "Saumoné (doré / argenté)", desc: "Poule à poitrine saumon et dos gris-brun ; coq très contrasté.", ex: "Faverolles saumonée — l'emblème du coloris", c: ["#fda4af", "#a8a29e"] },
+      { nom: "Mille-fleurs", desc: "Fond acajou, chaque plume terminée par une pointe noire ET une perle blanche.", ex: "Sabelpoot mille-fleurs, Pékin mille-fleurs", c: ["#b45309", "#1e293b", "#f8fafc"] },
+      { nom: "Porcelaine", desc: "Mille-fleurs adouci : fond isabelle clair, pointes bleu pâle + perle blanche.", ex: "Sabelpoot porcelaine, Pékin porcelaine", c: ["#e7c48b", "#a5b4fc", "#f8fafc"] },
+      { nom: "Caillouté", desc: "Taches blanches irrégulières en bout de plume sur fond noir.", ex: "Ancône, Houdan cailloutée", c: ["#334155", "#f8fafc"] },
+      { nom: "Pailleté", desc: "Pointe noire ronde (paillette) en bout de chaque plume sur fond doré ou argenté.", ex: "Hamburg pailleté argenté, Sabelpoot pailleté", c: ["#e5e7eb", "#1e293b"] },
+      { nom: "Liseré (doré / argenté)", desc: "Chaque plume bordée d'un fin liseré noir régulier.", ex: "Sebright doré et argenté, Wyandotte dorée liserée", c: ["#f59e0b", "#1e293b"] },
+      { nom: "Double liseré / maillé", desc: "Deux liserés concentriques sur chaque plume (dessin très travaillé).", ex: "Barnevelder double liseré", c: ["#9a3412", "#1e293b"] },
+      { nom: "Crayonné", desc: "Fines rayures parallèles sur les plumes de la poule (le coq reste plus simple).", ex: "Brahma crayonnée, Hamburg crayonné", c: ["#e2e8f0", "#1e293b"] },
+      { nom: "Sauvage / doré", desc: "Coloris ancestral de la poule sauvage (Gallus gallus), proche du perdrix.", ex: "Italienne dorée, Leghorn dorée", c: ["#b45309", "#78350f"] },
     ];
     const PLUMAGES_CAILLE = [
-      { nom: "Sauvage (japonaise)", desc: "Brun strié beige et noir — la couleur naturelle de la caille du Japon.", ex: "Coturnix japonica type sauvage, Jumbo brun", c: ["#78350f", "#d6b98c"] },
-      { nom: "Range / rousse", desc: "Brun-roux chaud, plus uniforme que le type sauvage.", ex: "Range doré", c: ["#b45309"] },
+      { nom: "Sauvage / pharaon", desc: "Brun strié beige et noir — la couleur naturelle de la caille du Japon.", ex: "Coturnix japonica type sauvage, Jumbo brun", c: ["#78350f", "#d6b98c"] },
+      { nom: "Italienne (dorée)", desc: "Fond doré-jaune tacheté de brun.", ex: "Italienne dorée", c: ["#eab308", "#92400e"] },
+      { nom: "Mandchoue dorée", desc: "Doré clair chaud, peu tachetée.", ex: "Manchurian golden", c: ["#f2c14e"] },
+      { nom: "Range / rousse", desc: "Brun-roux foncé, plus uniforme que le type sauvage.", ex: "British Range", c: ["#b45309"] },
       { nom: "Isabelle / fauve", desc: "Beige doré clair, stries atténuées.", ex: "Isabelle", c: ["#e7c48b"] },
-      { nom: "Tuxedo", desc: "« Costume » : poitrine et face blanches, dos foncé.", ex: "Tuxedo", c: ["#f8fafc", "#44403c"] },
-      { nom: "Blanche", desc: "Blanc uni, parfois quelques taches sombres sur la tête.", ex: "Blanche d'Angleterre", c: ["#f8fafc"] },
-      { nom: "Tibétaine", desc: "Brun chocolat très foncé, presque uni.", ex: "Tibétaine", c: ["#44403c"] },
-      { nom: "Perlée / argentée", desc: "Gris clair perlé, stries adoucies.", ex: "Perlée", c: ["#cbd5e1"] },
+      { nom: "Tibétaine", desc: "Brun chocolat très foncé, presque uni.", ex: "British black / Tibétaine", c: ["#44403c"] },
+      { nom: "Rosetta", desc: "Brun-roux moucheté — version diluée de la tibétaine.", ex: "Rosetta", c: ["#92400e", "#d6b98c"] },
+      { nom: "Blanche", desc: "Blanc uni, parfois quelques taches sombres sur la tête.", ex: "Blanche d'Angleterre, Texas A&M (jumbo blanche)", c: ["#f8fafc"] },
+      { nom: "Tuxedo", desc: "« Costume » : poitrine et face blanches, dos foncé.", ex: "Tuxedo (sur base tibétaine, range…)", c: ["#f8fafc", "#44403c"] },
+      { nom: "Panachée (pied)", desc: "Taches blanches irrégulières sur n'importe quelle couleur de base.", ex: "Panachée", c: ["#f8fafc", "#78350f"] },
+      { nom: "Perlée / argentée", desc: "Gris clair perlé, stries adoucies.", ex: "Silver / Perlée", c: ["#cbd5e1"] },
+      { nom: "Falb fee", desc: "Gris-beige très clair aux stries diluées — souvent porteuse d'œufs céladon.", ex: "Falb fee (lignées céladon)", c: ["#ded6c3"] },
     ];
     // Références statiques — types d'œufs et couleurs de coquille.
     const OEUFS_POULE = [
@@ -3472,11 +3500,15 @@
           </div>
         </div>
       );
+      const nbPoule = PLUMAGES_POULE_UNIS.length + PLUMAGES_POULE_ZONES.length + PLUMAGES_POULE_DESSINS.length;
       return (
         <div>
-          {bloc("🐔 Poules & coqs — types de plumage", "Un même motif existe souvent en plusieurs couleurs (doré, argenté, fauve…). Camail = plumes du cou.", PLUMAGES_POULE)}
+          <p className="text-sm text-slate-500 mb-4">🐔 <span className="font-medium">{nbPoule} coloris de poules/coqs</span> (standards avicoles) en 3 familles + <span className="font-medium">{PLUMAGES_CAILLE.length} variétés de cailles</span>. Camail = plumes du cou · rémiges = grandes plumes d'aile.</p>
+          {bloc("🎨 Unicolores — une seule couleur", "La couleur couvre tout le corps de façon uniforme.", PLUMAGES_POULE_UNIS)}
+          {bloc("🐔 Motifs à deux zones — corps + camail/queue", "Deux couleurs réparties par zones du corps (le dessin de chaque plume reste simple).", PLUMAGES_POULE_ZONES)}
+          {bloc("✒️ Dessins de plume — chaque plume est dessinée", "Liserés, pointes, barres ou perles répétés sur chaque plume. Un même dessin existe souvent en doré ET argenté.", PLUMAGES_POULE_DESSINS)}
           {bloc("🐦 Cailles — variétés de plumage", "Variétés de la caille japonaise (Coturnix japonica), celle qu'on élève pour les œufs et la chair.", PLUMAGES_CAILLE)}
-          <p className="text-xs text-slate-400">Référence indicative pour identifier tes animaux — la couleur/variété exacte de chaque reproducteur se note dans sa fiche (champ « couleur »).</p>
+          <p className="text-xs text-slate-400">Référence pour identifier tes animaux — la couleur/variété exacte de chaque reproducteur se note dans sa fiche (champ « couleur »). Beaucoup de races existent dans plusieurs de ces coloris.</p>
         </div>
       );
     }
