@@ -2,7 +2,7 @@
    Navigations : réseau d'abord (pour récupérer les mises à jour), cache si hors-ligne.
    Autres ressources (icônes, librairies CDN) : cache d'abord.
    IMPORTANT : le cloud (Supabase) n'est JAMAIS mis en cache → données/auth toujours en direct. */
-const CACHE = "cheptel-v5";
+const CACHE = "cheptel-v6";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
