@@ -532,7 +532,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v81 — 07/07/2026";
+    const APP_VERSION = "v83 — 07/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1613,6 +1613,23 @@
       });
       return { oeufsJour, nb, detail };
     }
+    // Effectifs RÉELS du cheptel, calculés depuis les reproducteurs ACTIFS : les décédés / retirés
+    // ne comptent plus, les lignes groupées comptent leur `nombre`. Se met à jour tout seul à
+    // chaque ajout/décès. S'il n'y a AUCUN reproducteur saisi, on retombe sur les effectifs
+    // manuels des Réglages (config.cheptel).
+    function effectifsReproducteurs(reproducteurs, config) {
+      if (!(reproducteurs || []).length) return { ...((config && config.cheptel) || cheptel), manuel: true };
+      const out = { poules: 0, coqs: 0, caillesF: 0, caillesM: 0 };
+      reproducteurs.forEach((r) => {
+        if (r.statut !== "actif") return;
+        const n = Math.max(1, Number(r.nombre) || 1);
+        if (r.espece === "poule") out.poules += n;
+        else if (r.espece === "coq") out.coqs += n;
+        else if (r.espece === "caille femelle") out.caillesF += n;
+        else if (r.espece === "caille mâle") out.caillesM += n;
+      });
+      return out;
+    }
     // Date d'abattage SUGGÉRÉE d'un lot de consommation : naissance + config.agesAbattage (semaines)
     function abattageSuggere(a, config) {
       if (!a.naissance) return null;
@@ -1771,7 +1788,8 @@
         alertesCouvaison(l, releves, config).alertes.forEach((m) => alertesCouv.push(l.id + " : " + m));
       });
       // --- Taux de ponte (7 derniers jours) + détection de baisse vs les 7 jours précédents ---
-      const chept = config.cheptel || cheptel;
+      // Effectifs VIVANTS calculés depuis les reproducteurs actifs (plus les chiffres figés des Réglages)
+      const chept = effectifsReproducteurs(reproducteurs, config);
       const pontePoule7 = tauxPonte(collectes, "poule", chept.poules, 7);
       const ponteCaille7 = tauxPonte(collectes, "caille", chept.caillesF, 7);
       const pontePoulePrev = tauxPonte(collectes, "poule", chept.poules, 7, dateDecalee(AUJOURDHUI_ISO, -7));
@@ -1980,10 +1998,10 @@
           <Section titre="🐓 Animaux & jeunes" alerte={alJeune.length}>
             <p className="text-xs text-slate-500 mb-2 font-medium">Reproducteurs & cheptel</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-              <StatCard label="Poules" value={(config.cheptel || cheptel).poules} />
-              <StatCard label="Coqs" value={(config.cheptel || cheptel).coqs} color="orange" />
-              <StatCard label="Cailles ♀" value={(config.cheptel || cheptel).caillesF} />
-              <StatCard label="Cailles ♂" value={(config.cheptel || cheptel).caillesM} color="orange" />
+              <StatCard label="Poules" value={chept.poules} sub={chept.manuel ? "effectif des Réglages" : "actives"} />
+              <StatCard label="Coqs" value={chept.coqs} color="orange" sub={chept.manuel ? "" : "actifs"} />
+              <StatCard label="Cailles ♀" value={chept.caillesF} sub={chept.manuel ? "" : "actives"} />
+              <StatCard label="Cailles ♂" value={chept.caillesM} color="orange" sub={chept.manuel ? "" : "actifs"} />
             </div>
             {/* Statuts des reproducteurs (les non-actifs sortent du compte « actifs ») */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
@@ -3938,7 +3956,7 @@
 
     /* ---------- Achats d'animaux reproducteurs (par lot) ---------- */
     function BreederPurchaseForm({ onClose, initial, onSave }) {
-      const { ajouterBreederPurchase, config, setConfig } = useData();
+      const { ajouterBreederPurchase, ajouterReproducteur, config, setConfig } = useData();
       const TYPES = config.typesAchatRepro || ["reproducteur", "œufs à couver", "poussin/cailleteau", "autre"];
       const ESPECES = config.especes || ["poule", "caille"];
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
@@ -3953,6 +3971,9 @@
       const [remise, setRemise] = useState(initial && initial.remise ? String(initial.remise) : "");
       const [description, setDescription] = useState(initial ? (initial.description || "") : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
+      // À la création d'un achat de reproducteurs, proposer d'ajouter aussi ces animaux au cheptel
+      // (collection reproducteurs → alimente le total du tableau de bord). Coché par défaut, jamais en édition.
+      const [ajoutCheptel, setAjoutCheptel] = useState(true);
       const fournisseursConnus = (config.fournisseurs || []).slice().sort((a, b) => a.localeCompare(b));
 
       const nL = Math.max(0, Number(nbLots) || 0);
@@ -3975,6 +3996,18 @@
         };
         if (rec.fournisseur) setConfig((c) => ({ ...c, fournisseurs: memoriserFournisseur(c, rec.fournisseur) }));
         (onSave || ajouterBreederPurchase)(rec);
+        // Bridge : à la création d'un achat de reproducteurs vivants, créer aussi les animaux
+        // dans le cheptel (Animaux) pour que le total du tableau de bord se mette à jour.
+        if (!initial && ajoutCheptel && typeAchat === "reproducteur") {
+          const arr = [];
+          if (fem > 0) arr.push({ espece: espece === "caille" ? "caille femelle" : "poule", nombre: nL * fem });
+          if (mal > 0) arr.push({ espece: espece === "caille" ? "caille mâle" : "coq", nombre: nL * mal });
+          arr.forEach((a) => ajouterReproducteur({
+            nom: "", nombre: a.nombre, espece: a.espece, race: "", couleur: "", lignee: "",
+            naissance: "", arrivee: date, statut: "actif", dateFin: "",
+            obs: "Achat" + (rec.fournisseur ? " — " + rec.fournisseur : "") + " du " + date,
+          }));
+        }
         onClose();
       }
       return (
@@ -4035,6 +4068,21 @@
             </p>
           </div>
 
+          {/* Ajouter aussi les animaux au cheptel (met à jour le total du tableau de bord) */}
+          {!initial && typeAchat === "reproducteur" && totalAnimaux > 0 && (
+            <label className="flex items-start gap-2 rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-sm cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={ajoutCheptel} onChange={(e) => setAjoutCheptel(e.target.checked)} />
+              <span>
+                <span className="font-medium text-emerald-800">➕ Ajouter aussi ces animaux au cheptel (Animaux)</span>
+                <span className="block text-emerald-700/80">
+                  Crée {(nL * fem) > 0 ? (nL * fem) + " " + (espece === "caille" ? "caille(s) ♀" : "poule(s)") : ""}
+                  {(nL * fem) > 0 && (nL * mal) > 0 ? " + " : ""}
+                  {(nL * mal) > 0 ? (nL * mal) + " " + (espece === "caille" ? "caille(s) ♂" : "coq(s)") : ""} actifs
+                  {" "}→ le total du tableau de bord se met à jour. Décoche si tu les as déjà saisis dans « Animaux ».
+                </span>
+              </span>
+            </label>
+          )}
           <Field label="Description du lot (facultatif)">
             <input className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="ex. cailles 3♀+1♂, poules Marans…" />
           </Field>
@@ -6896,9 +6944,9 @@
             </div>
           </div>
 
-          {/* Cheptel (effectifs) */}
-          <h2 className="text-lg font-semibold mb-3">Cheptel (effectifs)</h2>
-          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {/* Cheptel (effectifs de secours) — utilisés SEULEMENT si aucun reproducteur n'est saisi */}
+          <h2 className="text-lg font-semibold mb-3">Cheptel (effectifs de secours)</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[["poules", "Poules"], ["coqs", "Coqs"], ["caillesF", "Cailles ♀"], ["caillesM", "Cailles ♂"]].map(([k, lbl]) => (
               <label key={k} className="text-xs text-slate-500">{lbl}
                 <input type="number" min="0" className={numCls + " mt-1 block"}
@@ -6907,6 +6955,7 @@
               </label>
             ))}
           </div>
+          <p className="text-xs text-slate-400 mb-8">⚠️ Depuis que tes animaux sont dans <span className="font-medium">Animaux reproducteurs</span>, les effectifs (tableau de bord, taux de ponte) se calculent TOUT SEULS depuis les reproducteurs <span className="font-medium">actifs</span> — les décédés/retirés ne comptent plus. Ces chiffres-ci ne servent que si la liste des reproducteurs est vide.</p>
 
           {/* Prix de l'œuf (pour l'économie estimée) */}
           <h2 className="text-lg font-semibold mb-3">Prix moyen d'un œuf acheté</h2>
