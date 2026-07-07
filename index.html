@@ -532,7 +532,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v80 — 07/07/2026";
+    const APP_VERSION = "v81 — 07/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -2159,7 +2159,7 @@
       };
     }
 
-    // Carte détaillée (onglet Couveuses) : infos + mini-récap + 2 graphiques
+    // Carte détaillée d'une couveuse (Récolte des œufs → Stats couvaison) : infos + mini-récap + 2 graphiques
     function IncubatorCard({ num }) {
       const { lots, suivis, mirages, eclosions, config } = useData();
       const { lot, releves, dernier, total, jourActuel } = infosCouveuse(num, lots, suivis);
@@ -2378,25 +2378,8 @@
       );
     }
 
-    function Couveuses() {
-      return (
-        <div>
-          <PageHeader title="Couveuses" subtitle="Mini-tableau de bord par couveuse — courbes issues du suivi journalier" />
-          <div className="grid md:grid-cols-2 gap-4">
-            <IncubatorCard num={1} />
-            <IncubatorCard num={2} />
-          </div>
-          <p className="text-xs text-slate-400 mt-4">
-            Poules : courbe J 0 → J 21 · Cailles : J 0 → J 17. Courbes lisses calculées à partir du suivi journalier.
-          </p>
-          <div className="mt-6">
-            <Section titre="📋 Fiche de référence couvaison">
-              <FicheCouvaison />
-            </Section>
-          </div>
-        </div>
-      );
-    }
+    // (L'ancienne page « Couveuses » a été supprimée : ses cartes IncubatorCard et la fiche de
+    // référence vivent dans Récolte des œufs → Stats couvaison.)
 
     // Formulaire : nouvelle couvaison (n° de lot généré automatiquement)
     function CouvaisonForm({ onClose, initial, onSave }) {
@@ -2653,7 +2636,7 @@
             ))}
           </div>
 
-          {ongletL === "suivi" && <Suivi embedded />}
+          {ongletL === "suivi" && <Suivi />}
 
           {ongletL === "stats" && <>
           <h2 className="text-lg font-semibold mb-3">📊 Stats de couvaison</h2>
@@ -2916,7 +2899,7 @@
       );
     }
 
-    function Suivi({ embedded }) {
+    function Suivi() {
       const { suivis, mirages, eclosions, lots, majLigne, supprimerLigne, patchLigne } = useData();
       // open : null | "releve" | "mirage" | "eclosion"
       const [open, setOpen] = useState(null);
@@ -2971,13 +2954,8 @@
       );
       return (
         <div>
-          {embedded
-            ? <div className="flex items-center justify-between gap-2 mb-4 flex-wrap"><h2 className="text-lg font-semibold">Suivi de couvaison</h2>{actions}</div>
-            : <PageHeader
-                title="Suivi journalier"
-                subtitle="Relevés, mirages et éclosions — affichés par espèce (poules / cailles)"
-                action={actions}
-              />}
+          {/* Toujours embarqué dans Récolte des œufs → Suivi couvaison (la page autonome a été retirée du menu) */}
+          <div className="flex items-center justify-between gap-2 mb-4 flex-wrap"><h2 className="text-lg font-semibold">Suivi de couvaison</h2>{actions}</div>
 
           {/* Sélecteur d'espèce : filtre uniquement le tableau affiché (pas un onglet du menu) */}
           <div className="flex gap-2 mb-4">
@@ -6314,44 +6292,9 @@
       );
     }
 
-    // Formulaire détail d'une semaine de suivi (S1–S8)
-    function SuiviSemForm({ lotIndex, p, sem, onClose }) {
-      const { patchLigne } = useData();
-      const d = (p.semaines && p.semaines[sem]) || {};
-      const [vivants, setVivants] = useState(d.vivants != null && d.vivants !== "" ? String(d.vivants) : "");
-      const [morts, setMorts] = useState(d.morts != null ? String(d.morts) : "0");
-      const [croissance, setCroissance] = useState(d.croissance || "normale");
-      const [alimentation, setAlimentation] = useState(d.alimentation || "");
-      const [nettoyage, setNettoyage] = useState(!!d.nettoyage);
-      const [obs, setObs] = useState(d.obs || "");
-      function submit(e) {
-        e.preventDefault();
-        const maj = { ...d, vivants: vivants === "" ? "" : Number(vivants), morts: Number(morts) || 0, croissance, alimentation: alimentation.trim(), nettoyage, obs: obs.trim() };
-        patchLigne("poussins", lotIndex, { semaines: { ...(p.semaines || {}), [sem]: maj } });
-        onClose();
-      }
-      return (
-        <form onSubmit={submit} className="space-y-3">
-          <p className="text-sm text-slate-500">S{sem} · début {frDate(dateDecalee(p.date, (sem - 1) * 7))}</p>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Vivants"><input type="number" min="0" className={inputClass} value={vivants} onChange={(e) => setVivants(e.target.value)} /></Field>
-            <Field label="Morts"><input type="number" min="0" className={inputClass} value={morts} onChange={(e) => setMorts(e.target.value)} /></Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Croissance">
-              <select className={inputClass} value={croissance} onChange={(e) => setCroissance(e.target.value)}>
-                <option value="normale">Normale</option>
-                <option value="problème">Problème</option>
-              </select>
-            </Field>
-            <Field label="Alimentation"><input className={inputClass} value={alimentation} onChange={(e) => setAlimentation(e.target.value)} placeholder="ex. démarrage → croissance" /></Field>
-          </div>
-          <label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={nettoyage} onChange={(e) => setNettoyage(e.target.checked)} /> Nettoyage fait</label>
-          <Field label="Observation"><textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} /></Field>
-          <FormButtons onClose={onClose} />
-        </form>
-      );
-    }
+    // (L'ancien formulaire « détail d'une semaine » (p.semaines) a été supprimé : le suivi S1-S8
+    // est quotidien depuis l'échange 31 et s'édite jour par jour ; les anciennes données
+    // p.semaines restent stockées mais ne sont plus affichées.)
 
     // Criticité d'un jour de jeune (les 10 premiers jours sont décisifs).
     // Plus on avance, moins la couleur est « alerte » : fond + bordure gauche colorée qui s'estompe
@@ -6386,7 +6329,6 @@
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
       const [jourEdit, setJourEdit] = useState(null);   // { lotIndex, p, jour }
-      const [semEdit, setSemEdit] = useState(null);
       const [semOuvertes, setSemOuvertes] = useState({ 1: true }); // semaine 1 ouverte par défaut (jours décisifs)
       const [transfConso, setTransfConso] = useState(null);        // { i, p } → modale de transfert vers l'abattoir
       const nJ = (config.jeunes && config.jeunes.suiviJours) || 10;
@@ -6552,7 +6494,6 @@
           {edit && <Modal title="Modifier le lot" onClose={() => setEdit(null)}><PoussinForm initial={edit.rec} onSave={(rec) => majLigne("poussins", edit.index, rec)} onClose={() => setEdit(null)} /></Modal>}
           {transfConso && <Modal title="Transférer vers l'abattoir" onClose={() => setTransfConso(null)}><TransfertConsoForm p={transfConso.p} onClose={() => setTransfConso(null)} onConfirm={(n) => transferer(transfConso.i, transfConso.p, "consommation", n)} /></Modal>}
           {jourEdit && <Modal title="Suivi du jour" onClose={() => setJourEdit(null)}><SuiviJourForm lotIndex={jourEdit.lotIndex} p={poussins[jourEdit.lotIndex]} jour={jourEdit.jour} onClose={() => setJourEdit(null)} /></Modal>}
-          {semEdit && <Modal title="Suivi de la semaine" onClose={() => setSemEdit(null)}><SuiviSemForm lotIndex={semEdit.lotIndex} p={poussins[semEdit.lotIndex]} sem={semEdit.sem} onClose={() => setSemEdit(null)} /></Modal>}
         </div>
       );
     }
@@ -6632,13 +6573,6 @@
     /* ---------- Historique / archives ---------- */
     function Historique() {
       const { lots, materiel, suivis, mirages, eclosions, collectes, poulaillers, consommables, lotsStock, supprimerLigne, reproducteurs, poussins, abattoir, breederPurchases, config } = useData();
-      const statutLotStock = {}; (lotsStock || []).forEach((l) => { statutLotStock[l.id] = l.statut; });
-      const statutFinal = (e) => {
-        if (e.destination === "consommation") return "consommé";
-        if (e.destination === "couvaison") return "mis en couveuse";
-        const st = statutLotStock[e.lotStock];
-        return st === "mis en couveuse" ? "mis en couveuse" : (st === "archivé" ? "archivé" : "en stock");
-      };
       // Lots terminés + résultats de couvée (fécondés / nés / taux) + date d'éclosion réelle
       const lotsTermines = lots.map((l, i) => ({ l, i }))
         .filter(x => x.l.statut === "terminé")
@@ -6648,7 +6582,7 @@
 
       // --- Résumé automatique de la période (sans IA : calculé depuis les données) ---
       const [jours, setJours] = useState(30);
-      const [vue, setVue] = useState("recoltes");   // onglet interne : recoltes | lots | materiel | registre
+      const [vue, setVue] = useState("lots");   // onglet interne : lots | materiel | registre
       const [anRegistre, setAnRegistre] = useState("");   // filtre d'année du registre ("" = année la plus récente, "tout")
       const depuis = new Date(AUJOURDHUI); depuis.setDate(depuis.getDate() - Number(jours));
       const dansPeriode = (d) => d && new Date(d) >= depuis && new Date(d) <= AUJOURDHUI;
@@ -6695,27 +6629,14 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["recoltes", "🥚 Récoltes"], ["lots", "🐣 Lots terminés"], ["materiel", "🔧 Matériel remplacé"], ["registre", "📋 Registre d'élevage"]].map(([id, lbl]) => (
+            {[["lots", "🐣 Lots terminés"], ["materiel", "🔧 Matériel remplacé"], ["registre", "📋 Registre d'élevage"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVue(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vue === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
           </div>
 
-          {vue === "recoltes" && <>
-          {/* Historique des récoltes d'œufs */}
-          <h2 className="text-lg font-semibold mb-3">Historique des récoltes</h2>
-          <Table
-            resume={(r) => <>Récolte du {r[0]} — {r[1]}</>}
-            columns={["Date", "Espèce", "Nombre", "Destination", "Lot stock", "Statut final", "Obs"]}
-            rows={evtsOeufs(collectes).slice().sort((a, b) => b.date.localeCompare(a.date)).map((e) => [
-              frDate(e.date), e.espece, <span className="font-medium">{e.nombre}</span>,
-              <DestBadge destination={e.destination} />, e.lotStock || "—",
-              <span className="text-xs text-slate-600">{statutFinal(e)}</span>,
-              <ObsCell texte={(collectes[e._idx] || {}).obs} titre="Observation — récolte" />,
-            ])}
-          />
-          <p className="text-xs text-slate-400 mt-2 mb-6">Vue lecture : pour ajouter/modifier une récolte, va dans l'onglet « Récolte des œufs ».</p>
-          </>}
+          {/* (L'onglet « Récoltes » — copie lecture seule — a été retiré : toutes les récoltes,
+              triées du plus récent au plus ancien, se consultent dans « Récolte des œufs ».) */}
 
           {vue === "lots" && <>
           <h2 className="text-lg font-semibold mb-3">Lots terminés <span className="text-slate-400 font-normal text-sm">— résultats de couvée</span></h2>
@@ -6836,8 +6757,6 @@
         return { ...c, normes: { ...c.normes, [esp]: { ...n, params: { ...(n.params || {}), [champ]: champ === "ventilation" ? val : (Number(val) || 0) } } } };
       });
       const setInterv = (zone, val) => setConfig((c) => ({ ...c, intervalleNettoyage: { ...c.intervalleNettoyage, [zone]: Number(val) || 0 } }));
-      const setRappel = (action, val) => setConfig((c) => ({ ...c, rappelJours: { ...c.rappelJours, [action]: Number(val) || 0 } }));
-      const setFreqSoin = (key, val) => setConfig((c) => ({ ...c, freqSoins: { ...c.freqSoins, [key]: Number(val) || 0 } }));
       const setFreqTrait = (zone, key, val) => setConfig((c) => ({ ...c, freqTraitements: { ...c.freqTraitements, [zone]: { ...((c.freqTraitements || {})[zone] || {}), [key]: Number(val) || 0 } } }));
       // Abreuvoirs / volumes
       const setAbreuvoir = (idx, champ, val) => setConfig((c) => ({ ...c, abreuvoirs: (c.abreuvoirs || []).map((a, i) => i === idx ? { ...a, [champ]: (champ === "volume" ? (val === "" ? "" : (Number(val) || 0)) : (champ === "actif" ? val : val)) } : a) }));
@@ -6936,7 +6855,7 @@
           <h2 className="text-lg font-semibold mb-3">Listes</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
             <EditeurListe titre="Zones (poulaillers)" items={config.zones} onChange={setListe("zones")} />
-            <EditeurListe titre="Actions poulaillers" items={config.actions} onChange={setListe("actions")} />
+            {/* (Liste « Actions poulaillers » retirée : les actions de soin sont des cases fixes depuis la refonte multi-coches.) */}
             <EditeurListe titre="Produits / traitements / vitamines" items={config.produits} onChange={setListe("produits")} />
             <EditeurListe titre="Unités" items={config.unites} onChange={setListe("unites")} />
             <EditeurListe titre="Catégories consommables" items={config.catsConso} onChange={setListe("catsConso")} />
@@ -7030,6 +6949,24 @@
                 onChange={(e) => setConfig((c) => ({ ...c, dureeCongel: Number(e.target.value) || 0 }))} />
             </label>
           </div>
+
+          {/* Bagues : couleurs en stock par taille (listes de l'onglet Identification) */}
+          <h2 className="text-lg font-semibold mb-3">🏷️ Bagues — couleurs en stock par taille</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-2 space-y-3">
+            {["8", "12", "16"].map((t) => {
+              const pal = palettesBagues(config);
+              return (
+                <div key={t} className="flex items-center gap-3 flex-wrap">
+                  <span className="text-sm font-medium text-slate-600 w-16 shrink-0">{t} mm</span>
+                  <input className={inputClass + " flex-1 min-w-[200px]"} value={(pal[t] || []).join(", ")}
+                    onChange={(e) => setConfig((c) => ({ ...c, couleursBagues: { ...palettesBagues(c), [t]: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) } }))}
+                    placeholder={t === "8" ? "pas encore commandées" : "ex. rouge, bleu, vert"} />
+                  <span className="flex gap-1">{(pal[t] || []).map((c2) => <PastilleBague key={c2} couleur={c2} />)}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs text-slate-400 mb-8">Couleurs séparées par des virgules — ce sont les listes proposées dans Gestion poulailler → Identification. Le roulement automatique des lots utilise les couleurs disponibles à la fois en 12 et 16 mm (le sujet garde sa couleur s'il passe en 16 mm).</p>
 
           </>}
 
@@ -7249,16 +7186,8 @@
           </>}
 
           {cat === "soins" && <>
-          {/* Fréquences de rappel produits */}
-          <h2 className="text-lg font-semibold mb-3">Rappels produits (jours, 0 = aucun)</h2>
-          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {config.actions.map((a) => (
-              <div key={a} className="flex items-center justify-between gap-3">
-                <span className="text-sm text-slate-700">{a}</span>
-                <input type="number" className={numCls} value={config.rappelJours[a] || 0} onChange={(e) => setRappel(a, e.target.value)} />
-              </div>
-            ))}
-          </div>
+          {/* (L'éditeur « Rappels produits » a été retiré : les rappels réels se calculent depuis
+              les fréquences de nettoyage et de traitements ci-dessus.) */}
 
           {/* Restes interdits */}
           <h2 className="text-lg font-semibold mb-3">Restes alimentaires interdits dans</h2>
@@ -7283,23 +7212,6 @@
           </div>
           <p className="text-xs text-slate-400 mb-8">Les zones cochées (poussins / cailleteaux) sont retirées de « Gestion poulailler » et suivies par lot dans « Poussins & cailleteaux ». L'historique reste conservé.</p>
 
-          {/* Bagues : couleurs en stock par taille (listes de l'onglet Identification) */}
-          <h2 className="text-lg font-semibold mb-3">🏷️ Bagues — couleurs en stock par taille</h2>
-          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-2 space-y-3">
-            {["8", "12", "16"].map((t) => {
-              const pal = palettesBagues(config);
-              return (
-                <div key={t} className="flex items-center gap-3 flex-wrap">
-                  <span className="text-sm font-medium text-slate-600 w-16 shrink-0">{t} mm</span>
-                  <input className={inputClass + " flex-1 min-w-[200px]"} value={(pal[t] || []).join(", ")}
-                    onChange={(e) => setConfig((c) => ({ ...c, couleursBagues: { ...palettesBagues(c), [t]: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) } }))}
-                    placeholder={t === "8" ? "pas encore commandées" : "ex. rouge, bleu, vert"} />
-                  <span className="flex gap-1">{(pal[t] || []).map((c2) => <PastilleBague key={c2} couleur={c2} />)}</span>
-                </div>
-              );
-            })}
-          </div>
-          <p className="text-xs text-slate-400 mb-8">Couleurs séparées par des virgules — ce sont les listes proposées dans Gestion poulailler → Identification. Le roulement automatique des lots utilise les couleurs disponibles à la fois en 12 et 16 mm (le sujet garde sa couleur s'il passe en 16 mm).</p>
           </>}
 
           <p className="text-xs text-slate-400 mt-6">Sauvegarde automatique. Exportez vos données (barre latérale) pour conserver une copie.</p>
