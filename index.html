@@ -532,7 +532,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v83 — 07/07/2026";
+    const APP_VERSION = "v86 — 07/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -699,6 +699,47 @@
         depAnnee, valeurTotale, depenseAnneeCourante: depAnnee[String(ANNEE_COURANTE)] || 0,
         aReparer, horsService, aRemplacer, sousSeuil, nbAReparer,
       };
+    }
+
+    // ===== Ventilation des dépenses par catégorie (pour une année donnée) =====
+    // Regroupe TOUTES les dépenses (consommables + matériel + achats reproducteurs) par « pôle »
+    // (haut niveau) puis par catégorie (sous-catégorie = champ `categorie`/`typeAchat` de la source).
+    // Répond à la demande « répartir ma paye selon mes catégories ».
+    const POLE_COULEUR = { "Consommables": "#f59e0b", "Matériel": "#6366f1", "Reproducteurs": "#10b981", "Autres": "#94a3b8" };
+    function couleurPole(p) { return POLE_COULEUR[p] || POLE_COULEUR["Autres"]; }
+    function ventilationDepenses({ consommables, materiel, breederPurchases }, an) {
+      const anStr = String(an);
+      const estAn = (d) => (d || "").slice(0, 4) === anStr;
+      const cats = {};
+      const add = (pole, categorie, montant) => {
+        if (!(montant > 0)) return;
+        const sous = (categorie && String(categorie).trim()) || "(sans catégorie)";
+        const k = pole + " · " + sous;
+        const c = cats[k] || (cats[k] = { pole, categorie: sous, montant: 0 });
+        c.montant += montant;
+      };
+      (consommables || []).forEach((c) => {
+        if (c.mouvement === "sortie" || !estAn(c.date)) return;   // seules les entrées sont des dépenses
+        add("Consommables", c.categorie, Math.max(0, (Number(c.quantite) || 0) * (Number(c.prixUnitaire) || 0) - (Number(c.remise) || 0)));
+      });
+      (materiel || []).forEach((m) => {
+        if (!estAn(m.dateAchat)) return;                          // coût compté l'année d'achat uniquement
+        add("Matériel", m.categorie, Math.max(0, (Number(m.quantite) || 0) * (Number(m.prixUnitaire) || 0) - (Number(m.remise) || 0)));
+      });
+      (breederPurchases || []).forEach((a) => {
+        if (!estAn(a.date)) return;
+        add("Reproducteurs", a.typeAchat || "reproducteur", Math.max(0, (Number(a.prixTotal) || 0) - (Number(a.remise) || 0)));
+      });
+      const lignes = Object.values(cats).sort((a, b) => b.montant - a.montant);
+      const parPole = {};
+      lignes.forEach((c) => {
+        const p = parPole[c.pole] || (parPole[c.pole] = { pole: c.pole, montant: 0, cats: [] });
+        p.montant += c.montant; p.cats.push(c);
+      });
+      const poles = Object.values(parPole).sort((a, b) => b.montant - a.montant);
+      poles.forEach((p) => p.cats.sort((a, b) => b.montant - a.montant));
+      const total = lignes.reduce((s, c) => s + c.montant, 0);
+      return { lignes, poles, total };
     }
 
     // Normalise les collectes en événements œufs {date, espece, nombre, destination, lotStock}.
@@ -945,7 +986,8 @@
         if (existing && existing.length) {
           await c.from("cheptel_data").update({ data: snap, updated_at: new Date().toISOString() }).eq("id", existing[0].id);
         } else {
-          await c.from("cheptel_data").insert({ type: "snapshot", data: snap });
+          // user_id explicite : ne dépend pas d'un DEFAULT auth.uid() côté base (sinon RLS refuse le 1er insert).
+          await c.from("cheptel_data").insert({ type: "snapshot", data: snap, user_id: user.id });
         }
         const iso = new Date().toISOString();
         try { localStorage.setItem("cheptel_lastSync", iso); } catch (e) {}
@@ -1694,6 +1736,74 @@
       return Object.keys(par).filter((lg) => par[lg].length >= 2).map((lg) => ({ lignee: lg, noms: par[lg] }));
     }
 
+    // Affichage visuel de la ventilation des dépenses : sélecteur d'année + barre empilée par pôle
+    // + détail par catégorie. Les années proposées sont celles présentes dans les dépenses.
+    function VentilationDepenses({ consommables, materiel, breederPurchases, annee }) {
+      // Années présentes dans les données (dépenses) + année courante, du plus récent au plus ancien.
+      const anneesDispo = React.useMemo(() => {
+        const s = new Set([String(annee)]);
+        (consommables || []).forEach((c) => { if (c.mouvement !== "sortie" && c.date) s.add(String(c.date).slice(0, 4)); });
+        (materiel || []).forEach((m) => { if (m.dateAchat) s.add(String(m.dateAchat).slice(0, 4)); });
+        (breederPurchases || []).forEach((a) => { if (a.date) s.add(String(a.date).slice(0, 4)); });
+        return Array.from(s).filter(Boolean).sort().reverse();
+      }, [consommables, materiel, breederPurchases, annee]);
+      const [an, setAn] = useState(String(annee));
+      const { poles, total } = ventilationDepenses({ consommables, materiel, breederPurchases }, an);
+      const pct = (m) => (total ? Math.round((m / total) * 100) : 0);
+      const selecteur = (
+        <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+          <span className="text-sm text-slate-500">Année : <span className="font-semibold text-slate-700">{eur(total)}</span> au total</span>
+          <select className="border border-slate-300 rounded-lg px-2.5 py-1 text-sm" value={an} onChange={(e) => setAn(e.target.value)}>
+            {anneesDispo.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+      );
+      if (!total) return <div>{selecteur}<p className="text-sm text-slate-400">Aucune dépense enregistrée pour {an}.</p></div>;
+      return (
+        <div>
+          {selecteur}
+          {/* Barre empilée : proportion de chaque pôle */}
+          <div className="flex w-full h-4 rounded-full overflow-hidden mb-2 bg-slate-100">
+            {poles.map((p) => (
+              <div key={p.pole} style={{ width: (p.montant / total * 100) + "%", background: couleurPole(p.pole) }}
+                   title={p.pole + " : " + eur(p.montant) + " (" + pct(p.montant) + " %)"} />
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 mb-5">
+            {poles.map((p) => (
+              <span key={p.pole} className="inline-flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: couleurPole(p.pole) }} />
+                {p.pole} — <span className="font-medium text-slate-700">{eur(p.montant)}</span> ({pct(p.montant)} %)
+              </span>
+            ))}
+          </div>
+          {/* Détail par catégorie (sous-catégorie), groupé par pôle */}
+          <div className="space-y-4">
+            {poles.map((p) => (
+              <div key={p.pole}>
+                <div className="flex items-center justify-between text-sm font-semibold text-slate-700 mb-1.5">
+                  <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: couleurPole(p.pole) }} />{p.pole}</span>
+                  <span>{eur(p.montant)} <span className="text-slate-400 font-normal">· {pct(p.montant)} %</span></span>
+                </div>
+                <div className="space-y-1.5">
+                  {p.cats.map((c) => (
+                    <div key={c.categorie} className="flex items-center gap-2">
+                      <span className="text-xs text-slate-600 w-32 sm:w-44 shrink-0 truncate capitalize" title={c.categorie}>{c.categorie}</span>
+                      <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: Math.max(2, c.montant / total * 100) + "%", background: couleurPole(p.pole), opacity: 0.7 }} />
+                      </div>
+                      <span className="text-xs font-medium text-slate-700 w-16 sm:w-20 text-right shrink-0">{eur(c.montant)}</span>
+                      <span className="text-[11px] text-slate-400 w-9 text-right shrink-0">{pct(c.montant)} %</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
     /* ============================================================
        PAGES
        ============================================================ */
@@ -2055,6 +2165,9 @@
               <StatCard label="Matériel (année)" value={eur(depMatAn)} color="orange" />
               <StatCard label="Achats reproducteurs" value={eur(depReproAn)} color="orange" />
             </div>
+            <p className="text-xs text-slate-500 mb-2 mt-5 font-medium">Répartition des dépenses par catégorie</p>
+            <VentilationDepenses consommables={consommables} materiel={materiel} breederPurchases={breederPurchases} annee={ANNEE_COURANTE} />
+            <p className="text-xs text-slate-400 mt-2 mb-1">Ventilation de toutes tes dépenses selon les catégories des inventaires (consommables/matériel) et le type d'achat reproducteur. Choisis l'année dans le menu pour comparer.</p>
             <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Production & coût de revient</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <StatCard label="Œufs récoltés" value={oeufsAn} />
