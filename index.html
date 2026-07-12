@@ -308,6 +308,7 @@
         "8":  ["noir", "bleu clair", "bleu foncé", "orange", "rose", "vert", "rouge", "violet", "blanc", "jaune"],
         "12": ["rouge", "bleu", "vert"],
         "16": ["jaune", "violet", "vert", "bleu", "rouge"],
+        "20": [],
       },
       // Rappel récolte des œufs pour la prochaine couvée : conservation max des œufs + marge (retard d'éclosion possible)
       conservationOeufs: 14,   // jours max de conservation d'un œuf avant remise en incubation
@@ -532,7 +533,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v86 — 07/07/2026";
+    const APP_VERSION = "v87 — 12/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -2264,13 +2265,16 @@
       return { lot, releves, dernier, total, jourActuel };
     }
 
-    // Récapitulatif d'un lot calculé UNIQUEMENT depuis le suivi (mirages + éclosions).
+    // Récapitulatif d'un lot calculé UNIQUEMENT depuis le suivi (mirages + éclosions + relevés).
     // Aucune saisie en double : tout vient des données déjà entrées dans Suivi journalier.
-    function recapSuivi(lot, mirages, eclosions) {
+    // suivis (optionnel) : les œufs retirés lors des relevés quotidiens (cassés/pourris, hors mirage)
+    // s'ajoutent au total « retirés ».
+    function recapSuivi(lot, mirages, eclosions, suivis) {
       if (!lot) return null;
       const ms = mirages.filter(m => m.lot === lot.id).slice().sort((a, b) => a.numero - b.numero);
       const es = eclosions.filter(e => e.lot === lot.id);
       const somme = (arr, champ) => arr.reduce((s, x) => s + (Number(x[champ]) || 0), 0);
+      const retiresReleves = suivis ? somme(suivis.filter(s => s.lot === lot.id), "retires") : 0;
       const dernierMirage = ms[ms.length - 1];                 // dernier état connu (mirage 2 si présent)
       const fecondes = dernierMirage ? (Number(dernierMirage.fecondes) || 0) : null;
       const nbOeufs = Number(lot.nbOeufs) || 0;
@@ -2281,7 +2285,7 @@
       return {
         nbOeufs,
         clairs: ms.length ? somme(ms, "clairs") : null,
-        retires: ms.length ? somme(ms, "retires") : null,
+        retires: (ms.length || retiresReleves) ? somme(ms, "retires") + retiresReleves : null,
         fecondes,
         nes,
         nonEclos: es.length ? somme(es, "nonEclos") : null,
@@ -2295,7 +2299,7 @@
       const { lots, suivis, mirages, eclosions, config } = useData();
       const { lot, releves, dernier, total, jourActuel } = infosCouveuse(num, lots, suivis);
       const cap = lot ? CAPACITE[lot.espece] : null;
-      const recap = recapSuivi(lot, mirages, eclosions);
+      const recap = recapSuivi(lot, mirages, eclosions, suivis);
       const rv = (v) => (v == null ? "—" : v);
       return (
         <div className="bg-white rounded-xl shadow-sm p-6 border border-slate-100">
@@ -2966,6 +2970,7 @@
       const [temp, setTemp] = useState(initial ? String(initial.temp) : "");
       const [humidite, setHumidite] = useState(initial ? String(initial.humidite) : "");
       const [eau, setEau] = useState(initial ? !!initial.eau : false);
+      const [retires, setRetires] = useState(initial && initial.retires ? String(initial.retires) : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
 
       // Pré-remplit le jour d'incubation à partir du lot et de la date choisis (saisie seulement)
@@ -2986,6 +2991,7 @@
           temp: Number(temp) || 0,
           humidite: Number(humidite) || 0,
           eau,
+          retires: Number(retires) || 0,
           obs: obs.trim(),
         };
         (onSave || ajouterSuivi)(rec);
@@ -3019,6 +3025,9 @@
             <input type="checkbox" checked={eau} onChange={(e) => setEau(e.target.checked)} />
             💧 Eau ajoutée dans la couveuse ce jour (pour remonter l'humidité)
           </label>
+          <Field label="Œufs retirés ce jour (cassés, pourris… hors mirage)">
+            <input type="number" min="0" className={inputClass} value={retires} onChange={(e) => setRetires(e.target.value)} placeholder="0" />
+          </Field>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} placeholder="RAS, mirage, incident…" />
           </Field>
@@ -3055,7 +3064,8 @@
       suivis.forEach((s, i) => evts.push({
         _src: "suivis", _idx: i, _rec: s,
         date: s.date, lot: s.lot, type: "relevé", jour: s.jour,
-        temp: s.temp, humidite: s.humidite, eau: !!s.eau, obs: s.obs,
+        temp: s.temp, humidite: s.humidite, eau: !!s.eau,
+        retires: s.retires || undefined, obs: s.obs,
       }));
       mirages.forEach((m, i) => evts.push({
         _src: "mirages", _idx: i, _rec: m,
@@ -3121,7 +3131,7 @@
             })}
           />
           <p className="text-xs text-slate-400 mt-2">
-            Types d'événement : relevé quotidien · mirage 1 · mirage 2 · éclosion. 💧 à côté de l'humidité = eau ajoutée dans la couveuse ce jour-là. Les courbes des couveuses (onglet Stats couvaison) sont calculées à partir des relevés ci-dessus.
+            Types d'événement : relevé quotidien · mirage 1 · mirage 2 · éclosion. 💧 à côté de l'humidité = eau ajoutée dans la couveuse ce jour-là. La colonne « Ret. » compte les œufs retirés : lors d'un mirage, ou lors d'un relevé quotidien (œufs cassés, pourris…). Les courbes des couveuses (onglet Stats couvaison) sont calculées à partir des relevés ci-dessus.
           </p>
 
           {open === "releve" && (
@@ -5779,11 +5789,11 @@
       );
     }
     // Couleurs de bagues EN STOCK par taille — normalise l'ancien format (tableau unique) et
-    // garantit les 3 tailles. Résultat : { "8": [...], "12": [...], "16": [...] }.
+    // garantit les tailles. Résultat : { "8": [...], "12": [...], "16": [...], "20": [...] }.
     function palettesBagues(config) {
       const c = config && config.couleursBagues;
-      if (Array.isArray(c)) return { "8": [], "12": c.slice(), "16": c.slice() };   // ancien format
-      const def = { "8": ["noir", "bleu clair", "bleu foncé", "orange", "rose", "vert", "rouge", "violet", "blanc", "jaune"], "12": ["rouge", "bleu", "vert"], "16": ["jaune", "violet", "vert", "bleu", "rouge"] };
+      if (Array.isArray(c)) return { "8": [], "12": c.slice(), "16": c.slice(), "20": [] };   // ancien format
+      const def = { "8": ["noir", "bleu clair", "bleu foncé", "orange", "rose", "vert", "rouge", "violet", "blanc", "jaune"], "12": ["rouge", "bleu", "vert"], "16": ["jaune", "violet", "vert", "bleu", "rouge"], "20": [] };
       return { ...def, ...(c || {}) };
     }
     // Couleur de bague d'un lot de jeunes : ROULEMENT automatique, par espèce et dans l'ordre des
@@ -5810,7 +5820,7 @@
       // Couleurs proposées selon la taille de bague choisie (mon stock réel) ;
       // sans taille → toutes les couleurs possibles. La couleur déjà posée reste listée même hors stock.
       const couleursPour = (taille, actuelle) => {
-        const base = (taille && pal[taille]) ? pal[taille] : Array.from(new Set([].concat(pal["8"] || [], pal["12"] || [], pal["16"] || [])));
+        const base = (taille && pal[taille]) ? pal[taille] : Array.from(new Set([].concat(pal["8"] || [], pal["12"] || [], pal["16"] || [], pal["20"] || [])));
         return (actuelle && !base.map(normLibelle).includes(normLibelle(actuelle))) ? [actuelle].concat(base) : base;
       };
       const grpP = (p) => (p.espece === "caille" ? "caille" : "poule");
@@ -5854,7 +5864,7 @@
 
           {/* Règle des bagues */}
           <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-4">
-            💡 <span className="font-medium">Règle des bagues :</span> reproducteur = adulte → toujours <span className="font-medium">16 mm</span>. Sujet destiné à l'abattage : <span className="font-medium">12 mm</span> si abattu avant que ses pattes ne grossissent ; si elles deviennent trop grosses, remplace par une <span className="font-medium">16 mm</span> (change simplement la taille ici). Couleur = roulement automatique par lot.
+            💡 <span className="font-medium">Règle des bagues :</span> reproducteur = adulte → <span className="font-medium">16 mm</span> (ou <span className="font-medium">20 mm</span> pour les grandes races à pattes fortes). Sujet destiné à l'abattage : <span className="font-medium">12 mm</span> si abattu avant que ses pattes ne grossissent ; si elles deviennent trop grosses, remplace par une <span className="font-medium">16 mm</span> (change simplement la taille ici). Couleur = roulement automatique par lot.
           </p>
 
           {secI === "jeunes" && <>
@@ -5889,7 +5899,7 @@
                               </select>,
                               <select className={selCls} value={s.bagueTaille || ""} onChange={(e) => patchLigne("sujets", si, { bagueTaille: e.target.value })}>
                                 <option value="">à baguer</option>
-                                {(espI === "caille" ? ["8"] : ["12", "16"]).map((t) => <option key={t} value={t}>{t} mm</option>)}
+                                {(espI === "caille" ? ["8"] : ["12", "16", "20"]).map((t) => <option key={t} value={t}>{t} mm</option>)}
                               </select>,
                               <span className="flex items-center gap-1.5">
                                 <select className={selCls} value={s.bagueCouleur || ""} onChange={(e) => patchLigne("sujets", si, { bagueCouleur: e.target.value })}>
@@ -5909,26 +5919,32 @@
           </>}
 
           {secI === "repro" && <>
-            <h2 className="text-lg font-semibold mb-3">🐓 Reproducteurs <span className="text-sm font-normal text-slate-400">(adultes → bague {espI === "caille" ? "8" : "16"} mm)</span></h2>
+            <h2 className="text-lg font-semibold mb-3">🐓 Reproducteurs <span className="text-sm font-normal text-slate-400">(adultes → bague {espI === "caille" ? "8 mm" : "16 ou 20 mm"})</span></h2>
             {reprosEsp.length === 0
               ? <p className="text-sm text-slate-400">Aucun reproducteur actif de cette espèce.</p>
               : <Table
-                  resume={(r, k) => { const x = reprosEsp[k].r; return <><span className="font-medium">{x.nom}</span> · {x.espece}{x.bagueCouleur ? " · bague " + x.bagueCouleur : " · à baguer"}</>; }}
+                  resume={(r, k) => { const x = reprosEsp[k].r; const t = espI === "caille" ? "8" : (x.bagueTaille || "16"); return <><span className="font-medium">{x.nom}</span> · {x.espece}{x.bagueCouleur ? " · bague " + t + " mm " + x.bagueCouleur : " · à baguer"}</>; }}
                   columns={["Nom", "Espèce", "Race", "Taille", "Couleur", "N° bague"]}
-                  rows={reprosEsp.map(({ r, i }) => [
+                  rows={reprosEsp.map(({ r, i }) => {
+                    const taille = espI === "caille" ? "8" : (r.bagueTaille || "16");
+                    return [
                     <span className="font-medium">{r.nom}</span>,
                     r.espece,
                     r.race || "—",
-                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 whitespace-nowrap">{espI === "caille" ? "8 mm" : "16 mm"}</span>,
+                    espI === "caille"
+                      ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 whitespace-nowrap">8 mm</span>
+                      : <select className={selCls} value={r.bagueTaille || "16"} onChange={(e) => patchLigne("reproducteurs", i, { bagueTaille: e.target.value })}>
+                          {["16", "20"].map((t) => <option key={t} value={t}>{t} mm</option>)}
+                        </select>,
                     <span className="flex items-center gap-1.5">
                       <select className={selCls} value={r.bagueCouleur || ""} onChange={(e) => patchLigne("reproducteurs", i, { bagueCouleur: e.target.value })}>
                         <option value="">—</option>
-                        {couleursPour(espI === "caille" ? "8" : "16", r.bagueCouleur).map((c) => <option key={c} value={c}>{c}</option>)}
+                        {couleursPour(taille, r.bagueCouleur).map((c) => <option key={c} value={c}>{c}</option>)}
                       </select>
                       <PastilleBague couleur={r.bagueCouleur} />
                     </span>,
                     <input className={selCls + " w-24"} value={r.bagueNum || ""} onChange={(e) => patchLigne("reproducteurs", i, { bagueNum: e.target.value })} placeholder="n°" />,
-                  ])}
+                  ]; })}
                 />}
           </>}
         </div>
@@ -6663,10 +6679,10 @@
     // Contenu « Statistiques détaillées » (tableau de bord + onglet Stats de « Récolte des œufs »).
     // couvaisonSeule : n'affiche que la partie couvaison (sans les dépenses par année).
     function StatsDetaillees({ couvaisonSeule }) {
-      const { lots, mirages, eclosions, consommables, materiel } = useData();
+      const { lots, suivis, mirages, eclosions, consommables, materiel } = useData();
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
-      const parLot = lots.map((l) => ({ l, r: recapSuivi(l, mirages, eclosions) }))
+      const parLot = lots.map((l) => ({ l, r: recapSuivi(l, mirages, eclosions, suivis) }))
         .sort((a, b) => (b.l.dateDebut || "").localeCompare(a.l.dateDebut || ""));   // le plus récent en haut
       const annees = Array.from(new Set(Object.keys(sc.depAnnee).concat(Object.keys(sm.depAnnee)))).sort().reverse();
       // Bilan de couvée agrégé par espèce (fertilité / éclosion / réussite globale).
@@ -6737,7 +6753,7 @@
       // Lots terminés + résultats de couvée (fécondés / nés / taux) + date d'éclosion réelle
       const lotsTermines = lots.map((l, i) => ({ l, i }))
         .filter(x => x.l.statut === "terminé")
-        .map(x => ({ ...x, rec: recapSuivi(x.l, mirages, eclosions), dateEcl: eclosions.filter(e => e.lot === x.l.id && e.date).map(e => e.date).sort().pop() || null }))
+        .map(x => ({ ...x, rec: recapSuivi(x.l, mirages, eclosions, suivis), dateEcl: eclosions.filter(e => e.lot === x.l.id && e.date).map(e => e.date).sort().pop() || null }))
         .sort((a, b) => (b.l.dateDebut || "").localeCompare(a.l.dateDebut || ""));
       const materielRemplace = materiel.map((m, i) => ({ m, i })).filter(x => x.m.etat === "remplacé");
 
@@ -7115,14 +7131,14 @@
           {/* Bagues : couleurs en stock par taille (listes de l'onglet Identification) */}
           <h2 className="text-lg font-semibold mb-3">🏷️ Bagues — couleurs en stock par taille</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-2 space-y-3">
-            {["8", "12", "16"].map((t) => {
+            {["8", "12", "16", "20"].map((t) => {
               const pal = palettesBagues(config);
               return (
                 <div key={t} className="flex items-center gap-3 flex-wrap">
                   <span className="text-sm font-medium text-slate-600 w-16 shrink-0">{t} mm</span>
                   <input className={inputClass + " flex-1 min-w-[200px]"} value={(pal[t] || []).join(", ")}
                     onChange={(e) => setConfig((c) => ({ ...c, couleursBagues: { ...palettesBagues(c), [t]: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) } }))}
-                    placeholder={t === "8" ? "pas encore commandées" : "ex. rouge, bleu, vert"} />
+                    placeholder={(pal[t] || []).length ? "" : "pas encore commandées"} />
                   <span className="flex gap-1">{(pal[t] || []).map((c2) => <PastilleBague key={c2} couleur={c2} />)}</span>
                 </div>
               );
