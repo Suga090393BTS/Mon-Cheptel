@@ -533,7 +533,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v88 — 21/07/2026";
+    const APP_VERSION = "v89 — 22/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -2730,7 +2730,31 @@
     }
 
     function Lots() {
-      const { lots, collectes, config, lotsStock, ajouterLotStock, genLotStockId, mettreLotEnCouvaison, majLigne, supprimerLigne, patchLigne } = useData();
+      const { lots, collectes, config, lotsStock, eclosions, poussins, ajouterPoussin, genPoussinId, ajouterLotStock, genLotStockId, mettreLotEnCouvaison, majLigne, supprimerLigne, patchLigne } = useData();
+      // Terminer une couvée : statut → « terminé » (part dans l'Historique, libère la couveuse) ET, si
+      // ce n'est pas déjà fait, crée automatiquement le lot d'élevage correspondant dans « Bébé »,
+      // pré-rempli avec le total des nés (depuis les éclosions du lot) et relié à la couvaison.
+      function terminerCouvaison(i, l) {
+        const ecl = eclosions.filter((e) => e.lot === l.id);
+        const nesTotal = ecl.reduce((s, e) => s + (Number(e.nes) || 0), 0);
+        // Date de naissance = 1re éclosion saisie, sinon date d'éclosion théorique du lot
+        const dateNaiss = ecl.length ? ecl.map((e) => e.date).filter(Boolean).sort()[0] : dateEclosion(l.dateDebut, l.espece);
+        const especeP = l.espece === "caille" ? "caille" : "poussin";
+        const dejaCree = poussins.find((p) => p.lot === l.id);
+        const info = dejaCree
+          ? "\n\n(Le lot d'élevage relié existe déjà : il ne sera pas recréé.)"
+          : "\n\n→ Un lot d'élevage sera créé automatiquement dans Bébé" + (nesTotal ? " avec " + nesTotal + " né" + (nesTotal > 1 ? "s" : "") + "." : " (pense à y saisir le nombre de nés).");
+        if (!window.confirm("Terminer la couvée " + l.id + " ? Elle passera dans l'Historique et libèrera la couveuse." + info)) return;
+        patchLigne("lots", i, { statut: "terminé" });
+        if (!dejaCree) {
+          ajouterPoussin({
+            id: genPoussinId(especeP, dateNaiss),
+            date: dateNaiss, espece: especeP, lot: l.id, lignee: "",
+            nes: nesTotal, nombre: nesTotal, morts: 0,
+            statut: "en croissance", obs: "Créé automatiquement à la fin de la couvée " + l.id, croisements: [],
+          });
+        }
+      }
       const [openLot, setOpenLot] = useState(false);
       const [openCol, setOpenCol] = useState(false);
       const [openGraph, setOpenGraph] = useState(false);
@@ -2809,8 +2833,8 @@
                 <RowActions
                   extra={l.statut !== "terminé" && (
                     <button
-                      onClick={() => { if (window.confirm("Terminer la couvée " + l.id + " ? Elle passera dans l'Historique et libèrera la couveuse pour une nouvelle couvaison.")) patchLigne("lots", i, { statut: "terminé" }); }}
-                      title="Terminer la couvée (→ Historique, libère la couveuse)"
+                      onClick={() => terminerCouvaison(i, l)}
+                      title="Terminer la couvée (→ Historique, libère la couveuse, crée le lot d'élevage)"
                       className="px-1.5 py-0.5 rounded hover:bg-emerald-50 text-emerald-600 text-xs font-medium whitespace-nowrap">✓ Terminer</button>
                   )}
                   onEdit={() => setEditLot({ index: i, rec: l })}
@@ -3052,6 +3076,8 @@
       // open : null | "releve" | "mirage" | "eclosion"
       const [open, setOpen] = useState(null);
       const [edit, setEdit] = useState(null);   // { src, index, rec }
+      // Sous-onglet affiché : un seul tableau à la fois (pas besoin de dérouler la page)
+      const [vueS, setVueS] = useState("releves");   // "releves" | "mirages" | "eclosions"
 
       const lotDe = (id) => lots.find(l => l.id === id) || {};
       // Jour d'incubation d'un événement à partir du lot et de la date
@@ -3087,6 +3113,7 @@
       };
       const cellObs = (ev) => <ObsCell texte={ev.obs} titre={"Observation — " + ev.lot} onSave={(v) => patchLigne(ev._src, ev._idx, { obs: v })} />;
       const cellActions = (ev) => <RowActions onEdit={() => setEdit({ src: ev._src, index: ev._idx, rec: ev._rec })} onDelete={() => supprimerLigne(ev._src, ev._idx)} />;
+      const subBtnS = (actif) => "px-3 py-1.5 rounded-lg text-sm font-medium border whitespace-nowrap " + (actif ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50");
 
       const actions = (
         <div className="flex flex-wrap gap-2">
@@ -3100,11 +3127,17 @@
           {/* Toujours embarqué dans Récolte des œufs → Suivi couvaison (la page autonome a été retirée du menu) */}
           <div className="flex items-center justify-between gap-2 mb-4 flex-wrap"><h2 className="text-lg font-semibold">Suivi de couvaison</h2>{actions}</div>
 
+          {/* Sous-onglets : un seul tableau affiché à la fois (relevés T°/H% · mirages · éclosions) */}
+          <div className="flex flex-wrap gap-2 mb-4">
+            <button onClick={() => setVueS("releves")} className={subBtnS(vueS === "releves")}>🌡️ Température &amp; humidité{releves.length ? " · " + releves.length : ""}</button>
+            <button onClick={() => setVueS("mirages")} className={subBtnS(vueS === "mirages")}>🔦 Mirages{miragesL.length ? " · " + miragesL.length : ""}</button>
+            <button onClick={() => setVueS("eclosions")} className={subBtnS(vueS === "eclosions")}>🐣 Éclosions{eclosL.length ? " · " + eclosL.length : ""}</button>
+          </div>
+
           {/* Tableau 1 — Température & humidité (relevés quotidiens) */}
-          <h3 className="text-sm font-semibold text-slate-600 mb-2">🌡️ Température &amp; humidité <span className="font-normal text-slate-400">— relevés quotidiens</span></h3>
-          {releves.length === 0
-            ? <p className="text-sm text-slate-400 mb-6">Aucun relevé pour l'instant. Clique sur « + Relevé ».</p>
-            : <div className="mb-6"><Table
+          {vueS === "releves" && (releves.length === 0
+            ? <p className="text-sm text-slate-400 mb-4">Aucun relevé pour l'instant. Clique sur « + Relevé ».</p>
+            : <div className="mb-4"><Table
                 resume={(r, i) => { const ev = releves[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot}{ev.jour != null ? " · J" + ev.jour : ""} — {tiret(ev.temp)} °C / {tiret(ev.humidite)} %</>; }}
                 columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Temp.", "Hum.", "Œufs retirés", "Obs", ""]}
                 rows={releves.map(ev => [
@@ -3115,13 +3148,12 @@
                   cellObs(ev),
                   cellActions(ev),
                 ])}
-              /></div>}
+              /></div>)}
 
           {/* Tableau 2 — Mirages (leur propre tableau) */}
-          <h3 className="text-sm font-semibold text-slate-600 mb-2">🔦 Mirages</h3>
-          {miragesL.length === 0
-            ? <p className="text-sm text-slate-400 mb-6">Aucun mirage pour l'instant. Clique sur « + Mirage ».</p>
-            : <div className="mb-6"><Table
+          {vueS === "mirages" && (miragesL.length === 0
+            ? <p className="text-sm text-slate-400 mb-4">Aucun mirage pour l'instant. Clique sur « + Mirage ».</p>
+            : <div className="mb-4"><Table
                 resume={(r, i) => { const ev = miragesL[i]; return <>{frDate(ev.date)} — mirage {ev.numero} · {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.fecondes)} féc. / {tiret(ev.clairs)} clairs</>; }}
                 columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Mirage", "Clairs", "Fécondés", "Œufs retirés", "Obs", ""]}
                 rows={miragesL.map(ev => [
@@ -3133,11 +3165,10 @@
                   cellObs(ev),
                   cellActions(ev),
                 ])}
-              /></div>}
+              /></div>)}
 
           {/* Tableau 3 — Éclosions : nés + non éclos ensemble */}
-          <h3 className="text-sm font-semibold text-slate-600 mb-2">🐣 Éclosions <span className="font-normal text-slate-400">— nés &amp; non éclos</span></h3>
-          {eclosL.length === 0
+          {vueS === "eclosions" && (eclosL.length === 0
             ? <p className="text-sm text-slate-400 mb-4">Aucune éclosion pour l'instant. Clique sur « + Éclosion ». Astuce : si les naissances s'étalent sur plusieurs jours, ajoute une éclosion par jour pour le même lot (elles s'additionnent).</p>
             : <div className="mb-4"><Table
                 resume={(r, i) => { const ev = eclosL[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.nes)} nés / {tiret(ev.nonEclos)} non éclos</>; }}
@@ -3149,7 +3180,7 @@
                   cellObs(ev),
                   cellActions(ev),
                 ])}
-              /></div>}
+              /></div>)}
 
           <p className="text-xs text-slate-400 mt-2">
             💧 à côté de l'humidité = eau ajoutée dans la couveuse ce jour-là. « Œufs retirés » = œufs cassés / pourris retirés lors d'un relevé, ou œufs clairs retirés lors d'un mirage. Poules et cailles sont affichées ensemble (colonne Espèce). Les courbes des couveuses (onglet Stats couvaison) utilisent les relevés T°/H%. <span className="font-medium">Pour clôturer une couvée et en lancer une nouvelle</span> : onglet « 🐣 Lots en couveuse » → bouton « Terminer » sur le lot.
@@ -6300,9 +6331,16 @@
       const [espece, setEspece] = useState(initial ? initial.espece : "poussin");
       const [lot, setLot] = useState(initial ? (initial.lot || "") : "");
       const [lignee, setLignee] = useState(initial ? (initial.lignee || "") : "");
-      const [nes, setNes] = useState(initial && initial.nes != null ? String(initial.nes) : "");
-      const [nombre, setNombre] = useState(initial ? String(initial.nombre) : "");
+      // « Nés » est la source de vérité. Pour un ancien lot sans « nés » saisi, on reconstitue
+      // nés = vivants + morts, pour que « Vivants » calculé (= nés − morts) redonne exactement l'effectif existant.
+      const [nes, setNes] = useState(
+        initial && initial.nes != null && initial.nes !== "" ? String(initial.nes)
+          : initial ? String((Number(initial.nombre) || 0) + (Number(initial.morts) || 0))
+          : ""
+      );
       const [morts, setMorts] = useState(initial && initial.morts != null ? String(initial.morts) : "0");
+      // Vivants n'est PLUS saisi à la main : il se calcule automatiquement (nés − morts, jamais négatif).
+      const vivantsCalc = Math.max(0, (Number(nes) || 0) - (Number(morts) || 0));
       const [statut, setStatut] = useState(initial ? initial.statut : "en croissance");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
       // Croisements supposés (saisis quand les jeunes deviennent reconnaissables) : [{ nom, nombre }]
@@ -6316,7 +6354,7 @@
           ...(initial || {}),            // préserve jours/semaines en édition
           id: idGenere, date, espece, lot, lignee: lignee.trim(),
           nes: nes === "" ? "" : (Number(nes) || 0),
-          nombre: Number(nombre) || 0, morts: Number(morts) || 0, statut, obs: obs.trim(),
+          nombre: vivantsCalc, morts: Number(morts) || 0, statut, obs: obs.trim(),
           croisements: croisements.map((c) => ({ nom: c.nom.trim(), nombre: Number(c.nombre) || "" })).filter((c) => c.nom),
         };
         (onSave || ajouterPoussin)(rec);
@@ -6350,13 +6388,14 @@
             <Field label="Nés">
               <input type="number" min="0" className={inputClass} value={nes} onChange={(e) => setNes(e.target.value)} />
             </Field>
-            <Field label="Vivants">
-              <input type="number" min="0" className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} />
-            </Field>
             <Field label="Morts">
               <input type="number" min="0" className={inputClass} value={morts} onChange={(e) => setMorts(e.target.value)} />
             </Field>
+            <Field label="Vivants (auto)">
+              <input type="number" className={inputClass + " bg-slate-100 font-medium text-emerald-700"} value={vivantsCalc} readOnly tabIndex={-1} />
+            </Field>
           </div>
+          <p className="text-xs text-slate-400 -mt-1">« Vivants » se calcule tout seul : <span className="font-medium">nés − morts</span>. Quand un jeune meurt, augmente juste « Morts » → le nombre de vivants se met à jour.</p>
           <Field label="Statut">
             <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
               {["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"].map((s) => <option key={s} value={s}>{s}</option>)}
@@ -6535,6 +6574,15 @@
       const actifsIdx = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
       const [selS, setSelS] = useState(initialLotIndex != null ? initialLotIndex : null);
       const idxS = selS != null ? selS : (actifsIdx[0] ? actifsIdx[0].i : null);
+      // À l'ouverture d'un lot (ou changement de lot suivi), déplie directement la semaine correspondant
+      // à son âge actuel — pas systématiquement la semaine 1.
+      useEffect(() => {
+        const p = idxS != null ? poussins[idxS] : null;
+        if (!p) return;
+        const a = ageJeune(p.date);
+        const sem = (a.jours == null || a.futur) ? 1 : Math.min(nS, Math.max(1, a.sem));
+        setSemOuvertes({ [sem]: true });
+      }, [idxS]);
       const labelLot = (p, i) => (p.id || p.lot || ("Lot " + (i + 1))) + " · " + labelJeune(p.espece);
 
       const lignes = poussins.map((p, i) => ({ p, i })).sort((a, b) => b.p.date.localeCompare(a.p.date));
