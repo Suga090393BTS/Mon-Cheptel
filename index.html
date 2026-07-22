@@ -2773,12 +2773,19 @@
         }
       }
       const [openLot, setOpenLot] = useState(false);
+      // Les couvées terminées sont masquées ici (elles vivent dans l'Historique) ; bouton pour les réafficher.
+      // On garde l'index d'origine `i` dans `lots` pour l'édition / suppression / « Terminer ».
+      const [voirTermines, setVoirTermines] = useState(false);
       const [openCol, setOpenCol] = useState(false);
       const [openGraph, setOpenGraph] = useState(false);
       const [editLot, setEditLot] = useState(null);   // { index, rec }
       const [editCol, setEditCol] = useState(null);
       const [openCouv, setOpenCouv] = useState(null); // lot de stock à mettre en couveuse
       const [ongletL, setOngletL] = useState("recoltes");   // onglet interne : recoltes | couveuse
+
+      // Couvées affichées dans « Lots en couveuse » : les terminées sont masquées par défaut.
+      const nbTermines = lots.filter((l) => l.statut === "terminé").length;
+      const lotsAff = lots.map((l, i) => ({ l, i })).filter(({ l }) => voirTermines || l.statut !== "terminé");
 
       const so = statsOeufs(collectes, lotsStock, lots, config);
       const batchesAgg = lotsStock.map((b, i) => ({ ...agregLotStock(b, collectes), _idx: i }));
@@ -2829,14 +2836,24 @@
 
           {ongletL === "couveuse" && <>
           {/* Partie A — lots */}
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <h2 className="text-lg font-semibold">Lots mis en couveuse</h2>
-            <AddButton onClick={() => setOpenLot(true)} label="Ajouter une couvaison" />
+            <div className="flex items-center gap-2 flex-wrap">
+              {nbTermines > 0 && (
+                <button onClick={() => setVoirTermines((v) => !v)}
+                  className="px-3 py-2 rounded-lg text-sm border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+                  {voirTermines ? "Masquer" : "Afficher"} les {nbTermines} terminée{nbTermines > 1 ? "s" : ""}
+                </button>
+              )}
+              <AddButton onClick={() => setOpenLot(true)} label="Ajouter une couvaison" />
+            </div>
           </div>
-          <Table
-            resume={(r, i) => { const l = lots[i]; const inc = infoIncub(l); const j = l.statut === "en stockage" ? "" : (inc.futur ? " · à venir" : " · " + inc.label); return <><span className="font-medium">{l.id}</span> — {l.espece === "caille" ? "Cailles" : "Poules"} — {l.nbOeufs} œufs<span className="text-slate-400">{j}</span></>; }}
+          {lotsAff.length === 0
+            ? <p className="text-sm text-slate-400">Aucune couvée en cours. Clique sur « + Ajouter une couvaison »{nbTermines > 0 ? " — les " + nbTermines + " couvée(s) terminée(s) sont dans l'Historique." : "."}</p>
+            : <Table
+            resume={(r, k) => { const l = lotsAff[k].l; const inc = infoIncub(l); const j = l.statut === "en stockage" ? "" : (inc.futur ? " · à venir" : " · " + inc.label); return <><span className="font-medium">{l.id}</span> — {l.espece === "caille" ? "Cailles" : "Poules"} — {l.nbOeufs} œufs<span className="text-slate-400">{j}</span></>; }}
             columns={["N° Lot", "Espèce", "Couveuse", "Mise en couveuse", "Œufs", "Jour actuel", "Éclosion prévue", "Statut", ""]}
-            rows={lots.map((l, i) => {
+            rows={lotsAff.map(({ l, i }) => {
               const inc = infoIncub(l);
               return [
                 <span className="font-medium">{l.id}</span>,
@@ -2858,7 +2875,7 @@
                   onDelete={() => supprimerLigne("lots", i)} />,
               ];
             })}
-          />
+          />}
 
           </>}
 
