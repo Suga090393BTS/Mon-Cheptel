@@ -528,18 +528,27 @@
     }
     // Libellé d'espèce d'un jeune : poussin / cailleteau
     const labelJeune = (espece) => (espece === "caille" ? "cailleteau" : "poussin");
-    // Vivants d'un lot de jeunes = nés − morts (calcul auto, toujours à jour même sur d'anciens lots).
-    // Repli sur le champ « nombre » stocké quand « nés » n'est pas renseigné (ex. lot acheté).
+    // Décès notés dans le suivi quotidien S1–S8 (somme des jours[n].morts).
+    function mortsJours(p) {
+      const j = p && p.jours; if (!j) return 0;
+      return Object.keys(j).reduce((s, k) => s + (Number(j[k] && j[k].morts) || 0), 0);
+    }
+    // Total des décès d'un lot = décès « fiche » (couveuse / saisis à la création) + décès du suivi quotidien.
+    function mortsLot(p) {
+      return (Number(p && p.morts) || 0) + mortsJours(p);
+    }
+    // Vivants d'un lot de jeunes = nés − total des décès (fiche + suivi quotidien), toujours à jour même sur d'anciens lots.
+    // Repli sur « nombre » (moins les décès quotidiens) quand « nés » n'est pas renseigné (ex. lot acheté).
     function vivantsLot(p) {
-      if (p && p.nes != null && p.nes !== "") return Math.max(0, (Number(p.nes) || 0) - (Number(p.morts) || 0));
-      return Number(p && p.nombre) || 0;
+      if (p && p.nes != null && p.nes !== "") return Math.max(0, (Number(p.nes) || 0) - mortsLot(p));
+      return Math.max(0, (Number(p && p.nombre) || 0) - mortsJours(p));
     }
 
     // --- Inventaires : repères de temps + helpers de calcul ---
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v91 — 22/07/2026";
+    const APP_VERSION = "v92 — 22/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1953,7 +1962,7 @@
       const jeunesPoussins = jeunesActifs.filter(({ p }) => p.espece !== "caille");
       const jeunesCailleteaux = jeunesActifs.filter(({ p }) => p.espece === "caille");
       const vivants = (arr) => arr.reduce((s, { p }) => s + vivantsLot(p), 0);
-      const morts = (arr) => arr.reduce((s, { p }) => s + (Number(p.morts) || 0), 0);
+      const morts = (arr) => arr.reduce((s, { p }) => s + mortsLot(p), 0);
       const nJ = (config.jeunes && config.jeunes.suiviJours) || 10;
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
       // Alertes + tâches du jour des jeunes
@@ -1963,7 +1972,7 @@
         const nom = (p.id || labelJeune(p.espece));
         if (a.futur) { alJeune.push("⚠️ Date incohérente : " + nom + " (naissance future)"); return; }
         if (a.jours == null) return;
-        if ((Number(p.morts) || 0) > 0) alJeune.push("Mortalité : " + nom + " (" + p.morts + " mort(s))");
+        if (mortsLot(p) > 0) alJeune.push("Mortalité : " + nom + " (" + mortsLot(p) + " mort(s))");
         if (a.jours <= 10) alJeune.push("Lot très jeune (J " + a.jours + ") : " + nom + " — démarrage sensible");
         if (a.jours >= (nS * 7 - 7) && a.jours <= nS * 7) alJeune.push("Fin de suivi bientôt : " + nom + " (S" + a.sem + ")");
         if (a.jours > nS * 7) alJeune.push("Prêt à transférer : " + nom + " (S" + a.sem + ")");
@@ -6360,8 +6369,10 @@
           : ""
       );
       const [morts, setMorts] = useState(initial && initial.morts != null ? String(initial.morts) : "0");
-      // Vivants n'est PLUS saisi à la main : il se calcule automatiquement (nés − morts, jamais négatif).
-      const vivantsCalc = Math.max(0, (Number(nes) || 0) - (Number(morts) || 0));
+      // Décès déjà notés dans le suivi quotidien S1–S8 de ce lot (déduits en plus du champ « Morts »).
+      const mortsJoursInit = mortsJours(initial || {});
+      // Vivants n'est PLUS saisi à la main : il se calcule automatiquement (nés − morts fiche − décès du suivi, jamais négatif).
+      const vivantsCalc = Math.max(0, (Number(nes) || 0) - (Number(morts) || 0) - mortsJoursInit);
       const [statut, setStatut] = useState(initial ? initial.statut : "en croissance");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
       // Croisements supposés (saisis quand les jeunes deviennent reconnaissables) : [{ nom, nombre }]
@@ -6416,7 +6427,7 @@
               <input type="number" className={inputClass + " bg-slate-100 font-medium text-emerald-700"} value={vivantsCalc} readOnly tabIndex={-1} />
             </Field>
           </div>
-          <p className="text-xs text-slate-400 -mt-1">« Vivants » se calcule tout seul : <span className="font-medium">nés − morts</span>. Quand un jeune meurt, augmente juste « Morts » → le nombre de vivants se met à jour.</p>
+          <p className="text-xs text-slate-400 -mt-1">« Vivants » se calcule tout seul : <span className="font-medium">nés − morts</span>. Quand un jeune meurt, augmente « Morts » <span className="font-medium">ou</span> note-le dans le suivi quotidien S1–S8 → le nombre de vivants se met à jour.{mortsJoursInit ? " (Ici : " + mortsJoursInit + " décès déjà comptés dans le suivi S1–S8, déduits en plus.)" : ""}</p>
           <Field label="Statut">
             <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
               {["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"].map((s) => <option key={s} value={s}>{s}</option>)}
@@ -6663,7 +6674,7 @@
                     <span className={"whitespace-nowrap" + (a.futur ? " text-red-600" : "")}>{a.label}</span>,
                     p.nes != null && p.nes !== "" ? p.nes : "—",
                     <span className="font-medium text-emerald-600">{vivantsLot(p)}</span>,
-                    Number(p.morts) || 0,
+                    (() => { const mj = mortsJours(p); const t = mortsLot(p); return <span title={mj ? ((Number(p.morts) || 0) + " à la fiche + " + mj + " dans le suivi S1–S8") : ""}>{t}{mj ? " *" : ""}</span>; })(),
                     <EtapeJeune birthDate={p.date} />,
                     <StatutAnimal statut={p.statut} />,
                     (p.croisements || []).length
