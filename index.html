@@ -131,7 +131,7 @@
 
     // --- Éclosions ---
     const eclosionsSeed = [
-      // { lot, date, nes, nonEclos, deces, obs }  — deces = décès en couveuse avant transfert
+      // { lot, date, nes, nonEclos, deces, retires, obs }  — deces = décès en couveuse ; retires = œufs cassés/pourris enlevés
     ];
 
     // --- Collecte / stockage des œufs avant couvaison ---
@@ -539,7 +539,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v90 — 22/07/2026";
+    const APP_VERSION = "v91 — 22/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -3104,7 +3104,7 @@
       const parDateLotDesc = (a, b) => b.date.localeCompare(a.date) || String(a.lot).localeCompare(String(b.lot));
       const releves = suivis.map((s, i) => ({ _src: "suivis", _idx: i, _rec: s, date: s.date, lot: s.lot, jour: s.jour, temp: s.temp, humidite: s.humidite, eau: !!s.eau, retires: s.retires, obs: s.obs })).sort(parDateLotDesc);
       const miragesL = mirages.map((m, i) => ({ _src: "mirages", _idx: i, _rec: m, date: m.date, lot: m.lot, jour: jourEvt(m.lot, m.date), numero: m.numero, clairs: m.clairs, fecondes: m.fecondes, retires: m.retires, obs: m.obs })).sort(parDateLotDesc);
-      const eclosL = eclosions.map((e, i) => ({ _src: "eclosions", _idx: i, _rec: e, date: e.date, lot: e.lot, jour: jourEvt(e.lot, e.date), nes: e.nes, nonEclos: e.nonEclos, deces: e.deces, obs: e.obs })).sort(parDateLotDesc);
+      const eclosL = eclosions.map((e, i) => ({ _src: "eclosions", _idx: i, _rec: e, date: e.date, lot: e.lot, jour: jourEvt(e.lot, e.date), nes: e.nes, nonEclos: e.nonEclos, deces: e.deces, retires: e.retires, obs: e.obs })).sort(parDateLotDesc);
 
       const tiret = (v) => (v === undefined || v === null || v === "" ? "—" : v);
       const espLot = (lotId) => { const e = lotDe(lotId).espece; return e === "caille" ? "🐦 Caille" : e === "poule" ? "🐔 Poule" : "—"; };
@@ -3179,13 +3179,14 @@
           {vueS === "eclosions" && (eclosL.length === 0
             ? <p className="text-sm text-slate-400 mb-4">Aucune éclosion pour l'instant. Clique sur « + Éclosion ». Astuce : si les naissances s'étalent sur plusieurs jours, ajoute une éclosion par jour pour le même lot (elles s'additionnent).</p>
             : <div className="mb-4"><Table
-                resume={(r, i) => { const ev = eclosL[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.nes)} nés / {tiret(ev.nonEclos)} non éclos{ev.deces ? " · " + ev.deces + " décès" : ""}</>; }}
-                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Nés", "Non éclos", "Décès", "Obs", ""]}
+                resume={(r, i) => { const ev = eclosL[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.nes)} nés / {tiret(ev.nonEclos)} non éclos{ev.deces ? " · " + ev.deces + " décès" : ""}{ev.retires ? " · " + ev.retires + " retirés" : ""}</>; }}
+                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Nés", "Non éclos", "Décès", "Œufs retirés", "Obs", ""]}
                 rows={eclosL.map(ev => [
                   ...celluleBase(ev),
                   ev.nes != null ? <span className="text-emerald-600 font-medium">{ev.nes}</span> : "—",
                   tiret(ev.nonEclos),
                   (Number(ev.deces) || 0) > 0 ? <span className="text-red-600 font-medium">{ev.deces}</span> : "—",
+                  tiret(ev.retires),
                   cellObs(ev),
                   cellActions(ev),
                 ])}
@@ -3297,11 +3298,12 @@
       const [nes, setNes] = useState(initial ? String(initial.nes) : "");
       const [nonEclos, setNonEclos] = useState(initial ? String(initial.nonEclos) : "");
       const [deces, setDeces] = useState(initial && initial.deces != null ? String(initial.deces) : "0");
+      const [retires, setRetires] = useState(initial && initial.retires != null ? String(initial.retires) : "0");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
 
       function submit(e) {
         e.preventDefault();
-        const rec = { lot, date, nes: Number(nes) || 0, nonEclos: Number(nonEclos) || 0, deces: Number(deces) || 0, obs: obs.trim() };
+        const rec = { lot, date, nes: Number(nes) || 0, nonEclos: Number(nonEclos) || 0, deces: Number(deces) || 0, retires: Number(retires) || 0, obs: obs.trim() };
         (onSave || ajouterEclosion)(rec);
         onClose();
       }
@@ -3325,10 +3327,15 @@
               <input type="number" min="0" className={inputClass} value={nonEclos} onChange={(e) => setNonEclos(e.target.value)} />
             </Field>
           </div>
-          <Field label="Décès en couveuse (avant transfert)">
-            <input type="number" min="0" className={inputClass} value={deces} onChange={(e) => setDeces(e.target.value)} />
-            <p className="text-xs text-slate-400 mt-1">Poussins/cailleteaux nés mais morts en couveuse avant l'arrêt de la couvée. Déduits automatiquement des vivants lors du passage en Bébé.</p>
-          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Décès en couveuse (avant transfert)">
+              <input type="number" min="0" className={inputClass} value={deces} onChange={(e) => setDeces(e.target.value)} />
+            </Field>
+            <Field label="Œufs retirés (cassés / pourris)">
+              <input type="number" min="0" className={inputClass} value={retires} onChange={(e) => setRetires(e.target.value)} />
+            </Field>
+          </div>
+          <p className="text-xs text-slate-400 -mt-1">Décès = nés morts en couveuse (déduits des vivants au passage en Bébé). Œufs retirés = œufs cassés/pourris enlevés (info couvaison, sans effet sur les vivants).</p>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
