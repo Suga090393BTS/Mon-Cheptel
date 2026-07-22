@@ -533,7 +533,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v87 — 12/07/2026";
+    const APP_VERSION = "v88 — 21/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -2806,7 +2806,15 @@
                 l.statut === "en stockage" ? "—" : (inc.futur ? <span className="text-slate-500">à venir</span> : inc.label),
                 l.statut === "en stockage" ? "—" : frDate(dateEclosion(l.dateDebut, l.espece)),
                 <StatusBadge statut={l.statut} />,
-                <RowActions onEdit={() => setEditLot({ index: i, rec: l })} onDelete={() => supprimerLigne("lots", i)} />,
+                <RowActions
+                  extra={l.statut !== "terminé" && (
+                    <button
+                      onClick={() => { if (window.confirm("Terminer la couvée " + l.id + " ? Elle passera dans l'Historique et libèrera la couveuse pour une nouvelle couvaison.")) patchLigne("lots", i, { statut: "terminé" }); }}
+                      title="Terminer la couvée (→ Historique, libère la couveuse)"
+                      className="px-1.5 py-0.5 rounded hover:bg-emerald-50 text-emerald-600 text-xs font-medium whitespace-nowrap">✓ Terminer</button>
+                  )}
+                  onEdit={() => setEditLot({ index: i, rec: l })}
+                  onDelete={() => supprimerLigne("lots", i)} />,
               ];
             })}
           />
@@ -3044,8 +3052,6 @@
       // open : null | "releve" | "mirage" | "eclosion"
       const [open, setOpen] = useState(null);
       const [edit, setEdit] = useState(null);   // { src, index, rec }
-      // Filtre d'affichage par espèce (ne change pas le menu principal)
-      const [esp, setEsp] = useState("poule");
 
       const lotDe = (id) => lots.find(l => l.id === id) || {};
       // Jour d'incubation d'un événement à partir du lot et de la date
@@ -3058,33 +3064,29 @@
         return null;
       };
 
-      // Fusion des relevés + mirages + éclosions en une seule liste d'événements
-      // (_src = collection d'origine, _idx = index dans cette collection → édition/suppression)
-      const evts = [];
-      suivis.forEach((s, i) => evts.push({
-        _src: "suivis", _idx: i, _rec: s,
-        date: s.date, lot: s.lot, type: "relevé", jour: s.jour,
-        temp: s.temp, humidite: s.humidite, eau: !!s.eau,
-        retires: s.retires || undefined, obs: s.obs,
-      }));
-      mirages.forEach((m, i) => evts.push({
-        _src: "mirages", _idx: i, _rec: m,
-        date: m.date, lot: m.lot, type: "mirage " + m.numero, jour: jourEvt(m.lot, m.date),
-        clairs: m.clairs, fecondes: m.fecondes, retires: m.retires, obs: m.obs,
-      }));
-      eclosions.forEach((e, i) => evts.push({
-        _src: "eclosions", _idx: i, _rec: e,
-        date: e.date, lot: e.lot, type: "éclosion", jour: jourEvt(e.lot, e.date),
-        nes: e.nes, nonEclos: e.nonEclos, obs: e.obs,
-      }));
-      // Plus récent en haut ; à date égale, tri par lot
-      evts.sort((a, b) => b.date.localeCompare(a.date) || a.lot.localeCompare(b.lot));
-
-      // Filtrage par espèce du lot (poules / cailles), déduite du lot lié
-      const evtsFiltres = evts.filter(ev => (lotDe(ev.lot).espece || "") === esp);
+      // Trois listes DISTINCTES (plus de fusion, plus de filtre par espèce) : relevés T°/H%, mirages,
+      // éclosions. Poules et cailles sont affichées ensemble ; la colonne « Espèce » les distingue.
+      // _src / _idx = collection d'origine + index → édition / suppression.
+      const parDateLotDesc = (a, b) => b.date.localeCompare(a.date) || String(a.lot).localeCompare(String(b.lot));
+      const releves = suivis.map((s, i) => ({ _src: "suivis", _idx: i, _rec: s, date: s.date, lot: s.lot, jour: s.jour, temp: s.temp, humidite: s.humidite, eau: !!s.eau, retires: s.retires, obs: s.obs })).sort(parDateLotDesc);
+      const miragesL = mirages.map((m, i) => ({ _src: "mirages", _idx: i, _rec: m, date: m.date, lot: m.lot, jour: jourEvt(m.lot, m.date), numero: m.numero, clairs: m.clairs, fecondes: m.fecondes, retires: m.retires, obs: m.obs })).sort(parDateLotDesc);
+      const eclosL = eclosions.map((e, i) => ({ _src: "eclosions", _idx: i, _rec: e, date: e.date, lot: e.lot, jour: jourEvt(e.lot, e.date), nes: e.nes, nonEclos: e.nonEclos, obs: e.obs })).sort(parDateLotDesc);
 
       const tiret = (v) => (v === undefined || v === null || v === "" ? "—" : v);
-      const ongletBtn = (actif) => "px-4 py-2 rounded-lg text-sm font-medium border " + (actif ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50");
+      const espLot = (lotId) => { const e = lotDe(lotId).espece; return e === "caille" ? "🐦 Caille" : e === "poule" ? "🐔 Poule" : "—"; };
+      // 5 premières cellules communes à chaque tableau : Date · Couveuse · Lot · Espèce · Jour
+      const celluleBase = (ev) => {
+        const l = lotDe(ev.lot);
+        return [
+          frDate(ev.date),
+          l.couveuse ? <CouveuseBadge num={l.couveuse} court /> : "—",
+          <span className="font-medium">{ev.lot}</span>,
+          espLot(ev.lot),
+          ev.jour != null ? "J " + ev.jour : "—",
+        ];
+      };
+      const cellObs = (ev) => <ObsCell texte={ev.obs} titre={"Observation — " + ev.lot} onSave={(v) => patchLigne(ev._src, ev._idx, { obs: v })} />;
+      const cellActions = (ev) => <RowActions onEdit={() => setEdit({ src: ev._src, index: ev._idx, rec: ev._rec })} onDelete={() => supprimerLigne(ev._src, ev._idx)} />;
 
       const actions = (
         <div className="flex flex-wrap gap-2">
@@ -3098,40 +3100,59 @@
           {/* Toujours embarqué dans Récolte des œufs → Suivi couvaison (la page autonome a été retirée du menu) */}
           <div className="flex items-center justify-between gap-2 mb-4 flex-wrap"><h2 className="text-lg font-semibold">Suivi de couvaison</h2>{actions}</div>
 
-          {/* Sélecteur d'espèce : filtre uniquement le tableau affiché (pas un onglet du menu) */}
-          <div className="flex gap-2 mb-4">
-            <button onClick={() => setEsp("poule")} className={ongletBtn(esp === "poule")}>🐔 Poules</button>
-            <button onClick={() => setEsp("caille")} className={ongletBtn(esp === "caille")}>🐦 Cailles</button>
-          </div>
+          {/* Tableau 1 — Température & humidité (relevés quotidiens) */}
+          <h3 className="text-sm font-semibold text-slate-600 mb-2">🌡️ Température &amp; humidité <span className="font-normal text-slate-400">— relevés quotidiens</span></h3>
+          {releves.length === 0
+            ? <p className="text-sm text-slate-400 mb-6">Aucun relevé pour l'instant. Clique sur « + Relevé ».</p>
+            : <div className="mb-6"><Table
+                resume={(r, i) => { const ev = releves[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot}{ev.jour != null ? " · J" + ev.jour : ""} — {tiret(ev.temp)} °C / {tiret(ev.humidite)} %</>; }}
+                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Temp.", "Hum.", "Œufs retirés", "Obs", ""]}
+                rows={releves.map(ev => [
+                  ...celluleBase(ev),
+                  tiret(ev.temp),
+                  ev.eau ? <span className="whitespace-nowrap" title="Eau ajoutée ce jour">{tiret(ev.humidite)} 💧</span> : tiret(ev.humidite),
+                  tiret(ev.retires),
+                  cellObs(ev),
+                  cellActions(ev),
+                ])}
+              /></div>}
 
-          <Table
-            resume={(r, i) => { const ev = evtsFiltres[i]; const l = lotDe(ev.lot); const j = ev.jour != null ? " · J" + ev.jour : ""; return <>{frDate(ev.date)} — {ev.type}{l.couveuse ? " C" + l.couveuse : ""}<span className="text-slate-400">{j}</span> — Lot {ev.lot}</>; }}
-            columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Type", "Temp.", "Hum.", "Clairs", "Féc.", "Ret.", "Nés", "N.écl.", "Obs", ""]}
-            rows={evtsFiltres.map(ev => {
-              const l = lotDe(ev.lot);
-              return [
-                frDate(ev.date),
-                l.couveuse ? <CouveuseBadge num={l.couveuse} court /> : "—",
-                <span className="font-medium">{ev.lot}</span>,
-                l.espece || "—",
-                ev.jour != null ? "J " + ev.jour : "—",
-                <EventBadge type={ev.type} />,
-                tiret(ev.temp),
-                ev.eau ? <span className="whitespace-nowrap" title="Eau ajoutée ce jour">{tiret(ev.humidite)} 💧</span> : tiret(ev.humidite),
-                tiret(ev.clairs),
-                ev.fecondes != null ? <span className="text-emerald-600 font-medium">{ev.fecondes}</span> : "—",
-                tiret(ev.retires),
-                ev.nes != null ? <span className="text-emerald-600 font-medium">{ev.nes}</span> : "—",
-                tiret(ev.nonEclos),
-                <ObsCell texte={ev.obs} titre={"Observation — " + ev.lot} onSave={(v) => patchLigne(ev._src, ev._idx, { obs: v })} />,
-                <RowActions
-                  onEdit={() => setEdit({ src: ev._src, index: ev._idx, rec: ev._rec })}
-                  onDelete={() => supprimerLigne(ev._src, ev._idx)} />,
-              ];
-            })}
-          />
+          {/* Tableau 2 — Mirages (leur propre tableau) */}
+          <h3 className="text-sm font-semibold text-slate-600 mb-2">🔦 Mirages</h3>
+          {miragesL.length === 0
+            ? <p className="text-sm text-slate-400 mb-6">Aucun mirage pour l'instant. Clique sur « + Mirage ».</p>
+            : <div className="mb-6"><Table
+                resume={(r, i) => { const ev = miragesL[i]; return <>{frDate(ev.date)} — mirage {ev.numero} · {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.fecondes)} féc. / {tiret(ev.clairs)} clairs</>; }}
+                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Mirage", "Clairs", "Fécondés", "Œufs retirés", "Obs", ""]}
+                rows={miragesL.map(ev => [
+                  ...celluleBase(ev),
+                  <EventBadge type={"mirage " + ev.numero} />,
+                  tiret(ev.clairs),
+                  ev.fecondes != null ? <span className="text-emerald-600 font-medium">{ev.fecondes}</span> : "—",
+                  tiret(ev.retires),
+                  cellObs(ev),
+                  cellActions(ev),
+                ])}
+              /></div>}
+
+          {/* Tableau 3 — Éclosions : nés + non éclos ensemble */}
+          <h3 className="text-sm font-semibold text-slate-600 mb-2">🐣 Éclosions <span className="font-normal text-slate-400">— nés &amp; non éclos</span></h3>
+          {eclosL.length === 0
+            ? <p className="text-sm text-slate-400 mb-4">Aucune éclosion pour l'instant. Clique sur « + Éclosion ». Astuce : si les naissances s'étalent sur plusieurs jours, ajoute une éclosion par jour pour le même lot (elles s'additionnent).</p>
+            : <div className="mb-4"><Table
+                resume={(r, i) => { const ev = eclosL[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.nes)} nés / {tiret(ev.nonEclos)} non éclos</>; }}
+                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Nés", "Non éclos", "Obs", ""]}
+                rows={eclosL.map(ev => [
+                  ...celluleBase(ev),
+                  ev.nes != null ? <span className="text-emerald-600 font-medium">{ev.nes}</span> : "—",
+                  tiret(ev.nonEclos),
+                  cellObs(ev),
+                  cellActions(ev),
+                ])}
+              /></div>}
+
           <p className="text-xs text-slate-400 mt-2">
-            Types d'événement : relevé quotidien · mirage 1 · mirage 2 · éclosion. 💧 à côté de l'humidité = eau ajoutée dans la couveuse ce jour-là. La colonne « Ret. » compte les œufs retirés : lors d'un mirage, ou lors d'un relevé quotidien (œufs cassés, pourris…). Les courbes des couveuses (onglet Stats couvaison) sont calculées à partir des relevés ci-dessus.
+            💧 à côté de l'humidité = eau ajoutée dans la couveuse ce jour-là. « Œufs retirés » = œufs cassés / pourris retirés lors d'un relevé, ou œufs clairs retirés lors d'un mirage. Poules et cailles sont affichées ensemble (colonne Espèce). Les courbes des couveuses (onglet Stats couvaison) utilisent les relevés T°/H%. <span className="font-medium">Pour clôturer une couvée et en lancer une nouvelle</span> : onglet « 🐣 Lots en couveuse » → bouton « Terminer » sur le lot.
           </p>
 
           {open === "releve" && (
