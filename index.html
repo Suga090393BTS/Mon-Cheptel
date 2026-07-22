@@ -131,7 +131,7 @@
 
     // --- Éclosions ---
     const eclosionsSeed = [
-      // { lot, date, nes, nonEclos, obs }
+      // { lot, date, nes, nonEclos, deces, obs }  — deces = décès en couveuse avant transfert
     ];
 
     // --- Collecte / stockage des œufs avant couvaison ---
@@ -528,12 +528,18 @@
     }
     // Libellé d'espèce d'un jeune : poussin / cailleteau
     const labelJeune = (espece) => (espece === "caille" ? "cailleteau" : "poussin");
+    // Vivants d'un lot de jeunes = nés − morts (calcul auto, toujours à jour même sur d'anciens lots).
+    // Repli sur le champ « nombre » stocké quand « nés » n'est pas renseigné (ex. lot acheté).
+    function vivantsLot(p) {
+      if (p && p.nes != null && p.nes !== "") return Math.max(0, (Number(p.nes) || 0) - (Number(p.morts) || 0));
+      return Number(p && p.nombre) || 0;
+    }
 
     // --- Inventaires : repères de temps + helpers de calcul ---
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v89 — 22/07/2026";
+    const APP_VERSION = "v90 — 22/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1946,7 +1952,7 @@
       const jeunesActifs = poussins.map((p, i) => ({ p, i })).filter(({ p }) => p.statut === "en croissance");
       const jeunesPoussins = jeunesActifs.filter(({ p }) => p.espece !== "caille");
       const jeunesCailleteaux = jeunesActifs.filter(({ p }) => p.espece === "caille");
-      const vivants = (arr) => arr.reduce((s, { p }) => s + (Number(p.nombre) || 0), 0);
+      const vivants = (arr) => arr.reduce((s, { p }) => s + vivantsLot(p), 0);
       const morts = (arr) => arr.reduce((s, { p }) => s + (Number(p.morts) || 0), 0);
       const nJ = (config.jeunes && config.jeunes.suiviJours) || 10;
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
@@ -2737,21 +2743,23 @@
       function terminerCouvaison(i, l) {
         const ecl = eclosions.filter((e) => e.lot === l.id);
         const nesTotal = ecl.reduce((s, e) => s + (Number(e.nes) || 0), 0);
+        const decesTotal = ecl.reduce((s, e) => s + (Number(e.deces) || 0), 0);   // décès en couveuse (suivi)
+        const vivantsInit = Math.max(0, nesTotal - decesTotal);
         // Date de naissance = 1re éclosion saisie, sinon date d'éclosion théorique du lot
         const dateNaiss = ecl.length ? ecl.map((e) => e.date).filter(Boolean).sort()[0] : dateEclosion(l.dateDebut, l.espece);
         const especeP = l.espece === "caille" ? "caille" : "poussin";
         const dejaCree = poussins.find((p) => p.lot === l.id);
         const info = dejaCree
           ? "\n\n(Le lot d'élevage relié existe déjà : il ne sera pas recréé.)"
-          : "\n\n→ Un lot d'élevage sera créé automatiquement dans Bébé" + (nesTotal ? " avec " + nesTotal + " né" + (nesTotal > 1 ? "s" : "") + "." : " (pense à y saisir le nombre de nés).");
+          : "\n\n→ Un lot d'élevage sera créé automatiquement dans Bébé" + (nesTotal ? " avec " + nesTotal + " né" + (nesTotal > 1 ? "s" : "") + (decesTotal ? " − " + decesTotal + " décès = " + vivantsInit + " vivant" + (vivantsInit > 1 ? "s" : "") : "") + "." : " (pense à y saisir le nombre de nés).");
         if (!window.confirm("Terminer la couvée " + l.id + " ? Elle passera dans l'Historique et libèrera la couveuse." + info)) return;
         patchLigne("lots", i, { statut: "terminé" });
         if (!dejaCree) {
           ajouterPoussin({
             id: genPoussinId(especeP, dateNaiss),
             date: dateNaiss, espece: especeP, lot: l.id, lignee: "",
-            nes: nesTotal, nombre: nesTotal, morts: 0,
-            statut: "en croissance", obs: "Créé automatiquement à la fin de la couvée " + l.id, croisements: [],
+            nes: nesTotal, nombre: vivantsInit, morts: decesTotal,
+            statut: "en croissance", obs: "Créé automatiquement à la fin de la couvée " + l.id + (decesTotal ? " (dont " + decesTotal + " décès en couveuse)" : ""), croisements: [],
           });
         }
       }
@@ -3096,7 +3104,7 @@
       const parDateLotDesc = (a, b) => b.date.localeCompare(a.date) || String(a.lot).localeCompare(String(b.lot));
       const releves = suivis.map((s, i) => ({ _src: "suivis", _idx: i, _rec: s, date: s.date, lot: s.lot, jour: s.jour, temp: s.temp, humidite: s.humidite, eau: !!s.eau, retires: s.retires, obs: s.obs })).sort(parDateLotDesc);
       const miragesL = mirages.map((m, i) => ({ _src: "mirages", _idx: i, _rec: m, date: m.date, lot: m.lot, jour: jourEvt(m.lot, m.date), numero: m.numero, clairs: m.clairs, fecondes: m.fecondes, retires: m.retires, obs: m.obs })).sort(parDateLotDesc);
-      const eclosL = eclosions.map((e, i) => ({ _src: "eclosions", _idx: i, _rec: e, date: e.date, lot: e.lot, jour: jourEvt(e.lot, e.date), nes: e.nes, nonEclos: e.nonEclos, obs: e.obs })).sort(parDateLotDesc);
+      const eclosL = eclosions.map((e, i) => ({ _src: "eclosions", _idx: i, _rec: e, date: e.date, lot: e.lot, jour: jourEvt(e.lot, e.date), nes: e.nes, nonEclos: e.nonEclos, deces: e.deces, obs: e.obs })).sort(parDateLotDesc);
 
       const tiret = (v) => (v === undefined || v === null || v === "" ? "—" : v);
       const espLot = (lotId) => { const e = lotDe(lotId).espece; return e === "caille" ? "🐦 Caille" : e === "poule" ? "🐔 Poule" : "—"; };
@@ -3171,12 +3179,13 @@
           {vueS === "eclosions" && (eclosL.length === 0
             ? <p className="text-sm text-slate-400 mb-4">Aucune éclosion pour l'instant. Clique sur « + Éclosion ». Astuce : si les naissances s'étalent sur plusieurs jours, ajoute une éclosion par jour pour le même lot (elles s'additionnent).</p>
             : <div className="mb-4"><Table
-                resume={(r, i) => { const ev = eclosL[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.nes)} nés / {tiret(ev.nonEclos)} non éclos</>; }}
-                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Nés", "Non éclos", "Obs", ""]}
+                resume={(r, i) => { const ev = eclosL[i]; return <>{frDate(ev.date)} — {espLot(ev.lot)} · Lot {ev.lot} — {tiret(ev.nes)} nés / {tiret(ev.nonEclos)} non éclos{ev.deces ? " · " + ev.deces + " décès" : ""}</>; }}
+                columns={["Date", "Couv.", "Lot", "Espèce", "Jour", "Nés", "Non éclos", "Décès", "Obs", ""]}
                 rows={eclosL.map(ev => [
                   ...celluleBase(ev),
                   ev.nes != null ? <span className="text-emerald-600 font-medium">{ev.nes}</span> : "—",
                   tiret(ev.nonEclos),
+                  (Number(ev.deces) || 0) > 0 ? <span className="text-red-600 font-medium">{ev.deces}</span> : "—",
                   cellObs(ev),
                   cellActions(ev),
                 ])}
@@ -3287,11 +3296,12 @@
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [nes, setNes] = useState(initial ? String(initial.nes) : "");
       const [nonEclos, setNonEclos] = useState(initial ? String(initial.nonEclos) : "");
+      const [deces, setDeces] = useState(initial && initial.deces != null ? String(initial.deces) : "0");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
 
       function submit(e) {
         e.preventDefault();
-        const rec = { lot, date, nes: Number(nes) || 0, nonEclos: Number(nonEclos) || 0, obs: obs.trim() };
+        const rec = { lot, date, nes: Number(nes) || 0, nonEclos: Number(nonEclos) || 0, deces: Number(deces) || 0, obs: obs.trim() };
         (onSave || ajouterEclosion)(rec);
         onClose();
       }
@@ -3315,6 +3325,10 @@
               <input type="number" min="0" className={inputClass} value={nonEclos} onChange={(e) => setNonEclos(e.target.value)} />
             </Field>
           </div>
+          <Field label="Décès en couveuse (avant transfert)">
+            <input type="number" min="0" className={inputClass} value={deces} onChange={(e) => setDeces(e.target.value)} />
+            <p className="text-xs text-slate-400 mt-1">Poussins/cailleteaux nés mais morts en couveuse avant l'arrêt de la couvée. Déduits automatiquement des vivants lors du passage en Bébé.</p>
+          </Field>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
@@ -4715,7 +4729,7 @@
               {bebesAVenir.map(({ p, espece, datePrete, restant }, k) => (
                 <div key={k} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="text-sm font-medium text-slate-700">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)} · {p.nombre} vivant(s)</span></p>
+                    <p className="text-sm font-medium text-slate-700">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)} · {vivantsLot(p)} vivant(s)</span></p>
                     <span className={"px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap " + (restant != null && restant <= 0 ? "bg-emerald-100 text-emerald-700" : (restant != null && restant < 14 ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"))}>{libRestant(restant)}</span>
                   </div>
                   <p className="text-xs text-slate-500">Né le {frDate(p.date)} · {ageJeune(p.date).label}</p>
@@ -5889,7 +5903,7 @@
       // Crée une fiche par sujet vivant manquant du lot (numéro auto LOT-01, couleur du lot pré-remplie)
       const creerFiches = (p, i) => {
         const existants = sujetsDe(p.id).length;
-        const manque = Math.max(0, (Number(p.nombre) || 0) - existants);
+        const manque = Math.max(0, vivantsLot(p) - existants);
         const coul = couleurBagueLot(config, poussins, i);
         for (let k = 0; k < manque; k++) {
           ajouterSujet({ espece: espI, lot: p.id, numero: p.id + "-" + String(existants + k + 1).padStart(2, "0"), croisement: "", sexe: "?", bagueTaille: "", bagueCouleur: coul, obs: "" });
@@ -5926,13 +5940,13 @@
               : lotsAges.map(({ p, i }) => {
                   const lignesS = sujetsDe(p.id);
                   const coul = couleurBagueLot(config, poussins, i);
-                  const manque = Math.max(0, (Number(p.nombre) || 0) - lignesS.length);
+                  const manque = Math.max(0, vivantsLot(p) - lignesS.length);
                   const croisOpts = Array.from(new Set(((p.croisements || []).map((c) => c.nom)).concat(suggestionsCroisements(reproducteurs, p.espece)))).filter(Boolean);
                   const dlId = "crois-sujets-" + p.id;
                   return (
                     <div key={p.id} className="mb-6">
                       <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-                        <h3 className="text-sm font-semibold text-slate-600">Lot {p.id} <span className="font-normal text-slate-400">· {ageJeune(p.date).label} · {p.nombre} vivant(s) · couleur du lot :</span> <PastilleBague couleur={coul} /></h3>
+                        <h3 className="text-sm font-semibold text-slate-600">Lot {p.id} <span className="font-normal text-slate-400">· {ageJeune(p.date).label} · {vivantsLot(p)} vivant(s) · couleur du lot :</span> <PastilleBague couleur={coul} /></h3>
                         {manque > 0 && (
                           <button onClick={() => creerFiches(p, i)} className="px-3 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap">+ Créer {manque} fiche{manque > 1 ? "s" : ""} sujet{manque > 1 ? "s" : ""}</button>
                         )}
@@ -6546,7 +6560,7 @@
 
     // Confirmation du transfert d'un lot de jeunes vers l'abattoir (avec le nombre destiné à la consommation)
     function TransfertConsoForm({ p, onClose, onConfirm }) {
-      const vivants = Number(p.nombre) || 0;
+      const vivants = vivantsLot(p);
       const [nombre, setNombre] = useState(String(vivants));
       return (
         <form onSubmit={(e) => { e.preventDefault(); onConfirm(Math.max(0, Number(nombre) || 0)); onClose(); }} className="space-y-3">
@@ -6586,13 +6600,13 @@
       const labelLot = (p, i) => (p.id || p.lot || ("Lot " + (i + 1))) + " · " + labelJeune(p.espece);
 
       const lignes = poussins.map((p, i) => ({ p, i })).sort((a, b) => b.p.date.localeCompare(a.p.date));
-      const vivP = actifsIdx.filter(({ p }) => p.espece !== "caille").reduce((s, { p }) => s + (Number(p.nombre) || 0), 0);
-      const vivC = actifsIdx.filter(({ p }) => p.espece === "caille").reduce((s, { p }) => s + (Number(p.nombre) || 0), 0);
+      const vivP = actifsIdx.filter(({ p }) => p.espece !== "caille").reduce((s, { p }) => s + vivantsLot(p), 0);
+      const vivC = actifsIdx.filter(({ p }) => p.espece === "caille").reduce((s, { p }) => s + vivantsLot(p), 0);
 
       // Action de fin de suivi : transfert / archivage. Pour la consommation, `nombre` = quantité destinée à l'abattoir.
       function transferer(i, p, cible, nombre) {
         if (cible === "consommation") {
-          const n = nombre != null ? nombre : (Number(p.nombre) || 0);
+          const n = nombre != null ? nombre : vivantsLot(p);
           ajouterAbattoir({ lot: p.id || "", espece: p.espece === "caille" ? "caille" : "poule", race: "", naissance: p.date, nombre: n, statut: "en croissance", abattagePrevu: "", abattageReel: "", obs: "Issu du lot de naissance " + (p.id || "") });
           patchLigne("poussins", i, { statut: "transféré consommation" });
         } else if (cible === "reproduction") {
@@ -6630,7 +6644,7 @@
                 <StatCard label="Lots en suivi" value={actifsIdx.length} color="purple" />
               </div>
               <Table
-                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); const cr = (p.croisements || []).map((c) => codeCroisement(c.nom)).join(" "); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {p.nombre} viv.{cr ? " · 🧬 " + cr : ""}</span></>; }}
+                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); const cr = (p.croisements || []).map((c) => codeCroisement(c.nom)).join(" "); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {vivantsLot(p)} viv.{cr ? " · 🧬 " + cr : ""}</span></>; }}
                 columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "🧬 Croisements", "Obs", "Actions"]}
                 rows={lignes.map(({ p, i }) => {
                   const a = ageJeune(p.date);
@@ -6641,7 +6655,7 @@
                     frDate(p.date),
                     <span className={"whitespace-nowrap" + (a.futur ? " text-red-600" : "")}>{a.label}</span>,
                     p.nes != null && p.nes !== "" ? p.nes : "—",
-                    <span className="font-medium text-emerald-600">{p.nombre}</span>,
+                    <span className="font-medium text-emerald-600">{vivantsLot(p)}</span>,
                     Number(p.morts) || 0,
                     <EtapeJeune birthDate={p.date} />,
                     <StatutAnimal statut={p.statut} />,
