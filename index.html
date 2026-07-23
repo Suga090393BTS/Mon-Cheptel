@@ -543,12 +543,22 @@
       if (p && p.nes != null && p.nes !== "") return Math.max(0, (Number(p.nes) || 0) - mortsLot(p));
       return Math.max(0, (Number(p && p.nombre) || 0) - mortsJours(p));
     }
+    // Effectif vivant à la FIN du jour `jour` du suivi S1–S8 : base (nés − morts fiche, ou « nombre »)
+    // moins les décès quotidiens jusqu'à ce jour INCLUS. Sert au report auto « tous vivants » du jour suivant.
+    function vivantsAuJour(p, jour) {
+      const base = (p && p.nes != null && p.nes !== "")
+        ? (Number(p.nes) || 0) - (Number(p.morts) || 0)
+        : (Number(p && p.nombre) || 0);
+      const j = (p && p.jours) || {};
+      const mortsCumul = Object.keys(j).reduce((s, k) => (Number(k) <= jour ? s + (Number(j[k] && j[k].morts) || 0) : s), 0);
+      return Math.max(0, base - mortsCumul);
+    }
 
     // --- Inventaires : repères de temps + helpers de calcul ---
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v92 — 22/07/2026";
+    const APP_VERSION = "v94 — 23/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -5278,6 +5288,9 @@
       const [fournisseur, setFournisseur] = useState(initial ? (initial.fournisseur || "") : "");
       const [seuil, setSeuil] = useState(initial && Number(initial.seuil) > 0 ? String(initial.seuil) : "");
       const [urgent, setUrgent] = useState(initial ? !!initial.urgent : false);
+      // Capacité PAR UNITÉ (ex. mangeoire 5 kg, abreuvoir 10 L) → sert au récap par catégorie
+      const [capacite, setCapacite] = useState(initial && initial.capacite != null && initial.capacite !== "" ? String(initial.capacite) : "");
+      const [capaciteUnite, setCapaciteUnite] = useState(initial ? (initial.capaciteUnite || "") : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
       const valeurReelle = (Number(quantite) || 0) * (Number(prixUnitaire) || 0);
       const prixPaye = Math.max(0, valeurReelle - (Number(remise) || 0));
@@ -5292,6 +5305,7 @@
           etat, dateHorsService: etat === "hors service" ? dateHorsService : "",
           fournisseur: fournisseur.trim(),
           seuil: Number(seuil) || 0, urgent,
+          capacite: capacite === "" ? "" : (Number(capacite) || 0), capaciteUnite: capaciteUnite.trim(),
           // La ventilation par unité (ex. 1 HS sur 8) se garde telle quelle — elle s'édite via le bouton États du tableau
           ...(initial && initial.etats && initial.etat === etat ? { etats: initial.etats } : {}),
           obs: obs.trim(),
@@ -5328,6 +5342,16 @@
               <input type="number" step="0.01" min="0" className={inputClass} value={prixUnitaire} onChange={(e) => setPrixUnitaire(e.target.value)} />
             </Field>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Capacité par unité (optionnel)">
+              <input type="number" step="0.1" min="0" className={inputClass} value={capacite} onChange={(e) => setCapacite(e.target.value)} placeholder="ex. 5" />
+            </Field>
+            <Field label="Unité de capacité">
+              <input className={inputClass} list="materiel-capunites-list" value={capaciteUnite} onChange={(e) => setCapaciteUnite(e.target.value)} placeholder="ex. kg, L, œufs, places" />
+              <datalist id="materiel-capunites-list">{["L", "kg", "g", "œufs", "places"].map((u) => <option key={u} value={u} />)}</datalist>
+            </Field>
+          </div>
+          <p className="text-xs text-slate-400 -mt-1">Ex. mangeoire de 5 kg, abreuvoir de 10 L, couveuse de 120 œufs. Sert au récap par catégorie (capacité totale du parc).</p>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Valeur réelle (€)">
               <input className={inputClass + " bg-slate-100"} value={eur(valeurReelle)} readOnly />
@@ -5460,6 +5484,53 @@
           </>}
 
           {vue === "parc" && <>
+          {/* Récap du parc par catégorie : unités, en marche, et capacité totale (si renseignée sur les articles) */}
+          {(() => {
+            const parCat = {};
+            materiel.filter((m) => m.etat !== "remplacé").forEach((m) => {
+              const cat = (m.categorie || "autre").trim() || "autre";
+              const c = parCat[cat] || (parCat[cat] = { articles: 0, unites: 0, marche: 0, caps: {} });
+              const q = Number(m.quantite) || 0, em = nbEnMarche(m);
+              c.articles += 1; c.unites += q; c.marche += em;
+              const cap = Number(m.capacite) || 0;
+              if (cap > 0) {
+                const u = (m.capaciteUnite || "").trim() || "u.";
+                const cu = c.caps[u] || (c.caps[u] = { marche: 0, total: 0 });
+                cu.marche += em * cap; cu.total += q * cap;
+              }
+            });
+            const cats = Object.keys(parCat).sort((a, b) => a.localeCompare(b));
+            if (!cats.length) return null;
+            const emojiCat = (cat) => { const n = normLibelle(cat); if (n.includes("mangeoire")) return "🍽️"; if (n.includes("abreuvoir")) return "💧"; if (n.includes("couveuse")) return "🥚"; if (n.includes("lampe")) return "💡"; if (n.includes("outil")) return "🔧"; if (n.includes("enclos") || n.includes("cage")) return "🏠"; return "📦"; };
+            const fmtN = (x) => (Math.round(x * 10) / 10).toLocaleString("fr-FR");
+            return (
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-slate-600 mb-2">📦 Récap du parc par catégorie <span className="font-normal text-slate-400">— hors matériel remplacé</span></h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {cats.map((cat) => {
+                    const c = parCat[cat];
+                    const unites = Object.keys(c.caps);
+                    return (
+                      <div key={cat} className="bg-white rounded-xl border border-slate-100 shadow-sm p-3">
+                        <p className="text-sm font-medium text-slate-700 capitalize">{emojiCat(cat)} {cat}</p>
+                        <p className="text-lg font-semibold text-emerald-600">{c.marche}<span className="text-sm font-normal text-slate-400"> / {c.unites} en marche</span></p>
+                        {unites.length
+                          ? unites.map((u) => (
+                              <p key={u} className="text-xs text-slate-500">
+                                Capacité : <span className="font-medium text-slate-700">{fmtN(c.caps[u].marche)} {u}</span>
+                                {c.caps[u].marche !== c.caps[u].total ? <span className="text-slate-400"> (sur {fmtN(c.caps[u].total)} {u} au total)</span> : null}
+                              </p>
+                            ))
+                          : <p className="text-xs text-slate-300">capacité non renseignée</p>}
+                        <p className="text-[11px] text-slate-400">{c.articles} ligne{c.articles > 1 ? "s" : ""} d'inventaire</p>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-400 mt-2">La capacité se renseigne sur chaque article (Modifier → « Capacité par unité ») : mangeoire 5 kg, abreuvoir 10 L… Le chiffre vert = unités en état de marche (HS et à réparer exclus selon la ventilation des états).</p>
+              </div>
+            );
+          })()}
           <Table
             resume={(r, k) => { const m = lignes[k].m; const rep = repartitionEtats(m); const etats = ETATS_MATERIEL.filter(e => rep[e]); return <>{m.urgent ? "⭐ " : ""}<span className="font-medium">{m.article}</span> <span className="text-slate-400">— {etats.map(e => rep[e] + " " + e).join(" · ") || m.etat}</span></>; }}
             columns={["Date d'achat", "Article", "Catégorie", "Qté", "En marche", "Prix u.", "Coût", "État", "Âge", "Obs", "Actions"]}
@@ -6530,19 +6601,22 @@
       const [nettoyage, setNettoyage] = useState(!!d.nettoyage);
       const [temp, setTemp] = useState(d.temp != null && d.temp !== "" ? String(d.temp) : "");
       const [humidite, setHumidite] = useState(d.humidite != null && d.humidite !== "" ? String(d.humidite) : "");
-      const [vivants, setVivants] = useState(d.vivants != null && d.vivants !== "" ? String(d.vivants) : "");
       const [morts, setMorts] = useState(d.morts != null ? String(d.morts) : "0");
       const [comportement, setComportement] = useState(d.comportement || "");
       const [alimentation, setAlimentation] = useState(d.alimentation || "");
       const [obs, setObs] = useState(d.obs || "");
       const [probleme, setProbleme] = useState(d.probleme || "");
       const sem = Math.floor((jour - 1) / 7) + 1;
+      // « Vivants » n'est plus saisi : effectif de la veille − morts du jour, recalculé en direct.
+      const vivantsVeille = vivantsAuJour(p, jour - 1);
+      const vivantsCalcJour = Math.max(0, vivantsVeille - (Number(morts) || 0));
       function submit(e) {
         e.preventDefault();
         const maj = {
           ...d, eau, nourriture, nettoyage,
           temp: temp === "" ? "" : Number(temp), humidite: humidite === "" ? "" : Number(humidite),
-          vivants: vivants === "" ? "" : Number(vivants), morts: Number(morts) || 0,
+          vivants: vivantsCalcJour, morts: Number(morts) || 0,
+          tousVivants: (Number(morts) || 0) === 0 ? !!d.tousVivants : false,
           comportement: comportement.trim(), alimentation: alimentation.trim(), obs: obs.trim(), probleme: probleme.trim(),
         };
         patchLigne("poussins", lotIndex, { jours: { ...(p.jours || {}), [jour]: maj } });
@@ -6566,9 +6640,14 @@
             <Field label="Humidité (%)"><input type="number" step="1" min="0" max="100" className={inputClass} value={humidite} onChange={(e) => setHumidite(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Vivants"><input type="number" min="0" className={inputClass} value={vivants} onChange={(e) => setVivants(e.target.value)} /></Field>
-            <Field label="Morts"><input type="number" min="0" className={inputClass} value={morts} onChange={(e) => setMorts(e.target.value)} /></Field>
+            <Field label="Morts ce jour">
+              <input type="number" min="0" className={inputClass} value={morts} onChange={(e) => setMorts(e.target.value)} />
+            </Field>
+            <Field label="Vivants (auto)">
+              <input type="number" className={inputClass + " bg-slate-100 font-medium text-emerald-700"} value={vivantsCalcJour} readOnly tabIndex={-1} />
+            </Field>
           </div>
+          <p className="text-xs text-slate-400 -mt-1">Vivants = effectif de la veille ({vivantsVeille}) − morts du jour. Pas de mort ? Utilise la case « ✅ Tous vivants » directement dans le tableau.</p>
           <Field label="Comportement"><input className={inputClass} value={comportement} onChange={(e) => setComportement(e.target.value)} placeholder="ex. actifs, regroupés…" /></Field>
           <Field label="Changement d'alimentation (si besoin)"><input className={inputClass} value={alimentation} onChange={(e) => setAlimentation(e.target.value)} placeholder="ex. démarrage → croissance" /></Field>
           <Field label="Observation"><textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} /></Field>
@@ -6729,7 +6808,7 @@
                 return (
                   <div className="mt-3">
                     <p className="text-sm text-slate-600 mb-2">{p.id || ""} · {labelJeune(p.espece)} · {ageJeune(p.date).label}</p>
-                    <p className="text-xs text-slate-400 mb-2">Suivi quotidien sur {nS} semaines (les 10 premiers jours, décisifs, sont colorés). Clique une semaine pour la déplier, puis un jour pour ses détails · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · ✏️ pour le détail.</p>
+                    <p className="text-xs text-slate-400 mb-2">Suivi quotidien sur {nS} semaines (les 10 premiers jours, décisifs, sont colorés). Clique une semaine pour la déplier, puis un jour pour ses détails · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · <span className="font-medium">✅ Tous vivants = aucun mort ce jour → reporte l'effectif de la veille</span> · un mort ? ✏️ → « Morts ce jour », les vivants se recalculent seuls.</p>
                     {/* Légende de criticité des 10 premiers jours */}
                     <div className="flex flex-wrap gap-2 mb-3 text-xs">
                       <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">J1-J3 très critique</span>
@@ -6756,7 +6835,7 @@
                                 <Table
                                   rowClass={(r, k) => critJour(jours[k]).cls}
                                   resume={(r, k) => { const n = jours[k]; const c = critJour(n); return <>J {n} · {frDate(dateDecalee(p.date, n - 1))} {c.label && <span className={"ml-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium " + c.badge}>{c.label}</span>}</>; }}
-                                  columns={["Jour", "Date", "💧", "🌾", "🧹", "Temp.", "Vivants", "Morts", "Obs", ""]}
+                                  columns={["Jour", "Date", "💧", "🌾", "🧹", "Temp.", "✅ Tous vivants", "Vivants", "Morts", "Obs", ""]}
                                   rows={jours.map((n) => {
                                     const d = (p.jours || {})[n] || {};
                                     return [
@@ -6766,6 +6845,10 @@
                                       chk(d.nourriture, (e) => majJour(idxS, p, n, { nourriture: e.target.checked })),
                                       chk(d.nettoyage, (e) => majJour(idxS, p, n, { nettoyage: e.target.checked })),
                                       d.temp != null && d.temp !== "" ? d.temp + "°" : "—",
+                                      // « Tous vivants » : aucun mort ce jour → reporte l'effectif de la veille dans « Vivants »
+                                      chk(d.tousVivants, (e) => e.target.checked
+                                        ? majJour(idxS, p, n, { tousVivants: true, morts: 0, vivants: vivantsAuJour(p, n - 1) })
+                                        : majJour(idxS, p, n, { tousVivants: false })),
                                       d.vivants != null && d.vivants !== "" ? d.vivants : "—",
                                       (Number(d.morts) || 0) > 0 ? <span className="text-red-600 font-medium">{d.morts}</span> : "—",
                                       <ObsCell texte={d.obs} titre={"J " + n} onSave={(v) => majJour(idxS, p, n, { obs: v })} />,
