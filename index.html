@@ -558,7 +558,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v94 — 23/07/2026";
+    const APP_VERSION = "v95 — 28/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -3037,10 +3037,41 @@
       );
     }
 
+    // Couvées proposées dans les listes déroulantes de saisie (relevé / mirage / éclosion) :
+    // UNIQUEMENT les couvées en cours. Les couvées terminées sont archivées (onglet Historique) et
+    // sortent de la liste — sinon, avec 100 lots terminés, la liste devient inutilisable.
+    // Exception : la couvée d'une ligne qu'on est en train de MODIFIER reste proposée, sinon on
+    // perdrait son lot d'origine en rouvrant une ancienne saisie.
+    function lotsSelectionnables(lots, lotCourant) {
+      const enCours = (lots || []).filter((l) => l.statut !== "terminé" && l.statut !== "archivé");
+      if (lotCourant && !enCours.some((l) => l.id === lotCourant)) {
+        const l = (lots || []).find((x) => x.id === lotCourant);
+        if (l) return [l].concat(enCours);
+      }
+      return enCours;
+    }
+    // Liste déroulante « Numéro de lot » commune aux saisies relevé / mirage / éclosion.
+    function ChampLot({ lots, value, onChange, label }) {
+      const dispo = lotsSelectionnables(lots, value);
+      return (
+        <Field label={label || "Numéro de lot"}>
+          <select className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}>
+            {dispo.length === 0 && <option value="">— aucune couvée en cours —</option>}
+            {dispo.map((l) => (
+              <option key={l.id} value={l.id}>{l.id} ({l.espece}){l.statut === "terminé" || l.statut === "archivé" ? " · terminée" : ""}</option>
+            ))}
+          </select>
+          {dispo.length === 0 && (
+            <p className="text-xs text-amber-600 mt-1">Toutes les couvées sont terminées (elles sont archivées dans <span className="font-medium">Historique</span>). Lance une nouvelle couvaison pour saisir.</p>
+          )}
+        </Field>
+      );
+    }
+
     // Formulaire de saisie d'un relevé journalier
     function SuiviForm({ onClose, initial, onSave }) {
       const { lots, ajouterSuivi } = useData();
-      const [lot, setLot] = useState(initial ? initial.lot : (lots[0] ? lots[0].id : ""));
+      const [lot, setLot] = useState(initial ? initial.lot : ((lotsSelectionnables(lots)[0] || {}).id || ""));
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [jour, setJour] = useState(initial ? String(initial.jour) : "");
       const [temp, setTemp] = useState(initial ? String(initial.temp) : "");
@@ -3076,11 +3107,7 @@
 
       return (
         <form onSubmit={submit} className="space-y-3">
-          <Field label="Numéro de lot">
-            <select className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)}>
-              {lots.map((l) => <option key={l.id} value={l.id}>{l.id} ({l.espece})</option>)}
-            </select>
-          </Field>
+          <ChampLot lots={lots} value={lot} onChange={setLot} />
           <div className="grid grid-cols-2 gap-3">
             <Field label="Date">
               <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
@@ -3269,7 +3296,7 @@
     // Formulaire : ajout d'un mirage
     function MirageForm({ onClose, initial, onSave }) {
       const { lots, ajouterMirage } = useData();
-      const [lot, setLot] = useState(initial ? initial.lot : (lots[0] ? lots[0].id : ""));
+      const [lot, setLot] = useState(initial ? initial.lot : ((lotsSelectionnables(lots)[0] || {}).id || ""));
       const [numero, setNumero] = useState(initial ? String(initial.numero) : "1");
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [clairs, setClairs] = useState(initial ? String(initial.clairs) : "");
@@ -3290,11 +3317,7 @@
       return (
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Numéro de lot">
-              <select className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)}>
-                {lots.map((l) => <option key={l.id} value={l.id}>{l.id} ({l.espece})</option>)}
-              </select>
-            </Field>
+            <ChampLot lots={lots} value={lot} onChange={setLot} />
             <Field label="Mirage">
               <select className={inputClass} value={numero} onChange={(e) => setNumero(e.target.value)}>
                 <option value="1">Mirage 1</option>
@@ -3329,7 +3352,7 @@
     // Formulaire : ajout d'une éclosion
     function EclosionForm({ onClose, initial, onSave }) {
       const { lots, ajouterEclosion } = useData();
-      const [lot, setLot] = useState(initial ? initial.lot : (lots[0] ? lots[0].id : ""));
+      const [lot, setLot] = useState(initial ? initial.lot : ((lotsSelectionnables(lots)[0] || {}).id || ""));
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [nes, setNes] = useState(initial ? String(initial.nes) : "");
       const [nonEclos, setNonEclos] = useState(initial ? String(initial.nonEclos) : "");
@@ -3346,11 +3369,7 @@
       return (
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Numéro de lot">
-              <select className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)}>
-                {lots.map((l) => <option key={l.id} value={l.id}>{l.id} ({l.espece})</option>)}
-              </select>
-            </Field>
+            <ChampLot lots={lots} value={lot} onChange={setLot} />
             <Field label="Date d'éclosion">
               <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
             </Field>
@@ -5137,14 +5156,15 @@
           </div>
           <Table
             resume={(r, i) => { const a = visibles[i]; return <span className={a.bas ? "font-medium text-red-600" : "font-medium"}>{a.article}</span>; }}
-            columns={["Article", "Catégorie", "Stock actuel", "Seuil", "Statut", "Urgent", "Action"]}
+            columns={["Article", "Catégorie", "Stock actuel", "Statut", "Urgent", "Action"]}
             rows={visibles.map((a) => {
               const u = articleEstUrgent(config, a.article);
               return [
                 <span className="font-medium">{a.article}</span>,
                 a.categorie,
-                <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}>{a.stock} {a.unite}</span>,
-                a.seuil > 0 ? a.seuil + " " + a.unite : "—",
+                /* Le seuil n'a plus sa colonne (trop de place) : il reste lisible en info-bulle du stock. */
+                <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}
+                  title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>{a.stock} {a.unite}</span>,
                 <StockBadge bas={a.bas} />,
                 <button onClick={() => setUrgent(a.article)} title={u ? "Retirer des alertes importantes" : "Mettre en alerte importante"}
                   className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (u ? "bg-amber-100 text-amber-700 border-amber-300" : "bg-white text-slate-400 border-slate-300 hover:bg-slate-50")}>
@@ -5626,8 +5646,8 @@
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [zone, setZone] = useState(initial ? initial.zone : ZONES_C[0]);
       const [coches, setCoches] = useState(cochesInit);
+      // Pas d'humidité au poulailler : seule la température est relevée ici (l'humidité ne sert qu'en couveuse).
       const [temperature, setTemperature] = useState(initial && initial.temperature != null && initial.temperature !== "" ? String(initial.temperature) : "");
-      const [humidite, setHumidite] = useState(initial && initial.humidite != null && initial.humidite !== "" ? String(initial.humidite) : "");
       const [quantites, setQuantites] = useState(initial && initial.quantites ? { ...initial.quantites } : {});
       const [unitesProd, setUnitesProd] = useState(initial && initial.unitesProd ? { ...initial.unitesProd } : {});
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
@@ -5657,11 +5677,11 @@
           ...(initial || {}),
           date, zone, coches: cochesClean,
           temperature: temperature === "" ? "" : (Number(temperature) || 0),
-          humidite: humidite === "" ? "" : (Number(humidite) || 0),
           quantites: quantitesClean, unitesProd: unitesClean,
           obs: obs.trim(),
         };
         delete rec.action; delete rec.probleme;  // migration vers coches + suppression « problème »
+        delete rec.humidite;                     // l'humidité n'est plus relevée au poulailler (couveuses seulement)
         (onSave || ajouterPoulailler)(rec);
         // Les traitements (Fortiferm/Cocciferm/Vermiferm) ne sont PAS déduits du stock : quantités trop petites (ml).
         onClose();
@@ -5722,9 +5742,6 @@
           <div className="grid grid-cols-2 gap-3">
             <Field label="Température (°C)">
               <input type="number" step="0.1" className={inputClass} value={temperature} onChange={(e) => setTemperature(e.target.value)} placeholder="facultatif" />
-            </Field>
-            <Field label="Humidité (%)">
-              <input type="number" step="1" min="0" max="100" className={inputClass} value={humidite} onChange={(e) => setHumidite(e.target.value)} placeholder="facultatif" />
             </Field>
           </div>
           <Field label="Observation (note tout problème ici)">
@@ -5840,6 +5857,17 @@
     // Zones adultes = zones hors zones de jeunes
     function zonesAdultes(config) {
       return (config && config.zones ? config.zones : []).filter((z) => !estZoneJeune(z, config));
+    }
+    // Zone d'accueil par défaut d'un lot de jeunes (celle qui lui correspond : espace poussins / cailleteaux).
+    function zoneJeuneDefaut(config, espece) {
+      const cle = espece === "caille" ? "caillet" : "poussin";
+      const zones = (config && config.zones) || [];
+      return zones.find((z) => normLibelle(z).includes(cle)) || (espece === "caille" ? "espace cailleteaux" : "espace poussins");
+    }
+    // Où vit réellement un lot de jeunes ? `p.zone` s'il est renseigné (ex. mis avec les poules
+    // reproductrices même s'ils sont encore petits), sinon sa zone de jeunes par défaut.
+    function zoneLotJeune(p, config) {
+      return (p && p.zone) ? p.zone : zoneJeuneDefaut(config, p && p.espece);
     }
     // Espèce d'une zone, détectée par mot-clé dans le nom : "jeune" | "caille" | "poule" | "autre".
     // Sert à regrouper les zones par espèce (Soin du jour) et à afficher l'emoji distinctif —
@@ -6171,8 +6199,49 @@
         patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...d, [key]: !d[key] } } });
       };
       const ouvrirBebe = (i) => { setBebeLot(i); setVue("bebe"); };   // accès direct au lot dans l'onglet Bébé
+
+      // Lots de jeunes HÉBERGÉS dans une zone d'adultes (ex. les poussins mis avec les poules
+      // reproductrices) : leur case de soin du jour remonte juste à côté de celle de cette zone,
+      // au lieu de rester en bas dans la section « Bébés ». Les autres restent dans cette section.
+      const zonesSoinNorm = zonesSoin.map(normLibelle);
+      const zoneAccueil = (p) => (p.zone && zonesSoinNorm.includes(normLibelle(p.zone)) ? p.zone : null);
+      const jeunesHeberges = jeunesActifs.filter(({ p }) => zoneAccueil(p));
+      const jeunesSeuls = jeunesActifs.filter(({ p }) => !zoneAccueil(p));
+      const jeunesDeZone = (zone) => jeunesHeberges.filter(({ p }) => normLibelle(p.zone) === normLibelle(zone));
+
+      // Carte « soin du jour » d'un lot de bébés (eau / nourriture / nettoyage du jour).
+      // `heberge` = affichée à côté d'une zone d'adultes → petit rappel de cohabitation.
+      const CarteBebe = ({ p, i, heberge }) => {
+        const n = jourBebe(p);
+        return (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-medium text-slate-700 min-w-0 truncate">
+                🐥 {p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span>
+              </p>
+              <button onClick={() => ouvrirBebe(i)} className="text-xs text-emerald-600 hover:underline whitespace-nowrap shrink-0">→ Bébé</button>
+            </div>
+            {heberge && <p className="text-xs text-amber-600 mb-2">🏠 avec les adultes de cette zone · {vivantsLot(p)} vivant(s)</p>}
+            {n == null
+              ? <p className="text-xs text-slate-400">Hors fenêtre de suivi.</p>
+              : <div className="flex flex-wrap gap-2">
+                  {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"]].map(([k, lbl]) => {
+                    const on = bebeFait(p, k);
+                    return (
+                      <button key={k} onClick={() => toggleBebe(i, p, k)}
+                        className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
+                        {on ? "✓ " : ""}{lbl}
+                      </button>
+                    );
+                  })}
+                </div>}
+          </div>
+        );
+      };
+
       const actionsLabel = (p) => { const d = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return d.length ? d.map(a => a.label).join(", ") : (p.action || "Rappel"); };
-      const th = (p) => [p.temperature !== "" && p.temperature != null ? p.temperature + "°" : null, p.humidite !== "" && p.humidite != null ? p.humidite + "%" : null].filter(Boolean).join(" · ") || "—";
+      // Température seule : l'humidité ne sert pas au poulailler (elle reste suivie dans les couveuses).
+      const th = (p) => (p.temperature !== "" && p.temperature != null ? p.temperature + "°" : "—");
 
       return (
         <div>
@@ -6207,69 +6276,55 @@
                   {zs.map((zone) => {
                     const restesOk = !(config.restesInterdits || []).map(normLibelle).includes(normLibelle(zone));
                     const quick = ACTIONS_COCHES.filter(a => ["eau", "nourriture", "nettoyage"].includes(a.key) || (a.key === "restes" && restesOk));
+                    const bebesIci = jeunesDeZone(zone);   // jeunes logés avec les adultes de cette zone
                     return (
-                      <div key={zone} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
-                        <p className="text-sm font-medium text-slate-700 mb-2">{emojiZone(zone, config)} {zone}</p>
-                        <div className="flex flex-wrap gap-2">
-                          {quick.map((a) => {
-                            const on = faitAujourdhui(zone, a.key);
-                            return (
-                              <button key={a.key} onClick={() => toggleSoin(zone, a.key)}
-                                className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
-                                {on ? "✓ " : ""}{a.icone} {a.label}
-                              </button>
-                            );
-                          })}
+                      <React.Fragment key={zone}>
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+                          <p className="text-sm font-medium text-slate-700 mb-2">{emojiZone(zone, config)} {zone}</p>
+                          <div className="flex flex-wrap gap-2">
+                            {quick.map((a) => {
+                              const on = faitAujourdhui(zone, a.key);
+                              return (
+                                <button key={a.key} onClick={() => toggleSoin(zone, a.key)}
+                                  className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
+                                  {on ? "✓ " : ""}{a.icone} {a.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {bebesIci.length > 0 && (
+                            <p className="text-xs text-amber-600 mt-2">🐥 {bebesIci.length} lot{bebesIci.length > 1 ? "s" : ""} de jeunes logé{bebesIci.length > 1 ? "s" : ""} ici (case juste à côté)</p>
+                          )}
                         </div>
-                      </div>
+                        {bebesIci.map(({ p, i }) => <CarteBebe key={"b" + i} p={p} i={i} heberge />)}
+                      </React.Fragment>
                     );
                   })}
                 </div>
               </div>
             );
           })}
-          <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »). Les cases ci-dessus ne concernent QUE les adultes — les bébés ont leurs propres cases ci-dessous.</p>
+          <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »). Chaque case ci-dessus ne concerne QUE sa zone : un lot de jeunes logé avec des adultes garde sa propre case 🐥 juste à côté de celle de sa zone (cocher l'une ne coche pas l'autre).</p>
 
           {/* Soin du jour des BÉBÉS — une case par lot, reliée au suivi (S1-S8 / J1-J10) de l'onglet Bébé */}
-          {jeunesActifs.length > 0 && <>
+          {jeunesSeuls.length > 0 && <>
             <h2 className="text-lg font-semibold mb-3">🐥 Bébés — soin du jour (par lot)</h2>
-            {/* Lots de jeunes regroupés PAR ESPÈCE : poussins (poules) ≠ cailleteaux (cailles) */}
+            {/* Lots de jeunes regroupés PAR ESPÈCE : poussins (poules) ≠ cailleteaux (cailles).
+                Les lots logés avec des adultes ne sont PAS ici : leur case est remontée plus haut,
+                à côté de la zone qui les héberge. */}
             {[["poule", "🐤 Poussins (bébés poules)"], ["caille", "🐥 Cailleteaux (bébés cailles)"]].map(([esp, titre]) => {
-              const lots = jeunesActifs.filter(({ p }) => (p.espece === "caille" ? "caille" : "poule") === esp);
+              const lots = jeunesSeuls.filter(({ p }) => (p.espece === "caille" ? "caille" : "poule") === esp);
               if (!lots.length) return null;
               return (
                 <div key={esp} className="mb-4">
                   <h3 className="text-sm font-semibold text-slate-500 mb-2">{titre} <span className="font-normal text-slate-400">· {lots.length} lot{lots.length > 1 ? "s" : ""}</span></h3>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    {lots.map(({ p, i }) => {
-                      const n = jourBebe(p);
-                      return (
-                        <div key={i} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
-                          <div className="flex items-center justify-between gap-2 mb-2">
-                            <p className="text-sm font-medium text-slate-700 min-w-0 truncate">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span></p>
-                            <button onClick={() => ouvrirBebe(i)} className="text-xs text-emerald-600 hover:underline whitespace-nowrap shrink-0">→ Bébé</button>
-                          </div>
-                          {n == null
-                            ? <p className="text-xs text-slate-400">Hors fenêtre de suivi.</p>
-                            : <div className="flex flex-wrap gap-2">
-                                {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"]].map(([k, lbl]) => {
-                                  const on = bebeFait(p, k);
-                                  return (
-                                    <button key={k} onClick={() => toggleBebe(i, p, k)}
-                                      className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
-                                      {on ? "✓ " : ""}{lbl}
-                                    </button>
-                                  );
-                                })}
-                              </div>}
-                        </div>
-                      );
-                    })}
+                    {lots.map(({ p, i }) => <CarteBebe key={i} p={p} i={i} />)}
                   </div>
                 </div>
               );
             })}
-            <p className="text-xs text-slate-400 mb-6">Une coche ici remplit directement le jour correspondant du lot dans l'onglet <span className="font-medium">Bébé</span> (suivi S1-S8) — et inversement. Ces cases sont indépendantes des enclos adultes. « → Bébé » ouvre le suivi détaillé (température, mortalité…).</p>
+            <p className="text-xs text-slate-400 mb-6">Une coche ici remplit directement le jour correspondant du lot dans l'onglet <span className="font-medium">Bébé</span> (suivi S1-S8) — et inversement. « → Bébé » ouvre le suivi détaillé (température, mortalité…). Un lot logé avec des adultes (champ « Où sont-ils logés ? » de la fiche du lot) apparaît plus haut, à côté de sa zone.</p>
           </>}
 
           </>}
@@ -6347,7 +6402,7 @@
           <h2 className="text-lg font-semibold mb-3">Dernières actions</h2>
           <Table
             resume={(r, k) => { const p = lignes[k].p; const done = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return <>{frDate(p.date)} — {emojiZone(p.zone, config)} {p.zone}{done.length ? <span className="text-slate-400"> · {done.map(a => a.icone).join(" ")}</span> : null}</>; }}
-            columns={["Date", "Zone", "Actions", "T°/H%", "Quantités", "Obs", ""]}
+            columns={["Date", "Zone", "Actions", "T°", "Quantités", "Obs", ""]}
             rows={lignes.map(({ p, i }) => [
               frDate(p.date),
               <>{emojiZone(p.zone, config)} {p.zone}</>,
@@ -6443,7 +6498,7 @@
     }
 
     function PoussinForm({ onClose, initial, onSave }) {
-      const { lots, reproducteurs, poussins, ajouterPoussin, genPoussinId } = useData();
+      const { lots, reproducteurs, poussins, ajouterPoussin, genPoussinId, config } = useData();
       const ligneesConnues = Array.from(new Set([].concat((reproducteurs || []).map(r => r.lignee), (poussins || []).map(p => p.lignee)).map(x => (x || "").trim()).filter(Boolean))).sort();
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [espece, setEspece] = useState(initial ? initial.espece : "poussin");
@@ -6462,6 +6517,12 @@
       // Vivants n'est PLUS saisi à la main : il se calcule automatiquement (nés − morts fiche − décès du suivi, jamais négatif).
       const vivantsCalc = Math.max(0, (Number(nes) || 0) - (Number(morts) || 0) - mortsJoursInit);
       const [statut, setStatut] = useState(initial ? initial.statut : "en croissance");
+      // Où le lot est logé. Par défaut sa zone de jeunes, mais on peut le mettre avec les adultes
+      // (ex. 7 poussins encore jeunes placés avec les poules reproductrices) → sa case « soin du jour »
+      // remonte alors à côté de celle de cette zone dans Gestion poulailler.
+      const [zone, setZone] = useState(initial && initial.zone ? initial.zone : "");
+      const zoneDefaut = zoneJeuneDefaut(config, espece === "caille" ? "caille" : "poussin");
+      const zonesDispo = (config.zones || []);
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
       // Croisements supposés (saisis quand les jeunes deviennent reconnaissables) : [{ nom, nombre }]
       const [croisements, setCroisements] = useState(initial && Array.isArray(initial.croisements) ? initial.croisements.map((c) => ({ nom: c.nom || "", nombre: c.nombre != null ? String(c.nombre) : "" })) : []);
@@ -6474,7 +6535,7 @@
           ...(initial || {}),            // préserve jours/semaines en édition
           id: idGenere, date, espece, lot, lignee: lignee.trim(),
           nes: nes === "" ? "" : (Number(nes) || 0),
-          nombre: vivantsCalc, morts: Number(morts) || 0, statut, obs: obs.trim(),
+          nombre: vivantsCalc, morts: Number(morts) || 0, statut, zone, obs: obs.trim(),
           croisements: croisements.map((c) => ({ nom: c.nom.trim(), nombre: Number(c.nombre) || "" })).filter((c) => c.nom),
         };
         (onSave || ajouterPoussin)(rec);
@@ -6516,11 +6577,20 @@
             </Field>
           </div>
           <p className="text-xs text-slate-400 -mt-1">« Vivants » se calcule tout seul : <span className="font-medium">nés − morts</span>. Quand un jeune meurt, augmente « Morts » <span className="font-medium">ou</span> note-le dans le suivi quotidien S1–S8 → le nombre de vivants se met à jour.{mortsJoursInit ? " (Ici : " + mortsJoursInit + " décès déjà comptés dans le suivi S1–S8, déduits en plus.)" : ""}</p>
-          <Field label="Statut">
-            <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
-              {["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"].map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Statut">
+              <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
+                {["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="🏠 Où sont-ils logés ?">
+              <select className={inputClass} value={zone} onChange={(e) => setZone(e.target.value)}>
+                <option value="">{zoneDefaut} (par défaut)</option>
+                {zonesDispo.map((z) => <option key={z} value={z}>{z}</option>)}
+              </select>
+              <p className="text-xs text-slate-400 mt-1">Choisis une zone d'adultes si les jeunes vivent déjà avec eux (ex. poussins mis avec les poules reproductrices). Leur case « soin du jour » remontera à côté de cette zone dans Gestion poulailler.</p>
+            </Field>
+          </div>
           <Field label="Lignée / famille (anti-consanguinité)">
             <input className={inputClass} list="poussin-lignees-list" value={lignee} onChange={(e) => setLignee(e.target.value)} placeholder="ex. lignée des parents (Cléo × Daphnis)" />
             <datalist id="poussin-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
@@ -6600,7 +6670,7 @@
       const [nourriture, setNourriture] = useState(!!d.nourriture);
       const [nettoyage, setNettoyage] = useState(!!d.nettoyage);
       const [temp, setTemp] = useState(d.temp != null && d.temp !== "" ? String(d.temp) : "");
-      const [humidite, setHumidite] = useState(d.humidite != null && d.humidite !== "" ? String(d.humidite) : "");
+      // Pas d'humidité pour les jeunes non plus : elle n'est relevée que dans les couveuses.
       const [morts, setMorts] = useState(d.morts != null ? String(d.morts) : "0");
       const [comportement, setComportement] = useState(d.comportement || "");
       const [alimentation, setAlimentation] = useState(d.alimentation || "");
@@ -6614,11 +6684,12 @@
         e.preventDefault();
         const maj = {
           ...d, eau, nourriture, nettoyage,
-          temp: temp === "" ? "" : Number(temp), humidite: humidite === "" ? "" : Number(humidite),
+          temp: temp === "" ? "" : Number(temp),
           vivants: vivantsCalcJour, morts: Number(morts) || 0,
           tousVivants: (Number(morts) || 0) === 0 ? !!d.tousVivants : false,
           comportement: comportement.trim(), alimentation: alimentation.trim(), obs: obs.trim(), probleme: probleme.trim(),
         };
+        delete maj.humidite;   // ancien champ : plus relevé chez les jeunes
         patchLigne("poussins", lotIndex, { jours: { ...(p.jours || {}), [jour]: maj } });
         onClose();
       }
@@ -6637,7 +6708,6 @@
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Temp. (°C)"><input type="number" step="0.1" className={inputClass} value={temp} onChange={(e) => setTemp(e.target.value)} /></Field>
-            <Field label="Humidité (%)"><input type="number" step="1" min="0" max="100" className={inputClass} value={humidite} onChange={(e) => setHumidite(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Morts ce jour">
@@ -6759,7 +6829,7 @@
               </div>
               <Table
                 resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); const cr = (p.croisements || []).map((c) => codeCroisement(c.nom)).join(" "); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {vivantsLot(p)} viv.{cr ? " · 🧬 " + cr : ""}</span></>; }}
-                columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "🧬 Croisements", "Obs", "Actions"]}
+                columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "🏠 Logés", "🧬 Croisements", "Obs", "Actions"]}
                 rows={lignes.map(({ p, i }) => {
                   const a = ageJeune(p.date);
                   const pret = a.jours != null && a.jours > nS * 7;
@@ -6773,6 +6843,11 @@
                     (() => { const mj = mortsJours(p); const t = mortsLot(p); return <span title={mj ? ((Number(p.morts) || 0) + " à la fiche + " + mj + " dans le suivi S1–S8") : ""}>{t}{mj ? " *" : ""}</span>; })(),
                     <EtapeJeune birthDate={p.date} />,
                     <StatutAnimal statut={p.statut} />,
+                    (() => {
+                      const z = zoneLotJeune(p, config);
+                      const avecAdultes = !!p.zone && !estZoneJeune(p.zone, config);
+                      return <span className={"whitespace-nowrap text-xs " + (avecAdultes ? "text-amber-600 font-medium" : "text-slate-500")}>{avecAdultes ? "🏠 " : ""}{z}</span>;
+                    })(),
                     (p.croisements || []).length
                       ? <span className="flex flex-wrap gap-1">{p.croisements.map((c, k2) => <BadgeCroisement key={k2} c={c} />)}</span>
                       : <span className="text-slate-300 text-xs">—</span>,
