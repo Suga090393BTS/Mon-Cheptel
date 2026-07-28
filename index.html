@@ -292,6 +292,7 @@
       rappelJours: { ...RAPPEL_JOURS },                  // périodicité des rappels produits
       freqSoins: { eau: 1, nourriture: 1, vitamines: 30, vermiferm: 30 },  // (legacy, plus utilisé pour eau/nourriture)
       freqTraitements: JSON.parse(JSON.stringify(FREQ_TRAITEMENTS)),       // jours entre traitements par zone (reproducteurs)
+      croisementsMigres: false,                                            // drapeau : anciens croisements des lots repris dans le journal des croisements
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
       articlesMasques: [],                                                 // articles masqués du stock (ex. intitulé mal écrit) — réaffichables
       notifications: false,                                                // notification quotidienne (retards + événements du jour) à l'ouverture
@@ -558,7 +559,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v95 — 28/07/2026";
+    const APP_VERSION = "v96 — 28/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -905,9 +906,12 @@
       lotsStock:     "cheptel_lotsstock_v1",
       breederPurchases: "cheptel_breeder_purchases_v1",
       sujets:        "cheptel_sujets_v1",   // identification individuelle (bagues, sexage, croisement)
+      croisements:   "cheptel_croisements_v1",  // journal libre des croisements (Identification → Croisements)
       config:        "cheptel_config_v1",
     };
     const sujetsSeed = [];
+    // Journal des croisements : { date, espece: "poule"|"caille", nombre, croisement, obs }
+    const croisementsSeed = [];
 
     // Export : télécharge un fichier JSON contenant toutes les collections
     function exporterDonnees(store) {
@@ -1118,6 +1122,7 @@
       const [lotsStock, ajouterLotStock, setLotsStock] = useCollection(STORE_KEYS.lotsStock, lotsStockSeed);
       const [breederPurchases, ajouterBreederPurchase, setBreederPurchases] = useCollection(STORE_KEYS.breederPurchases, breederPurchasesSeed);
       const [sujets, ajouterSujet, setSujets] = useCollection(STORE_KEYS.sujets, sujetsSeed);
+      const [croisements, ajouterCroisement, setCroisements] = useCollection(STORE_KEYS.croisements, croisementsSeed);
 
       // Base de données / réglages : objet config persistant, fusionné avec les défauts
       const [config, setConfig] = useState(() => {
@@ -1132,7 +1137,7 @@
         races: setRaces, reproducteurs: setReproducteurs, abattoir: setAbattoir,
         collectes: setCollectes, consommables: setConsommables, materiel: setMateriel,
         poulaillers: setPoulaillers, poussins: setPoussins, lotsStock: setLotsStock,
-        breederPurchases: setBreederPurchases, sujets: setSujets,
+        breederPurchases: setBreederPurchases, sujets: setSujets, croisements: setCroisements,
       };
 
       const store = {
@@ -1151,6 +1156,7 @@
         lotsStock, ajouterLotStock,
         breederPurchases, ajouterBreederPurchase,
         sujets, ajouterSujet,
+        croisements, ajouterCroisement,
         config, setConfig, resetConfig: () => setConfig(configDefaut),
         majLigne: (cle, index, item) => setters[cle]((prev) => prev.map((x, i) => (i === index ? item : x))),
         patchLigne: (cle, index, patch) => setters[cle]((prev) => prev.map((x, i) => (i === index ? { ...x, ...patch } : x))),
@@ -1168,12 +1174,47 @@
         },
       };
 
+      // Migration unique : les croisements notés sur les LOTS de jeunes (ancien emplacement,
+      // supprimé) deviennent des lignes du journal des croisements (Identification → Croisements).
+      // Rien n'est perdu ; le drapeau de config évite de le refaire à chaque ouverture.
+      useEffect(() => {
+        if (config.croisementsMigres) return;
+        const anciens = [];
+        // a) croisements notés sur un lot de jeunes
+        poussins.forEach((p) => (p.croisements || []).forEach((c) => {
+          if (c && c.nom) anciens.push({
+            date: p.date, espece: p.espece === "caille" ? "caille" : "poule",
+            nombre: Number(c.nombre) || "", croisement: c.nom,
+            obs: "Repris du lot " + (p.id || "sans numéro"),
+          });
+        }));
+        // b) croisements notés sujet par sujet (Identification) → regroupés en « N jeunes issus de X × Y »
+        const parGroupe = {};
+        sujets.forEach((s) => {
+          if (!s.croisement) return;
+          const cle = (s.lot || "") + "|" + s.croisement;
+          if (!parGroupe[cle]) parGroupe[cle] = { lot: s.lot || "", croisement: s.croisement, espece: s.espece === "caille" ? "caille" : "poule", n: 0 };
+          parGroupe[cle].n++;
+        });
+        Object.keys(parGroupe).forEach((cle) => {
+          const g = parGroupe[cle];
+          const lot = poussins.find((p) => p.id && p.id === g.lot);
+          anciens.push({
+            date: (lot && lot.date) || AUJOURDHUI_ISO, espece: g.espece,
+            nombre: g.n, croisement: g.croisement,
+            obs: "Repris des fiches sujets" + (g.lot ? " du lot " + g.lot : ""),
+          });
+        });
+        if (anciens.length) setCroisements((prev) => prev.concat(anciens));
+        setConfig((c) => ({ ...c, croisementsMigres: true }));
+      }, []);
+
       // Auto-synchronisation cloud : envoi différé après toute modification (si connecté)
       const premierRendu = useRef(true);
       useEffect(() => {
         if (premierRendu.current) { premierRendu.current = false; return; }  // ne pas re-pousser ce qu'on vient de charger
         pushCloudDiffere();
-      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, config]);
+      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, croisements, config]);
 
       return <DataContext.Provider value={store}>{children}</DataContext.Provider>;
     }
@@ -2778,7 +2819,7 @@
             id: genPoussinId(especeP, dateNaiss),
             date: dateNaiss, espece: especeP, lot: l.id, lignee: "",
             nes: nesTotal, nombre: vivantsInit, morts: decesTotal,
-            statut: "en croissance", obs: "Créé automatiquement à la fin de la couvée " + l.id + (decesTotal ? " (dont " + decesTotal + " décès en couveuse)" : ""), croisements: [],
+            statut: "en croissance", obs: "Créé automatiquement à la fin de la couvée " + l.id + (decesTotal ? " (dont " + decesTotal + " décès en couveuse)" : ""),
           });
         }
       }
@@ -6009,10 +6050,91 @@
       return palette[rang % palette.length];
     }
 
+    // Journal des croisements — saisie libre : « le JJ/MM, N jeunes issus de Marans × Sussex ».
+    // Volontairement DÉTACHÉ des lots et des sujets : c'est une simple note, pas un rattachement.
+    function JournalCroisements() {
+      const { croisements, reproducteurs, ajouterCroisement, patchLigne, supprimerLigne } = useData();
+      const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+      const [espece, setEspece] = useState("poule");
+      const [nombre, setNombre] = useState("");
+      const [nom, setNom] = useState("");
+      const [obs, setObs] = useState("");
+      // Propositions = croisements possibles avec MES reproducteurs actifs + ceux déjà notés ici
+      const sugg = Array.from(new Set(
+        suggestionsCroisements(reproducteurs, espece === "caille" ? "caille" : "poussin")
+          .concat(croisements.map((c) => c.croisement))
+      )).filter(Boolean);
+      const selCls = "border border-slate-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white";
+
+      function ajouter(e) {
+        e.preventDefault();
+        if (!nom.trim()) return;
+        ajouterCroisement({ date, espece, nombre: nombre === "" ? "" : (Number(nombre) || 0), croisement: nom.trim(), obs: obs.trim() });
+        setNombre(""); setNom(""); setObs("");
+      }
+      // Le plus récent en haut (l'index d'origine est gardé pour modifier / supprimer la bonne ligne)
+      const lignes = croisements.map((c, i) => ({ c, i })).sort((a, b) => String(b.c.date).localeCompare(String(a.c.date)));
+
+      return (
+        <div>
+          <h2 className="text-lg font-semibold mb-1">🧬 Croisements</h2>
+          <p className="text-xs text-slate-500 mb-3">Simple carnet de notes : à quelle date, combien de jeunes, et de quel croisement. Aucun lien avec les lots ni les fiches sujets — rien à remplir ailleurs.</p>
+
+          <form onSubmit={ajouter} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <Field label="Date">
+                <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
+              </Field>
+              <Field label="Espèce">
+                <select className={inputClass} value={espece} onChange={(e) => setEspece(e.target.value)}>
+                  <option value="poule">🐔 Poules</option>
+                  <option value="caille">🐦 Cailles</option>
+                </select>
+              </Field>
+              <Field label="Combien">
+                <input type="number" min="0" className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="ex. 7" />
+              </Field>
+              <Field label="Croisement">
+                <input className={inputClass} list="crois-journal-list" value={nom} onChange={(e) => setNom(e.target.value)} placeholder="ex. Marans × Sussex" required />
+                <datalist id="crois-journal-list">{sugg.map((s) => <option key={s} value={s} />)}</datalist>
+              </Field>
+            </div>
+            <div className="flex items-end gap-3 mt-3">
+              <div className="flex-1 min-w-0">
+                <Field label="Note (facultatif)">
+                  <input className={inputClass} value={obs} onChange={(e) => setObs(e.target.value)} placeholder="ex. les 3 plus foncés viennent du coq noir" />
+                </Field>
+              </div>
+              <button type="submit" className="px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium whitespace-nowrap">+ Noter</button>
+            </div>
+          </form>
+
+          {lignes.length === 0
+            ? <p className="text-sm text-slate-400">Rien de noté pour l'instant. Remplis la ligne ci-dessus et clique « + Noter ».</p>
+            : <Table
+                resume={(r, k) => { const c = lignes[k].c; return <>{frDate(c.date)} — {c.nombre ? c.nombre + " " : ""}<span className="font-medium">{c.croisement}</span></>; }}
+                columns={["Date", "Espèce", "Combien", "Croisement", "Note", ""]}
+                rows={lignes.map(({ c, i }) => [
+                  <input type="date" className={selCls} value={c.date || ""} onChange={(e) => patchLigne("croisements", i, { date: e.target.value })} />,
+                  <select className={selCls} value={c.espece || "poule"} onChange={(e) => patchLigne("croisements", i, { espece: e.target.value })}>
+                    <option value="poule">🐔 poules</option>
+                    <option value="caille">🐦 cailles</option>
+                  </select>,
+                  <input type="number" min="0" className={selCls + " w-16"} value={c.nombre != null ? c.nombre : ""} onChange={(e) => patchLigne("croisements", i, { nombre: e.target.value === "" ? "" : (Number(e.target.value) || 0) })} />,
+                  <input className={selCls + " w-48 font-medium"} list="crois-journal-list" value={c.croisement || ""} onChange={(e) => patchLigne("croisements", i, { croisement: e.target.value })} />,
+                  <ObsCell texte={c.obs} titre={"Note — " + (c.croisement || "croisement")} onSave={(v) => patchLigne("croisements", i, { obs: v })} />,
+                  <RowActions onDelete={() => supprimerLigne("croisements", i)} />,
+                ])}
+              />}
+          <p className="text-xs text-slate-400 mt-2">Tout se modifie directement dans le tableau. Pour voir ce que donnerait un croisement (couleur, ponte…), va dans <span className="font-medium">Catalogue des races → 🧬 Croisements</span>.</p>
+        </div>
+      );
+    }
+
     function Identification() {
-      const { poussins, sujets, reproducteurs, config, ajouterSujet, patchLigne, supprimerLigne } = useData();
+      const { poussins, sujets, croisements, reproducteurs, config, ajouterSujet, patchLigne, supprimerLigne } = useData();
       const [espI, setEspI] = useState("poule");     // poule (poules/coqs) | caille
-      const [secI, setSecI] = useState("jeunes");    // jeunes | repro
+      const [secI, setSecI] = useState("jeunes");    // jeunes | repro | crois
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
       const pal = palettesBagues(config);
       // Couleurs proposées selon la taille de bague choisie (mon stock réel) ;
@@ -6038,7 +6160,7 @@
         const manque = Math.max(0, vivantsLot(p) - existants);
         const coul = couleurBagueLot(config, poussins, i);
         for (let k = 0; k < manque; k++) {
-          ajouterSujet({ espece: espI, lot: p.id, numero: p.id + "-" + String(existants + k + 1).padStart(2, "0"), croisement: "", sexe: "?", bagueTaille: "", bagueCouleur: coul, obs: "" });
+          ajouterSujet({ espece: espI, lot: p.id, numero: p.id + "-" + String(existants + k + 1).padStart(2, "0"), sexe: "?", bagueTaille: "", bagueCouleur: coul, obs: "" });
         }
       };
       const reprosEsp = reproducteurs.map((r, i) => ({ r, i })).filter(({ r }) => r.statut === "actif" && grpR(r.espece) === espI);
@@ -6046,24 +6168,31 @@
 
       return (
         <div>
-          {/* Espèce puis catégorie */}
+          {/* Catégorie, puis espèce (l'espèce ne concerne pas le carnet de croisements) */}
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <span className="text-xs text-slate-400">Espèce :</span>
-            <button onClick={() => setEspI("poule")} className={btnCls(espI === "poule")}>🐔 Poules / Coqs</button>
-            <button onClick={() => setEspI("caille")} className={btnCls(espI === "caille")}>🐦 Cailles</button>
-            <span className="text-xs text-slate-400 ml-3">Catégorie :</span>
+            <span className="text-xs text-slate-400">Catégorie :</span>
             <button onClick={() => setSecI("jeunes")} className={btnCls(secI === "jeunes")}>🐥 Jeunes</button>
             <button onClick={() => setSecI("repro")} className={btnCls(secI === "repro")}>🐓 Reproducteurs</button>
+            <button onClick={() => setSecI("crois")} className={btnCls(secI === "crois")}>🧬 Croisements{croisements.length ? " · " + croisements.length : ""}</button>
+            {secI !== "crois" && <>
+              <span className="text-xs text-slate-400 ml-3">Espèce :</span>
+              <button onClick={() => setEspI("poule")} className={btnCls(espI === "poule")}>🐔 Poules / Coqs</button>
+              <button onClick={() => setEspI("caille")} className={btnCls(espI === "caille")}>🐦 Cailles</button>
+            </>}
           </div>
 
-          {espI === "caille" && !(pal["8"] || []).length && (
+          {secI !== "crois" && espI === "caille" && !(pal["8"] || []).length && (
             <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-4">🐦 Cailles : aucune couleur de bague 8 mm en stock (Réglages → Soins & rappels → Bagues) — tu peux déjà préparer le sexage et les croisements.</p>
           )}
 
-          {/* Règle des bagues */}
-          <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-4">
-            💡 <span className="font-medium">Règle des bagues :</span> reproducteur = adulte → <span className="font-medium">16 mm</span> (ou <span className="font-medium">20 mm</span> pour les grandes races à pattes fortes). Sujet destiné à l'abattage : <span className="font-medium">12 mm</span> si abattu avant que ses pattes ne grossissent ; si elles deviennent trop grosses, remplace par une <span className="font-medium">16 mm</span> (change simplement la taille ici). Couleur = roulement automatique par lot.
-          </p>
+          {/* Règle des bagues (sans objet dans le carnet de croisements) */}
+          {secI !== "crois" && (
+            <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-4">
+              💡 <span className="font-medium">Règle des bagues :</span> reproducteur = adulte → <span className="font-medium">16 mm</span> (ou <span className="font-medium">20 mm</span> pour les grandes races à pattes fortes). Sujet destiné à l'abattage : <span className="font-medium">12 mm</span> si abattu avant que ses pattes ne grossissent ; si elles deviennent trop grosses, remplace par une <span className="font-medium">16 mm</span> (change simplement la taille ici). Couleur = roulement automatique par lot.
+            </p>
+          )}
+
+          {secI === "crois" && <JournalCroisements />}
 
           {secI === "jeunes" && <>
             <h2 className="text-lg font-semibold mb-3">🐥 Jeunes à identifier <span className="text-sm font-normal text-slate-400">(lots au-delà de {nS} semaines)</span></h2>
@@ -6073,8 +6202,6 @@
                   const lignesS = sujetsDe(p.id);
                   const coul = couleurBagueLot(config, poussins, i);
                   const manque = Math.max(0, vivantsLot(p) - lignesS.length);
-                  const croisOpts = Array.from(new Set(((p.croisements || []).map((c) => c.nom)).concat(suggestionsCroisements(reproducteurs, p.espece)))).filter(Boolean);
-                  const dlId = "crois-sujets-" + p.id;
                   return (
                     <div key={p.id} className="mb-6">
                       <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
@@ -6083,15 +6210,13 @@
                           <button onClick={() => creerFiches(p, i)} className="px-3 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap">+ Créer {manque} fiche{manque > 1 ? "s" : ""} sujet{manque > 1 ? "s" : ""}</button>
                         )}
                       </div>
-                      <datalist id={dlId}>{croisOpts.map((c) => <option key={c} value={c} />)}</datalist>
                       {lignesS.length === 0
                         ? <p className="text-sm text-slate-400">Clique sur « + Créer » : une fiche par sujet vivant (n° auto, couleur du lot pré-remplie).</p>
                         : <Table
-                            resume={(r, k) => { const s = lignesS[k].s; return <><span className="font-medium">{s.numero}</span> · {s.sexe}{s.bagueTaille ? " · " + s.bagueTaille + " mm " + (s.bagueCouleur || "") : " · à baguer"}{s.croisement ? " · 🧬 " + codeCroisement(s.croisement) : ""}</>; }}
-                            columns={["N°", "Croisement supposé", "Sexage", "Bague", "Couleur", "Obs", ""]}
+                            resume={(r, k) => { const s = lignesS[k].s; return <><span className="font-medium">{s.numero}</span> · {s.sexe}{s.bagueTaille ? " · " + s.bagueTaille + " mm " + (s.bagueCouleur || "") : " · à baguer"}</>; }}
+                            columns={["N°", "Sexage", "Bague", "Couleur", "Obs", ""]}
                             rows={lignesS.map(({ s, i: si }) => [
                               <input className={selCls + " w-24 font-medium"} value={s.numero} onChange={(e) => patchLigne("sujets", si, { numero: e.target.value })} />,
-                              <input className={selCls + " w-40"} list={dlId} value={s.croisement} onChange={(e) => patchLigne("sujets", si, { croisement: e.target.value })} placeholder="ex. Marans × Sussex" />,
                               <select className={selCls} value={s.sexe || "?"} onChange={(e) => patchLigne("sujets", si, { sexe: e.target.value })}>
                                 {["?", "mâle", "femelle"].map((x) => <option key={x} value={x}>{x === "mâle" ? "♂ mâle" : x === "femelle" ? "♀ femelle" : "? à confirmer"}</option>)}
                               </select>,
@@ -6113,7 +6238,7 @@
                     </div>
                   );
                 })}
-            <p className="text-xs text-slate-400">Le croisement supposé propose ceux notés sur le lot + les croisements possibles avec tes reproducteurs. Supprime la fiche d'un sujet abattu/vendu (le lot, lui, se gère dans l'onglet Bébé).</p>
+            <p className="text-xs text-slate-400">Ici : numéro, sexage et bague. Les croisements se notent globalement dans l'onglet <span className="font-medium">🧬 Croisements</span> ci-dessus. Supprime la fiche d'un sujet abattu/vendu (le lot, lui, se gère dans l'onglet Bébé).</p>
           </>}
 
           {secI === "repro" && <>
@@ -6217,7 +6342,7 @@
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
             <div className="flex items-center justify-between gap-2 mb-2">
               <p className="text-sm font-medium text-slate-700 min-w-0 truncate">
-                🐥 {p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span>
+                🐥 {p.id || "Né le " + frDate(p.date)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)}{n != null ? " · J" + n : ""}</span>
               </p>
               <button onClick={() => ouvrirBebe(i)} className="text-xs text-emerald-600 hover:underline whitespace-nowrap shrink-0">→ Bébé</button>
             </div>
@@ -6468,13 +6593,6 @@
       return <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${a.etape.cls}`}>{a.etape.label}</span>;
     }
 
-    // Code court d'un croisement supposé : « Marans × Sussex » → « MAR×SUS » (3 lettres de chaque côté)
-    function codeCroisement(nom) {
-      const parts = String(nom || "").split(/[x×]/i).map((s) => s.trim()).filter(Boolean);
-      const abr = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase() || "?";
-      if (parts.length < 2) return abr(parts[0] || nom);
-      return abr(parts[0]) + "×" + abr(parts[1]);
-    }
     // Croisements possibles pour un lot de jeunes, calculés depuis MES reproducteurs actifs :
     // chaque mâle × chaque race de femelle (de la même espèce que le lot).
     function suggestionsCroisements(reproducteurs, especeLot) {
@@ -6486,15 +6604,6 @@
       const out = [];
       males.forEach((m) => femRaces.forEach((f) => { const nom = m.race + " × " + f; if (!out.includes(nom)) out.push(nom); }));
       return out;
-    }
-    // Pastille d'un croisement supposé : code court + nombre éventuel (nom complet au survol)
-    function BadgeCroisement({ c }) {
-      return (
-        <span title={c.nom + (c.nombre ? " — " + c.nombre + " jeune(s)" : "")}
-          className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 whitespace-nowrap">
-          🧬 {codeCroisement(c.nom)}{c.nombre ? " ×" + c.nombre : ""}
-        </span>
-      );
     }
 
     function PoussinForm({ onClose, initial, onSave }) {
@@ -6524,19 +6633,20 @@
       const zoneDefaut = zoneJeuneDefaut(config, espece === "caille" ? "caille" : "poussin");
       const zonesDispo = (config.zones || []);
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
-      // Croisements supposés (saisis quand les jeunes deviennent reconnaissables) : [{ nom, nombre }]
-      const [croisements, setCroisements] = useState(initial && Array.isArray(initial.croisements) ? initial.croisements.map((c) => ({ nom: c.nom || "", nombre: c.nombre != null ? String(c.nombre) : "" })) : []);
-      const suggCrois = suggestionsCroisements(reproducteurs, espece);
-      const majCrois = (k, champ, v) => setCroisements((cs) => cs.map((c, i) => (i === k ? { ...c, [champ]: v } : c)));
+      // (Les croisements ne sont plus notés par lot : ils vivent dans le carnet
+      // Identification → 🧬 Croisements. Les anciennes valeurs `initial.croisements` ont été
+      // reprises dans ce carnet par la migration du DataProvider.)
       const idGenere = initial && initial.id ? initial.id : genPoussinId(espece, date);
+      // Exception : un lot peut rester SANS numéro de naissance (il s'affichera alors sous son
+      // type — « poussin » / « cailleteau » — dans les listes et le soin du jour).
+      const [sansId, setSansId] = useState(!!(initial && !initial.id));
       function submit(e) {
         e.preventDefault();
         const rec = {
           ...(initial || {}),            // préserve jours/semaines en édition
-          id: idGenere, date, espece, lot, lignee: lignee.trim(),
+          id: sansId ? "" : idGenere, date, espece, lot, lignee: lignee.trim(),
           nes: nes === "" ? "" : (Number(nes) || 0),
           nombre: vivantsCalc, morts: Number(morts) || 0, statut, zone, obs: obs.trim(),
-          croisements: croisements.map((c) => ({ nom: c.nom.trim(), nombre: Number(c.nombre) || "" })).filter((c) => c.nom),
         };
         (onSave || ajouterPoussin)(rec);
         onClose();
@@ -6545,7 +6655,12 @@
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="N° de lot de naissance">
-              <input className={inputClass + " bg-slate-100 font-medium"} value={idGenere} readOnly />
+              <input className={inputClass + " bg-slate-100 font-medium" + (sansId ? " text-slate-400 italic" : "")}
+                value={sansId ? "sans numéro" : idGenere} readOnly />
+              <label className="flex items-center gap-2 text-xs text-slate-500 mt-1 cursor-pointer">
+                <input type="checkbox" checked={sansId} onChange={(e) => setSansId(e.target.checked)} className="w-4 h-4" />
+                <span>Pas de numéro pour ce lot</span>
+              </label>
             </Field>
             <Field label="Type">
               <select className={inputClass} value={espece} onChange={(e) => setEspece(e.target.value)}>
@@ -6596,25 +6711,7 @@
             <datalist id="poussin-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
             <p className="text-xs text-slate-400 mt-1">À reporter sur l'animal s'il devient reproducteur → évite les accouplements entre proches.</p>
           </Field>
-          {/* Croisements supposés — à remplir quand les jeunes sont assez grands pour être reconnus */}
-          <div>
-            <p className="text-sm font-medium text-slate-600 mb-1">🧬 Croisements supposés <span className="font-normal text-slate-400">(quand tu arrives à les distinguer)</span></p>
-            {croisements.map((c, k) => (
-              <div key={k} className="flex gap-2 mb-2">
-                <input list="croisements-sugg-list" className={inputClass + " flex-1 min-w-0"} value={c.nom}
-                  onChange={(e) => majCrois(k, "nom", e.target.value)} placeholder="ex. Marans × Sussex" />
-                <input type="number" min="0" className={inputClass + " w-20"} value={c.nombre}
-                  onChange={(e) => majCrois(k, "nombre", e.target.value)} placeholder="nb" title="Nombre de jeunes concernés (facultatif)" />
-                <button type="button" onClick={() => setCroisements((cs) => cs.filter((_, i) => i !== k))}
-                  className="px-2 rounded-lg text-red-500 hover:bg-red-50" title="Retirer">×</button>
-              </div>
-            ))}
-            <datalist id="croisements-sugg-list">{suggCrois.map((s) => <option key={s} value={s} />)}</datalist>
-            <button type="button" onClick={() => setCroisements((cs) => cs.concat([{ nom: "", nombre: "" }]))}
-              className="text-sm text-emerald-600 hover:underline">+ Ajouter un croisement supposé</button>
-            <p className="text-xs text-slate-400 mt-1">Choisis dans la liste (croisements possibles avec tes reproducteurs) ou écris librement. Le lot affiche un code court, ex. <span className="font-medium">MAR×SUS</span> = Marans × Sussex.</p>
-          </div>
-          <p className="text-xs text-slate-400">L'étape est calculée automatiquement selon l'âge (date de naissance).</p>
+          <p className="text-xs text-slate-400">L'étape est calculée automatiquement selon l'âge (date de naissance). Les croisements ne se notent plus ici : ils ont leur carnet dans <span className="font-medium">Gestion poulailler → Identification → 🧬 Croisements</span>.</p>
           <Field label="Observation">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
@@ -6781,7 +6878,8 @@
         const sem = (a.jours == null || a.futur) ? 1 : Math.min(nS, Math.max(1, a.sem));
         setSemOuvertes({ [sem]: true });
       }, [idxS]);
-      const labelLot = (p, i) => (p.id || p.lot || ("Lot " + (i + 1))) + " · " + labelJeune(p.espece);
+      // Un lot sans numéro de naissance est identifié par son type + sa date (ex. « poussin né le 18/07/2026 »)
+      const labelLot = (p, i) => (p.id ? p.id + " · " + labelJeune(p.espece) : labelJeune(p.espece) + " né le " + frDate(p.date));
 
       const lignes = poussins.map((p, i) => ({ p, i })).sort((a, b) => b.p.date.localeCompare(a.p.date));
       const vivP = actifsIdx.filter(({ p }) => p.espece !== "caille").reduce((s, { p }) => s + vivantsLot(p), 0);
@@ -6791,7 +6889,7 @@
       function transferer(i, p, cible, nombre) {
         if (cible === "consommation") {
           const n = nombre != null ? nombre : vivantsLot(p);
-          ajouterAbattoir({ lot: p.id || "", espece: p.espece === "caille" ? "caille" : "poule", race: "", naissance: p.date, nombre: n, statut: "en croissance", abattagePrevu: "", abattageReel: "", obs: "Issu du lot de naissance " + (p.id || "") });
+          ajouterAbattoir({ lot: p.id || "", espece: p.espece === "caille" ? "caille" : "poule", race: "", naissance: p.date, nombre: n, statut: "en croissance", abattagePrevu: "", abattageReel: "", obs: p.id ? "Issu du lot de naissance " + p.id : "Issu d'un lot de naissance sans numéro (né le " + p.date + ")" });
           patchLigne("poussins", i, { statut: "transféré consommation" });
         } else if (cible === "reproduction") {
           patchLigne("poussins", i, { statut: "transféré reproduction" });
@@ -6828,8 +6926,8 @@
                 <StatCard label="Lots en suivi" value={actifsIdx.length} color="purple" />
               </div>
               <Table
-                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); const cr = (p.croisements || []).map((c) => codeCroisement(c.nom)).join(" "); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {vivantsLot(p)} viv.{cr ? " · 🧬 " + cr : ""}</span></>; }}
-                columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "🏠 Logés", "🧬 Croisements", "Obs", "Actions"]}
+                resume={(r, k) => { const p = lignes[k].p; const a = ageJeune(p.date); return <><span className="font-medium">{p.id || "—"}</span> — {labelJeune(p.espece)}<span className="text-slate-400"> · {a.label} · {vivantsLot(p)} viv.</span></>; }}
+                columns={["Lot", "Type", "Naissance", "Âge", "Nés", "Vivants", "Morts", "Étape", "Statut", "🏠 Logés", "Obs", "Actions"]}
                 rows={lignes.map(({ p, i }) => {
                   const a = ageJeune(p.date);
                   const pret = a.jours != null && a.jours > nS * 7;
@@ -6848,9 +6946,6 @@
                       const avecAdultes = !!p.zone && !estZoneJeune(p.zone, config);
                       return <span className={"whitespace-nowrap text-xs " + (avecAdultes ? "text-amber-600 font-medium" : "text-slate-500")}>{avecAdultes ? "🏠 " : ""}{z}</span>;
                     })(),
-                    (p.croisements || []).length
-                      ? <span className="flex flex-wrap gap-1">{p.croisements.map((c, k2) => <BadgeCroisement key={k2} c={c} />)}</span>
-                      : <span className="text-slate-300 text-xs">—</span>,
                     <ObsCell texte={p.obs} titre="Observation" onSave={(v) => patchLigne("poussins", i, { obs: v })} />,
                     <RowActions
                       onEdit={() => setEdit({ index: i, rec: p })}
@@ -6882,7 +6977,7 @@
                 const p = poussins[idxS]; if (!p) return null;
                 return (
                   <div className="mt-3">
-                    <p className="text-sm text-slate-600 mb-2">{p.id || ""} · {labelJeune(p.espece)} · {ageJeune(p.date).label}</p>
+                    <p className="text-sm text-slate-600 mb-2">{p.id ? p.id + " · " : ""}{labelJeune(p.espece)} · {ageJeune(p.date).label}</p>
                     <p className="text-xs text-slate-400 mb-2">Suivi quotidien sur {nS} semaines (les 10 premiers jours, décisifs, sont colorés). Clique une semaine pour la déplier, puis un jour pour ses détails · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · <span className="font-medium">✅ Tous vivants = aucun mort ce jour → reporte l'effectif de la veille</span> · un mort ? ✏️ → « Morts ce jour », les vivants se recalculent seuls.</p>
                     {/* Légende de criticité des 10 premiers jours */}
                     <div className="flex flex-wrap gap-2 mb-3 text-xs">
