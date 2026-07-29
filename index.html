@@ -559,7 +559,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v96 — 28/07/2026";
+    const APP_VERSION = "v97 — 28/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1184,7 +1184,7 @@
         poussins.forEach((p) => (p.croisements || []).forEach((c) => {
           if (c && c.nom) anciens.push({
             date: p.date, espece: p.espece === "caille" ? "caille" : "poule",
-            nombre: Number(c.nombre) || "", croisement: c.nom,
+            nombre: Number(c.nombre) || "", croisement: c.nom, lot: refLotJeune(p),
             obs: "Repris du lot " + (p.id || "sans numéro"),
           });
         }));
@@ -1201,7 +1201,7 @@
           const lot = poussins.find((p) => p.id && p.id === g.lot);
           anciens.push({
             date: (lot && lot.date) || AUJOURDHUI_ISO, espece: g.espece,
-            nombre: g.n, croisement: g.croisement,
+            nombre: g.n, croisement: g.croisement, lot: lot ? refLotJeune(lot) : g.lot,
             obs: "Repris des fiches sujets" + (g.lot ? " du lot " + g.lot : ""),
           });
         });
@@ -6050,14 +6050,30 @@
       return palette[rang % palette.length];
     }
 
-    // Journal des croisements — saisie libre : « le JJ/MM, N jeunes issus de Marans × Sussex ».
-    // Volontairement DÉTACHÉ des lots et des sujets : c'est une simple note, pas un rattachement.
+    // Référence STABLE d'un lot de jeunes (pour le désigner depuis une autre table) : son numéro
+    // de naissance s'il en a un, sinon « @<date de naissance> » (les lots sans numéro sont
+    // identifiés par leur date). Un index de tableau ne conviendrait pas : il bouge à la suppression.
+    function refLotJeune(p) { return p && p.id ? p.id : (p && p.date ? "@" + p.date : ""); }
+    function lotJeuneDeRef(poussins, ref) {
+      if (!ref) return null;
+      if (String(ref).charAt(0) === "@") return (poussins || []).find((p) => !p.id && p.date === String(ref).slice(1)) || null;
+      return (poussins || []).find((p) => p.id === ref) || null;
+    }
+    // Libellé lisible d'un lot de jeunes : « 26N01 · poussin » ou « poussin né le 18/07/2026 »
+    function libelleLotJeune(p) {
+      if (!p) return "";
+      return p.id ? p.id + " · " + labelJeune(p.espece) : labelJeune(p.espece) + " né le " + frDate(p.date);
+    }
+
+    // Journal des croisements — saisie libre : « le JJ/MM, N jeunes du lot X issus de Marans × Sussex ».
+    // Le lot est une simple étiquette : rien n'est calculé ni recopié dans la fiche du lot.
     function JournalCroisements() {
-      const { croisements, reproducteurs, ajouterCroisement, patchLigne, supprimerLigne } = useData();
+      const { croisements, poussins, reproducteurs, ajouterCroisement, patchLigne, supprimerLigne } = useData();
       const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
       const [espece, setEspece] = useState("poule");
       const [nombre, setNombre] = useState("");
       const [nom, setNom] = useState("");
+      const [lotRef, setLotRef] = useState("");
       const [obs, setObs] = useState("");
       // Propositions = croisements possibles avec MES reproducteurs actifs + ceux déjà notés ici
       const sugg = Array.from(new Set(
@@ -6066,10 +6082,31 @@
       )).filter(Boolean);
       const selCls = "border border-slate-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white";
 
+      // Lots proposés : ceux EN CROISSANCE (les autres sont sortis du suivi), plus, en édition,
+      // celui déjà choisi sur une ligne même s'il n'est plus en croissance.
+      const lotsDispo = (ref) => {
+        const actifs = poussins.filter((p) => p.statut === "en croissance");
+        const choisi = lotJeuneDeRef(poussins, ref);
+        return (choisi && !actifs.includes(choisi)) ? [choisi].concat(actifs) : actifs;
+      };
+      // Liste déroulante « Lot concerné » — même contenu dans le formulaire et dans le tableau
+      const SelectLotJeune = ({ value, onChange, className }) => (
+        <select className={className} value={value || ""} onChange={(e) => onChange(e.target.value)}>
+          <option value="">— aucun lot —</option>
+          {lotsDispo(value).map((p) => { const r = refLotJeune(p); return <option key={r} value={r}>{libelleLotJeune(p)}</option>; })}
+        </select>
+      );
+      // Choisir un lot cale l'espèce sur la sienne (poussin → poules, cailleteau → cailles)
+      const choisirLot = (r) => {
+        setLotRef(r);
+        const p = lotJeuneDeRef(poussins, r);
+        if (p) setEspece(p.espece === "caille" ? "caille" : "poule");
+      };
+
       function ajouter(e) {
         e.preventDefault();
         if (!nom.trim()) return;
-        ajouterCroisement({ date, espece, nombre: nombre === "" ? "" : (Number(nombre) || 0), croisement: nom.trim(), obs: obs.trim() });
+        ajouterCroisement({ date, espece, nombre: nombre === "" ? "" : (Number(nombre) || 0), croisement: nom.trim(), lot: lotRef, obs: obs.trim() });
         setNombre(""); setNom(""); setObs("");
       }
       // Le plus récent en haut (l'index d'origine est gardé pour modifier / supprimer la bonne ligne)
@@ -6078,10 +6115,13 @@
       return (
         <div>
           <h2 className="text-lg font-semibold mb-1">🧬 Croisements</h2>
-          <p className="text-xs text-slate-500 mb-3">Simple carnet de notes : à quelle date, combien de jeunes, et de quel croisement. Aucun lien avec les lots ni les fiches sujets — rien à remplir ailleurs.</p>
+          <p className="text-xs text-slate-500 mb-3">Simple carnet de notes : quel lot, à quelle date, combien de jeunes et de quel croisement. Rien à remplir ailleurs — le lot n'est qu'une étiquette, sa fiche n'est pas modifiée.</p>
 
           <form onSubmit={ajouter} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <Field label="Lot concerné">
+                <SelectLotJeune value={lotRef} onChange={choisirLot} className={inputClass} />
+              </Field>
               <Field label="Date">
                 <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
               </Field>
@@ -6094,6 +6134,8 @@
               <Field label="Combien">
                 <input type="number" min="0" className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="ex. 7" />
               </Field>
+            </div>
+            <div className="mt-3">
               <Field label="Croisement">
                 <input className={inputClass} list="crois-journal-list" value={nom} onChange={(e) => setNom(e.target.value)} placeholder="ex. Marans × Sussex" required />
                 <datalist id="crois-journal-list">{sugg.map((s) => <option key={s} value={s} />)}</datalist>
@@ -6112,9 +6154,10 @@
           {lignes.length === 0
             ? <p className="text-sm text-slate-400">Rien de noté pour l'instant. Remplis la ligne ci-dessus et clique « + Noter ».</p>
             : <Table
-                resume={(r, k) => { const c = lignes[k].c; return <>{frDate(c.date)} — {c.nombre ? c.nombre + " " : ""}<span className="font-medium">{c.croisement}</span></>; }}
-                columns={["Date", "Espèce", "Combien", "Croisement", "Note", ""]}
+                resume={(r, k) => { const c = lignes[k].c; const p = lotJeuneDeRef(poussins, c.lot); return <>{frDate(c.date)} — {c.nombre ? c.nombre + " " : ""}<span className="font-medium">{c.croisement}</span>{p ? <span className="text-slate-400"> · {libelleLotJeune(p)}</span> : null}</>; }}
+                columns={["Lot", "Date", "Espèce", "Combien", "Croisement", "Note", ""]}
                 rows={lignes.map(({ c, i }) => [
+                  <SelectLotJeune value={c.lot} onChange={(v) => patchLigne("croisements", i, { lot: v })} className={selCls + " w-44"} />,
                   <input type="date" className={selCls} value={c.date || ""} onChange={(e) => patchLigne("croisements", i, { date: e.target.value })} />,
                   <select className={selCls} value={c.espece || "poule"} onChange={(e) => patchLigne("croisements", i, { espece: e.target.value })}>
                     <option value="poule">🐔 poules</option>
@@ -6879,7 +6922,7 @@
         setSemOuvertes({ [sem]: true });
       }, [idxS]);
       // Un lot sans numéro de naissance est identifié par son type + sa date (ex. « poussin né le 18/07/2026 »)
-      const labelLot = (p, i) => (p.id ? p.id + " · " + labelJeune(p.espece) : labelJeune(p.espece) + " né le " + frDate(p.date));
+      const labelLot = (p) => libelleLotJeune(p);
 
       const lignes = poussins.map((p, i) => ({ p, i })).sort((a, b) => b.p.date.localeCompare(a.p.date));
       const vivP = actifsIdx.filter(({ p }) => p.espece !== "caille").reduce((s, { p }) => s + vivantsLot(p), 0);
@@ -6970,7 +7013,7 @@
               <Field label="Lot suivi">
                 <select className={inputClass + " max-w-xs"} value={idxS != null ? idxS : ""} onChange={(e) => setSelS(e.target.value === "" ? null : Number(e.target.value))}>
                   <option value="">— choisir un lot —</option>
-                  {actifsIdx.map(({ p, i }) => <option key={i} value={i}>{labelLot(p, i)}</option>)}
+                  {actifsIdx.map(({ p, i }) => <option key={i} value={i}>{labelLot(p)}</option>)}
                 </select>
               </Field>
               {idxS == null ? <p className="text-sm text-slate-400 mt-3">Aucun lot en suivi.</p> : (() => {
