@@ -297,6 +297,27 @@
     ];
     // Motifs proposés quand on note un traitement (modifiable dans Réglages)
     const MOTIFS_TRAITEMENT = ["prévention", "vermifugation", "coccidiose", "cure de vitamines", "après antibiotique", "stress (transport, chaleur)", "diarrhée", "baisse de forme"];
+    // Voies d'administration d'un traitement. Structurel (chacune change le formulaire et le
+    // calcul de dose) → non modifiable, contrairement aux produits et aux motifs.
+    // `support` = ce dans quoi le produit est dilué/mélangé ; l'externe n'en a pas.
+    const VOIES_TRAITEMENT = [
+      { id: "eau",        label: "Dans l'eau de boisson", icone: "💧", support: "Eau (litres)",   unite: "L",  doseUnite: "ml" },
+      { id: "nourriture", label: "Dans la nourriture",    icone: "🌾", support: "Aliment (kg)",   unite: "kg", doseUnite: "g" },
+      { id: "externe",    label: "Traitement externe",    icone: "🧴", support: "",               unite: "",   doseUnite: "ml" },
+    ];
+    const voieDe = (id) => VOIES_TRAITEMENT.find((v) => v.id === id) || VOIES_TRAITEMENT[0];
+    const libelleVoieCourt = (id) => ({ eau: "eau", nourriture: "nourriture", externe: "externe" }[id || "eau"] || "eau");
+    // Quantité de support d'une administration : { qte, unite }. Les lignes d'avant la gestion des
+    // voies n'ont que `volumeEau` → relues comme des litres d'eau.
+    function supportTraitement(t) {
+      const v = voieDe(t.voie);
+      const q = (t.support !== "" && t.support != null) ? Number(t.support)
+        : ((t.volumeEau !== "" && t.volumeEau != null) ? Number(t.volumeEau) : null);
+      if (v.id === "externe" || q == null || isNaN(q)) return { qte: null, unite: "" };
+      return { qte: q, unite: t.supportUnite || v.unite };
+    }
+    // Où s'applique un traitement externe (modifiable dans Réglages)
+    const LIEUX_EXTERNE = ["sur l'animal", "litière", "poulailler (pulvérisation)", "nids", "perchoirs", "bain de poussière"];
     // Unités de dose d'un produit (modifiable dans Réglages)
     const UNITES_DOSE = ["ml", "g", "dose", "sachet", "comprimé"];
     // Correspondance ancienne action (texte) → clé cochée. « vitamines » devient « fortiferm ».
@@ -347,6 +368,7 @@
       taillesBagues: ["8", "12", "16", "20"],             // tailles de bagues (mm) gérées
       comportementsJeunes: COMPORTEMENTS_JEUNE.slice(),   // choix de la liste « Comportement » du suivi quotidien des jeunes
       motifsTraitement: MOTIFS_TRAITEMENT.slice(),        // propositions du champ « Motif » d'un traitement
+      lieuxExterne: LIEUX_EXTERNE.slice(),                // où s'applique un traitement externe
       unitesDose: UNITES_DOSE.slice(),                    // unités de dose d'un produit (ml, g, sachet…)
       croisementsMigres: false,                                            // drapeau : anciens croisements des lots repris dans le journal des croisements
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
@@ -630,7 +652,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v101 — 29/07/2026";
+    const APP_VERSION = "v103 — 30/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -994,8 +1016,10 @@
     // Journal des croisements : { date, espece: "poule"|"caille", nombre, croisement, obs }
     const croisementsSeed = [];
     // Administrations de traitements — une ligne = une « recette » donnée à un groupe d'animaux :
-    // { date, cible: "zone"|"lot", zone, lot (réf. lot de jeunes), animaux, volumeEau (L),
+    // { date, voie: "eau"|"nourriture"|"externe", cible: "zone"|"lot", zone, lot (réf. lot de
+    //   jeunes), animaux, support (litres d'eau ou kg d'aliment), supportUnite, lieu (externe),
     //   duree (jours), motif, produits: [{ nom, dose, unite }], obs }
+    // (Les lignes d'avant la gestion des voies n'ont que `volumeEau` : relues comme de l'eau.)
     const traitementsSeed = [];
 
     // Export : télécharge un fichier JSON contenant toutes les collections
@@ -1867,7 +1891,8 @@
         (t.produits || []).forEach((pr) => {
           const dose = (pr.dose !== "" && pr.dose != null) ? " · " + pr.dose + " " + (pr.unite || "ml") : "";
           const duree = (Number(t.duree) || 1) > 1 ? " · " + t.duree + " j" : "";
-          push(t.date, "Traitement", pr.nom, esp, t.animaux, qui + dose + duree + (t.motif ? " · " + t.motif : ""));
+          const par = " · " + libelleVoieCourt(t.voie) + (t.lieu ? " (" + t.lieu + ")" : "");
+          push(t.date, "Traitement", pr.nom, esp, t.animaux, qui + par + dose + duree + (t.motif ? " · " + t.motif : ""));
         });
       });
       out.sort((a, b) => b.date.localeCompare(a.date));
@@ -5249,6 +5274,12 @@
       const [v, setV] = useState({
         doseMl: f.doseMl != null ? String(f.doseMl) : "",
         doseParLitres: f.doseParLitres != null ? String(f.doseParLitres) : "",
+        doseAlim: f.doseAlim != null ? String(f.doseAlim) : "",
+        doseParKg: f.doseParKg != null ? String(f.doseParKg) : "",
+        uniteAlim: f.uniteAlim || "g",
+        doseExt: f.doseExt != null ? String(f.doseExt) : "",
+        uniteExt: f.uniteExt || "ml",
+        baseExt: f.baseExt || "par application",
         duree: f.duree != null ? String(f.duree) : "",
         delaiOeufs: f.delaiOeufs != null ? String(f.delaiOeufs) : "",
         delaiViande: f.delaiViande != null ? String(f.delaiViande) : "",
@@ -5262,7 +5293,10 @@
       function submit(e) {
         e.preventDefault();
         const fiche = {
-          doseMl: num(v.doseMl), doseParLitres: num(v.doseParLitres), duree: num(v.duree),
+          doseMl: num(v.doseMl), doseParLitres: num(v.doseParLitres),
+          doseAlim: num(v.doseAlim), doseParKg: num(v.doseParKg), uniteAlim: v.uniteAlim,
+          doseExt: num(v.doseExt), uniteExt: v.uniteExt, baseExt: v.baseExt,
+          duree: num(v.duree),
           delaiOeufs: num(v.delaiOeufs), delaiViande: num(v.delaiViande),
           indications: v.indications.trim(), mode: v.mode.trim(),
           precautions: v.precautions.trim(), lien: v.lien.trim(),
@@ -5277,15 +5311,38 @@
       return (
         <form onSubmit={submit} className="space-y-3">
           <p className="text-sm text-slate-600">Fiche de <span className="font-medium">{article}</span>.</p>
+          {/* Un dosage par VOIE : remplis seulement celle(s) qui concernent ce produit. */}
           <div>
-            <p className="text-sm font-medium text-slate-600 mb-1">💧 Dosage</p>
-            <div className="grid grid-cols-3 gap-3">
+            <p className="text-sm font-medium text-slate-600 mb-1">💧 Dans l'eau de boisson</p>
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Quantité (ml)"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseMl} onChange={set("doseMl")} placeholder="3" /></Field>
               <Field label="Pour … litres d'eau"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseParLitres} onChange={set("doseParLitres")} placeholder="5" /></Field>
-              <Field label="Durée (jours)"><input type="number" min="0" className={inputClass} value={v.duree} onChange={set("duree")} placeholder="5" /></Field>
             </div>
-            <p className="text-xs text-slate-400 mt-1">Renseigné, ce dosage remplace la règle générale des Réglages quand tu donnes ce produit.</p>
           </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-1">🌾 Dans la nourriture</p>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Quantité"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseAlim} onChange={set("doseAlim")} placeholder="2" /></Field>
+              <Field label="Unité">
+                <select className={inputClass} value={v.uniteAlim} onChange={set("uniteAlim")}>{["g", "ml", "dose"].map((u) => <option key={u} value={u}>{u}</option>)}</select>
+              </Field>
+              <Field label="Pour … kg d'aliment"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseParKg} onChange={set("doseParKg")} placeholder="1" /></Field>
+            </div>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-1">🧴 En externe <span className="font-normal text-slate-400">(sur l'animal, litière, poulailler…)</span></p>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Quantité"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseExt} onChange={set("doseExt")} placeholder="5" /></Field>
+              <Field label="Unité">
+                <select className={inputClass} value={v.uniteExt} onChange={set("uniteExt")}>{["ml", "g", "pulvérisation", "pincée"].map((u) => <option key={u} value={u}>{u}</option>)}</select>
+              </Field>
+              <Field label="Base">
+                <select className={inputClass} value={v.baseExt} onChange={set("baseExt")}>{["par application", "par animal"].map((u) => <option key={u} value={u}>{u}</option>)}</select>
+              </Field>
+            </div>
+          </div>
+          <Field label="Durée conseillée (jours)"><input type="number" min="0" className={inputClass} value={v.duree} onChange={set("duree")} placeholder="5" /></Field>
+          <p className="text-xs text-slate-400 -mt-1">Un dosage renseigné ici remplace la règle générale des Réglages quand tu donnes ce produit par cette voie.</p>
           <div>
             <p className="text-sm font-medium text-slate-600 mb-1">⏳ Délai d'attente <span className="font-normal text-slate-400">(avant de consommer)</span></p>
             <div className="grid grid-cols-2 gap-3">
@@ -5303,30 +5360,8 @@
       );
     }
 
-    // Affichage en lecture seule d'une fiche technique (depuis Gestion poulailler)
-    function FicheProduitVue({ article, fiche }) {
-      if (!fiche) return <p className="text-sm text-slate-400">Aucune fiche technique pour « {article} ». Tu peux la remplir dans <span className="font-medium">Inventaire consommables → 📄</span>.</p>;
-      const ligne = (label, valeur) => (valeur === "" || valeur == null || valeur === 0) ? null : (
-        <div className="flex gap-2 text-sm"><span className="text-slate-500 shrink-0 w-40">{label}</span><span className="text-slate-800 min-w-0">{valeur}</span></div>
-      );
-      return (
-        <div className="space-y-2">
-          {ligne("💧 Dosage", (fiche.doseMl && fiche.doseParLitres) ? fiche.doseMl + " ml pour " + fiche.doseParLitres + " L d'eau" : "")}
-          {ligne("⏱ Durée conseillée", fiche.duree ? fiche.duree + " jour(s)" : "")}
-          {ligne("⏳ Délai œufs", fiche.delaiOeufs ? fiche.delaiOeufs + " jour(s)" : "")}
-          {ligne("⏳ Délai viande", fiche.delaiViande ? fiche.delaiViande + " jour(s)" : "")}
-          {ligne("Indications", fiche.indications)}
-          {ligne("Mode d'emploi", fiche.mode)}
-          {ligne("⚠️ Précautions", fiche.precautions)}
-          {fiche.lien ? <div className="flex gap-2 text-sm"><span className="text-slate-500 shrink-0 w-40">Notice</span><a href={fiche.lien} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline break-all">{fiche.lien}</a></div> : null}
-          {!fiche.doseMl && !fiche.indications && !fiche.mode && !fiche.precautions && !fiche.lien && <p className="text-sm text-slate-400">Fiche vide pour l'instant.</p>}
-        </div>
-      );
-    }
-
     function InventaireConsommables() {
       const { consommables, config, setConfig, majLigne, supprimerLigne, patchLigne } = useData();
-      const [fiche, setFiche] = useState(null);   // article dont on édite la fiche technique
       const setUrgent = (article) => setConfig((c) => ({ ...c, articlesUrgents: toggleArticleUrgent(c, article) }));
       const setMasque = (article) => setConfig((c) => ({ ...c, articlesMasques: toggleArticleMasque(c, article) }));
       const [vue, setVue] = useState("stock");   // onglet interne : stock | mouvements | depenses
@@ -5431,15 +5466,13 @@
                 </button>,
                 <span className="inline-flex gap-1.5 whitespace-nowrap">
                   <button onClick={() => setSortie(a)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 whitespace-nowrap">↘ Sortir</button>
-                  <button onClick={() => setFiche(a.article)} title="Fiche technique (dosage, délai d'attente, mode d'emploi) — consultable au moment de traiter"
-                    className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (ficheProduit(config, a.article) ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50" : "border-slate-300 text-slate-400 hover:bg-slate-50")}>📄</button>
                   <button onClick={() => setMasque(a.article)} title="Masquer cette ligne du stock (réaffichable en bas de page)"
                     className="px-2 py-1 rounded-lg text-xs font-medium border border-slate-300 text-slate-400 hover:bg-slate-50 whitespace-nowrap">🙈</button>
                 </span>,
               ];
             })}
           />
-          <p className="text-xs text-slate-400 mt-2">📄 = fiche technique du produit (dosage, délai d'attente, mode d'emploi) — elle s'ouvre aussi depuis <span className="font-medium">Gestion poulailler → Traitements</span> au moment de traiter ; en vert quand elle est remplie. 🙈 masque une ligne (ex. intitulé mal écrit) sans rien supprimer. Pour corriger vraiment un article mal nommé, modifie ou supprime ses lignes dans l'onglet <span className="font-medium">Mouvements</span>.</p>
+          <p className="text-xs text-slate-400 mt-2">🙈 masque une ligne (ex. intitulé mal écrit) sans rien supprimer. Pour corriger vraiment un article mal nommé, modifie ou supprime ses lignes dans l'onglet <span className="font-medium">Mouvements</span>.</p>
 
           {/* Articles masqués — repliés, réaffichables */}
           {masques.length > 0 && (
@@ -5508,11 +5541,6 @@
           {fusion && (
             <Modal title="🔀 Fusionner deux articles" onClose={() => setFusion(false)}>
               <FusionArticlesForm articles={st.parArticle.map((a) => a.article)} onClose={() => setFusion(false)} onFusion={fusionnerArticles} />
-            </Modal>
-          )}
-          {fiche && (
-            <Modal title={"📄 Fiche technique — " + fiche} onClose={() => setFiche(null)}>
-              <FicheProduitForm article={fiche} onClose={() => setFiche(null)} />
             </Modal>
           )}
 
@@ -6057,13 +6085,30 @@
       const a = suggererArticle(config, nom);
       return (a && a.fiche) ? a.fiche : null;
     }
-    // Dose conseillée par la fiche technique du produit (ml pour `volumeL` litres d'eau), sinon null.
-    function doseFiche(fiche, volumeL) {
+    // Dose conseillée par la fiche technique, selon la VOIE :
+    // · eau        → doseMl pour doseParLitres litres        (× litres d'eau)
+    // · nourriture → doseAlim pour doseParKg kg d'aliment    (× kg d'aliment)
+    // · externe    → doseExt, par animal ou en une seule fois selon `baseExt`
+    // `quantite` = litres d'eau, kg d'aliment, ou nombre d'animaux pour l'externe.
+    function doseFiche(fiche, quantite, voie) {
       if (!fiche) return null;
+      const q = Number(quantite);
+      if (voie === "nourriture") {
+        const d = Number(fiche.doseAlim), par = Number(fiche.doseParKg);
+        if (!d || !par || !q) return null;
+        return { valeur: q * d / par, unite: fiche.uniteAlim || "g" };
+      }
+      if (voie === "externe") {
+        const d = Number(fiche.doseExt);
+        if (!d) return null;
+        // « par animal » → multiplié par l'effectif ; sinon c'est une dose unique pour l'application
+        const parAnimal = normLibelle(fiche.baseExt || "") === "par animal";
+        if (parAnimal && !q) return null;
+        return { valeur: parAnimal ? q * d : d, unite: fiche.uniteExt || "ml" };
+      }
       const ml = Number(fiche.doseMl), par = Number(fiche.doseParLitres);
-      const v = Number(volumeL);
-      if (!ml || !par || !v) return null;
-      return v * ml / par;
+      if (!ml || !par || !q) return null;
+      return { valeur: q * ml / par, unite: "ml" };
     }
 
     // ===== Dosage automatique des traitements =====
@@ -6075,10 +6120,23 @@
       if (!v || !r.parLitres) return null;
       return v * (Number(r.ml) || 0) / (Number(r.parLitres) || 5);
     }
-    // Dose à proposer pour un produit : sa fiche technique si elle en donne une, sinon la règle générale.
-    function doseConseillee(config, nomProduit, volumeL) {
-      const f = doseFiche(ficheProduit(config, nomProduit), volumeL);
-      return f != null ? { ml: f, source: "fiche" } : { ml: doseTraitement(config, volumeL), source: "regle" };
+    // Dose à proposer pour un produit : sa fiche technique si elle en donne une, sinon la règle
+    // générale — qui ne vaut QUE pour l'eau de boisson (c'est une règle ml par litre).
+    // Renvoie { valeur, unite, source } ou { valeur: null } si rien n'est calculable.
+    function doseConseillee(config, nomProduit, quantite, voie) {
+      const v = voie || "eau";
+      const f = doseFiche(ficheProduit(config, nomProduit), quantite, v);
+      if (f) return { ...f, source: "fiche" };
+      if (v === "eau") {
+        const ml = doseTraitement(config, quantite);
+        if (ml != null) return { valeur: ml, unite: "ml", source: "regle" };
+      }
+      return { valeur: null, unite: voieDe(v).doseUnite, source: null };
+    }
+    // Formate une dose avec son unité (1 décimale max) — remplace formatMl quand l'unité varie.
+    function formatDose(n, unite) {
+      if (n == null) return "—";
+      return Number(n).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " " + (unite || "ml");
     }
     // Formate une dose en ml (1 décimale max), ex. 18 → "18 ml", 10.8 → "10,8 ml", 0.6 → "0,6 ml".
     function formatMl(n) {
@@ -6303,8 +6361,10 @@
         return { ...c, lignes };
       }).filter((c) => c.lignes.length);
 
-      // 4) Délais d'attente EN COURS (œufs / viande) d'après les fiches techniques
-      const delais = [];
+      // 4) Délais d'attente EN COURS (œufs / viande) d'après les fiches techniques.
+      // Une seule ligne par (pensionnaire × œufs|viande) : la date la PLUS TARDIVE, seule utile —
+      // sinon trois administrations du même produit affichent trois alertes redondantes.
+      const parDelai = {};
       admins.forEach((a) => {
         const f = ficheProduit(config, a.nom);
         if (!f) return;
@@ -6312,22 +6372,31 @@
           const j = Number(f[champ]) || 0;
           if (!j) return;
           const finConso = dateDecalee(finTraitement(a.t), j);
-          if (finConso >= today) {
-            delais.push({ quoi, produit: a.nom, cible: cibleTraitement(a.t, poussins, config), jusquau: finConso, restant: Math.max(0, -joursDepuis(finConso)) });
+          if (finConso < today) return;
+          const cible = cibleTraitement(a.t, poussins, config);
+          const cle = quoi + "|" + cible;
+          const cour = parDelai[cle];
+          if (!cour || finConso > cour.jusquau) {
+            parDelai[cle] = { quoi, produit: a.nom, cible, jusquau: finConso, restant: Math.max(0, -joursDepuis(finConso)) };
+          } else if (finConso === cour.jusquau && !cour.produit.includes(a.nom)) {
+            cour.produit += ", " + a.nom;
           }
         });
       });
+      const delais = Object.keys(parDelai).map((k) => parDelai[k]).sort((x, y) => String(y.jusquau).localeCompare(String(x.jusquau)));
 
-      // 5) Doses nettement éloignées de la dose conseillée (± 25 %)
+      // 5) Doses nettement éloignées de la dose conseillée (± 25 %), voie par voie.
+      // On ne compare que si les unités correspondent (comparer des ml à des g n'a pas de sens).
       const doses = [];
       admins.forEach((a) => {
-        if (a.unite !== "ml" || a.dose === "" || a.dose == null) return;
-        const vol = Number(a.t.volumeEau);
-        if (!vol) return;
-        const d = doseConseillee(config, a.nom, vol);
-        if (d.ml == null || d.ml <= 0) return;
-        const ecart = Math.round(((Number(a.dose) - d.ml) / d.ml) * 100);
-        if (Math.abs(ecart) >= 25) doses.push({ produit: a.nom, date: a.t.date, cible: cibleTraitement(a.t, poussins, config), donne: Number(a.dose), conseille: d.ml, ecart, source: d.source });
+        if (a.dose === "" || a.dose == null) return;
+        const voie = a.t.voie || "eau";
+        const base = voie === "externe" ? Number(a.t.animaux) : supportTraitement(a.t).qte;
+        const d = doseConseillee(config, a.nom, base, voie);
+        if (d.valeur == null || d.valeur <= 0) return;
+        if (normLibelle(d.unite) !== normLibelle(a.unite)) return;
+        const ecart = Math.round(((Number(a.dose) - d.valeur) / d.valeur) * 100);
+        if (Math.abs(ecart) >= 25) doses.push({ produit: a.nom, date: a.t.date, voie, cible: cibleTraitement(a.t, poussins, config), donne: Number(a.dose), conseille: d.valeur, unite: d.unite, ecart, source: d.source });
       });
 
       // 6) Consommation par produit
@@ -6370,7 +6439,7 @@
         }
         doses.forEach((d) => conclusions.push({
           t: "prudence",
-          txt: d.produit + " le " + frDate(d.date) + " (" + d.cible + ") : " + formatMl(d.donne) + " donnés pour " + formatMl(d.conseille) + " conseillés — " + (d.ecart > 0 ? "+" : "") + d.ecart + " %.",
+          txt: d.produit + " le " + frDate(d.date) + " (" + d.cible + ", " + libelleVoieCourt(d.voie) + ") : " + formatDose(d.donne, d.unite) + " donnés pour " + formatDose(d.conseille, d.unite) + " conseillés — " + (d.ecart > 0 ? "+" : "") + d.ecart + " %.",
         }));
         // Régularité : l'intervalle réellement pratiqué colle-t-il à la fréquence conseillée ?
         couverture.forEach((c) => c.lignes.forEach((l) => {
@@ -6380,7 +6449,7 @@
         const sansFiche = produits.filter((p) => !p.fiche);
         if (sansFiche.length) conclusions.push({
           t: "manque",
-          txt: "Sans fiche technique : " + sansFiche.map((p) => p.nom).join(", ") + ". Remplis-les (Inventaire consommables → 📄) pour avoir dose conseillée et délai d'attente.",
+          txt: "Sans fiche technique : " + sansFiche.map((p) => p.nom).join(", ") + ". Remplis-les dans « 📄 Fiches techniques » ci-dessous pour avoir dose conseillée et délai d'attente.",
         });
         const aJour = couverture.every((c) => c.lignes.every((l) => l.code === "ok" || l.code === "aucun"));
         if (aJour && !delais.length) conclusions.push({ t: "top", txt: "Tout le monde est à jour et aucun délai d'attente en cours : œufs et viande consommables." });
@@ -6394,6 +6463,7 @@
       const lotsJeunes = poussins.filter((p) => p.statut === "en croissance");
       const produitsDispo = produitsTraitement(config, traitements);
       const motifs = (config.motifsTraitement && config.motifsTraitement.length) ? config.motifsTraitement : MOTIFS_TRAITEMENT;
+      const lieuxExterne = (config.lieuxExterne && config.lieuxExterne.length) ? config.lieuxExterne : LIEUX_EXTERNE;
       const unitesDose = (config.unitesDose && config.unitesDose.length) ? config.unitesDose : UNITES_DOSE;
 
       const [date, setDate] = useState(initial ? initial.date : AUJOURDHUI_ISO);
@@ -6401,7 +6471,12 @@
       const [zone, setZone] = useState(initial ? (initial.zone || "") : (zones[0] || ""));
       const [lot, setLot] = useState(initial ? (initial.lot || "") : (lotsJeunes.length ? refLotJeune(lotsJeunes[0]) : ""));
       const [animaux, setAnimaux] = useState(initial && initial.animaux != null ? String(initial.animaux) : "");
-      const [volumeEau, setVolumeEau] = useState(initial && initial.volumeEau != null ? String(initial.volumeEau) : "");
+      const [voie, setVoie] = useState(initial ? (initial.voie || "eau") : "eau");
+      // « support » = eau (L) ou aliment (kg) ; l'externe n'en a pas. `volumeEau` = ancien nom du champ.
+      const [support, setSupport] = useState(
+        initial ? String(initial.support != null && initial.support !== "" ? initial.support : (initial.volumeEau != null ? initial.volumeEau : "")) : ""
+      );
+      const [lieu, setLieu] = useState(initial ? (initial.lieu || "") : "");
       const [duree, setDuree] = useState(initial && initial.duree != null ? String(initial.duree) : "1");
       const [motif, setMotif] = useState(initial ? (initial.motif || "") : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
@@ -6413,9 +6488,12 @@
       const [voirFiche, setVoirFiche] = useState(null);   // nom du produit dont on regarde la fiche
 
       const lotP = cible === "lot" ? lotJeuneDeRef(poussins, lot) : null;
-      // Volume d'eau : ce que l'utilisateur saisit, sinon celui de l'abreuvoir de la cible
-      const volumeAuto = volumeCible(config, cible, zone, lotP);
-      const volume = volumeEau !== "" ? Number(volumeEau) : volumeAuto;
+      const vInfo = voieDe(voie);
+      // Eau : volume pré-rempli depuis l'abreuvoir de la cible. Aliment / externe : rien d'automatique.
+      const volumeAuto = voie === "eau" ? volumeCible(config, cible, zone, lotP) : null;
+      const supportQte = support !== "" ? Number(support) : volumeAuto;
+      // Base du calcul de dose : litres, kilos, ou effectif pour un traitement externe « par animal »
+      const baseDose = voie === "externe" ? (animaux === "" ? null : Number(animaux)) : supportQte;
       // Effectif proposé : les vivants du lot (pour une zone, on ne sait pas → laissé libre)
       useEffect(() => {
         if (initial) return;
@@ -6425,8 +6503,8 @@
       const majP = (k, champ, v) => setProduits((ps) => ps.map((p, i) => (i === k ? { ...p, [champ]: v } : p)));
       // Remplit la dose conseillée du produit (sa fiche technique si elle existe, sinon la règle générale)
       const appliquerDose = (k) => {
-        const d = doseConseillee(config, produits[k].nom, volume);
-        if (d.ml != null) majP(k, "dose", String(Number(d.ml.toFixed(2))));
+        const d = doseConseillee(config, produits[k].nom, baseDose, voie);
+        if (d.valeur != null) { majP(k, "dose", String(Number(d.valeur.toFixed(2)))); majP(k, "unite", d.unite); }
       };
 
       function submit(e) {
@@ -6441,10 +6519,14 @@
           zone: cible === "zone" ? zone : "",
           lot: cible === "lot" ? lot : "",
           animaux: animaux === "" ? "" : (Number(animaux) || 0),
-          volumeEau: volumeEau === "" ? (volumeAuto != null ? volumeAuto : "") : (Number(volumeEau) || 0),
+          voie,
+          support: voie === "externe" ? "" : (support === "" ? (volumeAuto != null ? volumeAuto : "") : (Number(support) || 0)),
+          supportUnite: vInfo.unite,
+          lieu: voie === "externe" ? lieu.trim() : "",
           duree: Number(duree) || 1,
           motif: motif.trim(), produits: clean, obs: obs.trim(),
         };
+        delete rec.volumeEau;   // remplacé par `support` + `supportUnite`
         (onSave || ajouterTraitement)(rec);
         onClose();
       }
@@ -6488,26 +6570,52 @@
             </div>
           </div>
 
-          {/* La « recette » : volume d'eau + un ou plusieurs produits dedans */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
-            <div className="flex items-end gap-3 flex-wrap">
-              <div className="w-40">
-                <Field label="Eau (litres)">
-                  <input type="number" step="0.1" min="0" className={inputClass} value={volumeEau} onChange={(e) => setVolumeEau(e.target.value)}
-                    placeholder={volumeAuto != null ? String(volumeAuto) : "ex. 5"} />
-                </Field>
-              </div>
-              <p className="text-xs text-slate-500 pb-2">
-                {volumeAuto != null
-                  ? <>Abreuvoir de cette cible : <span className="font-medium">{volumeAuto} L</span> (laisse vide pour l'utiliser).</>
-                  : <span className="text-amber-600">⚠️ Aucun abreuvoir réglé pour cette cible — Réglages → Abreuvoirs / volumes.</span>}
-              </p>
+          {/* Comment le produit est donné : eau de boisson, nourriture, ou application externe */}
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-2">Comment ?</p>
+            <div className="flex gap-2 flex-wrap">
+              {VOIES_TRAITEMENT.map((v) => (
+                <button key={v.id} type="button" onClick={() => setVoie(v.id)}
+                  className={"px-3 py-1.5 rounded-lg text-sm border " + (voie === v.id ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50")}>
+                  {v.icone} {v.label}
+                </button>
+              ))}
             </div>
+          </div>
 
-            <p className="text-sm font-medium text-slate-600">🧪 Produits mis dans cette eau</p>
+          {/* La « recette » : le support (eau ou aliment) + un ou plusieurs produits dedans.
+              En externe il n'y a pas de support : on note juste où le produit est appliqué. */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+            {voie === "externe"
+              ? <div className="flex items-end gap-3 flex-wrap">
+                  <div className="flex-1 min-w-[12rem]">
+                    <Field label="Appliqué où ?">
+                      <input className={inputClass} list="lieux-externe-list" value={lieu} onChange={(e) => setLieu(e.target.value)} placeholder="ex. litière" />
+                      <datalist id="lieux-externe-list">{lieuxExterne.map((l) => <option key={l} value={l} />)}</datalist>
+                    </Field>
+                  </div>
+                  <p className="text-xs text-slate-500 pb-2">Poudre, spray, badigeon… Pas de dilution : la dose se note directement sur le produit.</p>
+                </div>
+              : <div className="flex items-end gap-3 flex-wrap">
+                  <div className="w-40">
+                    <Field label={vInfo.support}>
+                      <input type="number" step="0.1" min="0" className={inputClass} value={support} onChange={(e) => setSupport(e.target.value)}
+                        placeholder={volumeAuto != null ? String(volumeAuto) : (voie === "eau" ? "ex. 5" : "ex. 2")} />
+                    </Field>
+                  </div>
+                  <p className="text-xs text-slate-500 pb-2">
+                    {voie === "eau"
+                      ? (volumeAuto != null
+                          ? <>Abreuvoir de cette cible : <span className="font-medium">{volumeAuto} L</span> (laisse vide pour l'utiliser).</>
+                          : <span className="text-amber-600">⚠️ Aucun abreuvoir réglé pour cette cible — Réglages → Abreuvoirs / volumes.</span>)
+                      : <>Quantité d'aliment dans laquelle le produit est mélangé.</>}
+                  </p>
+                </div>}
+
+            <p className="text-sm font-medium text-slate-600">🧪 {voie === "externe" ? "Produits appliqués" : (voie === "nourriture" ? "Produits mélangés à l'aliment" : "Produits mis dans cette eau")}</p>
             {produits.map((p, k) => {
               const f = ficheProduit(config, p.nom);
-              const d = doseConseillee(config, p.nom, volume);
+              const d = doseConseillee(config, p.nom, baseDose, voie);
               return (
                 <div key={k} className="bg-white rounded-lg border border-slate-200 p-2 space-y-1.5">
                   <div className="flex gap-2 items-center">
@@ -6525,14 +6633,17 @@
                   </div>
                   {p.nom && (
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                      {d.ml != null && (
+                      {d.valeur != null && (
                         <button type="button" onClick={() => appliquerDose(k)}
                           className="px-2 py-0.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 whitespace-nowrap">
-                          dose conseillée {formatMl(d.ml)}
+                          dose conseillée {formatDose(d.valeur, d.unite)}
                         </button>
                       )}
                       <span className="text-slate-400">
-                        {d.ml == null ? "Pas de dose calculable (volume d'eau manquant)."
+                        {d.valeur == null
+                          ? (voie === "eau" ? "Pas de dose calculable (volume d'eau manquant)."
+                            : voie === "nourriture" ? "Pas de dose calculable — renseigne la quantité d'aliment et le dosage de la fiche."
+                            : "Pas de dose conseillée — renseigne le dosage externe dans la fiche.")
                           : d.source === "fiche" ? "d'après la fiche technique du produit" : "d'après la règle générale des Réglages"}
                       </span>
                       <button type="button" onClick={() => setVoirFiche(p.nom)}
@@ -6546,7 +6657,7 @@
               );
             })}
             <datalist id="produits-traitement-list">{produitsDispo.map((n) => <option key={n} value={n} />)}</datalist>
-            <button type="button" onClick={() => setProduits((ps) => ps.concat([{ nom: "", dose: "", unite: "ml" }]))}
+            <button type="button" onClick={() => setProduits((ps) => ps.concat([{ nom: "", dose: "", unite: vInfo.doseUnite }]))}
               className="text-sm text-emerald-600 hover:underline">+ Ajouter un produit</button>
             <p className="text-xs text-slate-400">Un produit absent de la liste ? Écris-le : il sera proposé les fois suivantes. Pour l'avoir en permanence, ajoute-le dans <span className="font-medium">Réglages → Produits / traitements</span>.</p>
           </div>
@@ -6566,8 +6677,9 @@
           <FormButtons onClose={onClose} />
           {voirFiche && (
             <Modal title={"📄 Fiche technique — " + voirFiche} onClose={() => setVoirFiche(null)}>
-              <FicheProduitVue article={voirFiche} fiche={ficheProduit(config, voirFiche)} />
-              <p className="text-xs text-slate-400 mt-3">La fiche se remplit dans <span className="font-medium">Inventaire consommables</span> (bouton 📄 sur la ligne du produit).</p>
+              {/* Directement modifiable : si on découvre au moment de traiter que la fiche est vide,
+                  on la remplit sans quitter la saisie. */}
+              <FicheProduitForm article={voirFiche} onClose={() => setVoirFiche(null)} />
             </Modal>
           )}
         </form>
@@ -7148,6 +7260,7 @@
       const [edit, setEdit] = useState(null);
       const [openTrait, setOpenTrait] = useState(false);   // modale « + Traitement »
       const [editTrait, setEditTrait] = useState(null);    // { index, rec }
+      const [ficheEdit, setFicheEdit] = useState(null);    // nom du produit dont on édite la fiche technique
       const [bebeLot, setBebeLot] = useState(null);   // lot pré-sélectionné quand on ouvre l'onglet Bébé
       const today = AUJOURDHUI.toISOString().slice(0, 10);
 
@@ -7239,6 +7352,8 @@
       const th = (p) => (p.temperature !== "" && p.temperature != null ? p.temperature + "°" : "—");
       // Traitements du plus récent au plus ancien (l'index d'origine sert à modifier / supprimer)
       const traitementsTries = traitements.map((t, i) => ({ t, i })).sort((a, b) => String(b.t.date).localeCompare(String(a.t.date)));
+      // Produits dont on peut tenir une fiche technique : ceux des Réglages + ceux déjà administrés
+      const produitsFiches = produitsTraitement(config, traitements);
 
       return (
         <div>
@@ -7337,10 +7452,11 @@
             ? <p className="text-sm text-slate-400 mb-6">Rien de noté. Clique « + Traitement » en haut à droite.</p>
             : <Table
                 resume={(r, k) => { const t = traitementsTries[k].t; return <>{frDate(t.date)} — {cibleTraitement(t, poussins, config)}<span className="text-slate-400"> · {(t.produits || []).map((p) => p.nom).join(", ")}</span></>; }}
-                columns={["Date", "Pour qui", "Recette", "Eau", "Animaux", "Durée", "Motif", "Obs", ""]}
+                columns={["Date", "Pour qui", "Comment", "Recette", "Support", "Animaux", "Durée", "Motif", "Obs", ""]}
                 rows={traitementsTries.map(({ t, i }) => [
                   <span className="whitespace-nowrap">{frDate(t.date)}</span>,
                   <span className="whitespace-nowrap">{cibleTraitement(t, poussins, config)}</span>,
+                  (() => { const v = voieDe(t.voie); return <span className="whitespace-nowrap" title={v.label}>{v.icone} {libelleVoieCourt(t.voie)}{t.lieu ? " · " + t.lieu : ""}</span>; })(),
                   <span className="flex flex-wrap gap-1">
                     {(t.produits || []).map((p, k) => (
                       <span key={k} className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 whitespace-nowrap"
@@ -7349,7 +7465,7 @@
                       </span>
                     ))}
                   </span>,
-                  t.volumeEau !== "" && t.volumeEau != null ? t.volumeEau + " L" : "—",
+                  (() => { const q = supportTraitement(t); return q.qte == null ? "—" : <span className="whitespace-nowrap">{q.qte} {q.unite}</span>; })(),
                   t.animaux !== "" && t.animaux != null ? t.animaux : "—",
                   (Number(t.duree) || 1) + " j",
                   t.motif || "—",
@@ -7419,7 +7535,37 @@
               ])}
             />
           </>}
-          <p className="text-xs text-slate-400 mt-2">Les fréquences conseillées se règlent dans <span className="font-medium">Réglages → Fréquences des traitements</span> (par zone) et <span className="font-medium">→ Soins des jeunes</span> (par lot). Une fréquence à 0 = pas de rappel.</p>
+
+          {/* ---- Fiches techniques des produits ---- */}
+          <h2 className="text-lg font-semibold mt-8 mb-1">📄 Fiches techniques</h2>
+          <p className="text-xs text-slate-500 mb-3">Une fiche par produit : dosage <span className="font-medium">par voie</span> (eau, nourriture, externe), durée, <span className="font-medium">délai d'attente œufs et viande</span>, mode d'emploi, précautions. Renseignée, elle calcule la dose conseillée à ta place et déclenche l'alerte « ne pas consommer avant le… ».</p>
+          <Table
+            resume={(r, k) => { const n = produitsFiches[k]; const f = ficheProduit(config, n); return <>🧪 {n} <span className="text-slate-400">· {f ? "fiche remplie" : "à remplir"}</span></>; }}
+            columns={["Produit", "💧 Eau", "🌾 Nourriture", "🧴 Externe", "Durée", "Délai œufs", "Délai viande", ""]}
+            rows={produitsFiches.map((n) => {
+              const f = ficheProduit(config, n) || {};
+              const dose = (f.doseMl && f.doseParLitres) ? f.doseMl + " ml / " + f.doseParLitres + " L" : null;
+              const doseA = (f.doseAlim && f.doseParKg) ? f.doseAlim + " " + (f.uniteAlim || "g") + " / " + f.doseParKg + " kg" : null;
+              const doseE = f.doseExt ? f.doseExt + " " + (f.uniteExt || "ml") + " " + (f.baseExt || "par application") : null;
+              const gris = <span className="text-slate-300">—</span>;
+              return [
+                <span className="font-medium whitespace-nowrap">🧪 {n}</span>,
+                dose ? <span className="whitespace-nowrap">{dose}</span> : gris,
+                doseA ? <span className="whitespace-nowrap">{doseA}</span> : gris,
+                doseE ? <span className="whitespace-nowrap">{doseE}</span> : gris,
+                f.duree ? f.duree + " j" : gris,
+                f.delaiOeufs ? <span className="text-amber-600 font-medium whitespace-nowrap">{f.delaiOeufs} j</span> : gris,
+                f.delaiViande ? <span className="text-amber-600 font-medium whitespace-nowrap">{f.delaiViande} j</span> : gris,
+                <button onClick={() => setFicheEdit(n)}
+                  className={"px-2.5 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (dose || doseA || doseE || f.indications ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50" : "border-slate-300 text-slate-500 hover:bg-slate-50")}>
+                  📄 {dose || doseA || doseE || f.indications ? "Modifier" : "Remplir"}
+                </button>,
+              ];
+            })}
+          />
+          <p className="text-xs text-slate-400 mt-2">La liste suit tes produits (<span className="font-medium">Réglages → Produits / traitements</span>) plus ceux déjà administrés. La fiche s'ouvre aussi depuis le formulaire « + Traitement », au moment de choisir le produit.</p>
+
+          <p className="text-xs text-slate-400 mt-4">Les fréquences conseillées se règlent dans <span className="font-medium">Réglages → Fréquences des traitements</span> (par zone) et <span className="font-medium">→ Soins des jeunes</span> (par lot). Une fréquence à 0 = pas de rappel.</p>
           </>}
 
           {vue === "identif" && <Identification />}
@@ -7540,6 +7686,11 @@
           {editTrait && (
             <Modal title="💊 Modifier le traitement" onClose={() => setEditTrait(null)}>
               <TraitementForm initial={editTrait.rec} onSave={(rec) => majLigne("traitements", editTrait.index, rec)} onClose={() => setEditTrait(null)} />
+            </Modal>
+          )}
+          {ficheEdit && (
+            <Modal title={"📄 Fiche technique — " + ficheEdit} onClose={() => setFicheEdit(null)}>
+              <FicheProduitForm article={ficheEdit} onClose={() => setFicheEdit(null)} />
             </Modal>
           )}
         </div>
@@ -8445,6 +8596,7 @@
             <EditeurListe titre="Types d'achat reproducteurs" items={config.typesAchatRepro || []} onChange={setListe("typesAchatRepro")} />
             <EditeurListe titre="Comportements des jeunes (suivi quotidien)" items={config.comportementsJeunes || []} onChange={setListe("comportementsJeunes")} />
             <EditeurListe titre="Motifs de traitement" items={config.motifsTraitement || []} onChange={setListe("motifsTraitement")} />
+            <EditeurListe titre="Traitement externe — où l'appliquer" items={config.lieuxExterne || []} onChange={setListe("lieuxExterne")} />
             <EditeurListe titre="Unités de dose (traitements)" items={config.unitesDose || []} onChange={setListe("unitesDose")} />
             <EditeurListe titre="Types d'événement — carnet de santé" items={config.typesSante || []} onChange={setListe("typesSante")} />
             <EditeurListe titre="Tailles de bagues (mm)" items={config.taillesBagues || []} onChange={setListe("taillesBagues")} />
