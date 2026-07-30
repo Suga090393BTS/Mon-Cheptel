@@ -90,7 +90,13 @@
 
     // --- Constantes métier ---
     const DUREE = { poule: 21, caille: 17 };      // jours d'incubation
-    const CAPACITE = { poule: 120, caille: 240 }; // œufs / couveuse
+    const CAPACITE = { poule: 120, caille: 240 }; // œufs / couveuse (repli si la couveuse n'a pas sa capacité propre)
+    // Parc de couveuses par défaut — modifiable dans Réglages (ajout d'une 3ᵉ couveuse, capacités…).
+    // `id` est ce qui est stocké sur un lot (`lot.couveuse`) : ne jamais réutiliser un id supprimé.
+    const COUVEUSES_DEFAUT = [
+      { id: 1, nom: "Couveuse 1", emoji: "🟡", capacitePoule: 120, capaciteCaille: 240 },
+      { id: 2, nom: "Couveuse 2", emoji: "🟢", capacitePoule: 120, capaciteCaille: 240 },
+    ];
 
     // --- Cheptel ---
     const cheptel = {
@@ -235,6 +241,25 @@
     const UNITES = ["kg", "sac", "litre", "ml", "pièce", "autre"];
     // "remplacé" = état terminal (sort des listes actives)
     const ETATS_MATERIEL = ["neuf", "bon", "à surveiller", "à réparer", "à remplacer", "hors service", "remplacé"];
+    // ⚠️ Les deux derniers états (« hors service », « remplacé ») sont utilisés par les calculs
+    // (unités en marche, sortie du parc) : on peut en AJOUTER, pas les supprimer sans casser le suivi.
+    const ETATS_MATERIEL_VERROU = ["hors service", "remplacé"];
+    // Types d'événement du carnet de santé (modifiable dans Réglages)
+    const TYPES_SANTE = ["maladie", "blessure", "traitement", "vaccin", "vermifuge", "mue", "comportement", "guérison", "autre"];
+    // Statuts d'un lot de naissance / d'un lot destiné à la consommation (modifiables : on peut en
+    // ajouter). « en croissance » et « abattu » pilotent des filtres → à ne pas supprimer.
+    const STATUTS_JEUNES = ["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"];
+    const STATUTS_ABATTOIR = ["en croissance", "prêt", "abattu", "décédé"];
+    // Étapes de vie poussins / cailleteaux (J0 → 8 sem.), modifiables dans Réglages.
+    // `max` = âge en jours jusqu'auquel l'étape s'applique ; `max: null` = « et au-delà »
+    // (volontairement null et non Infinity : la config est persistée en JSON, qui ne sait pas
+    // représenter Infinity — il deviendrait null au rechargement).
+    const ETAPES_JEUNE = [
+      { max: 10, label: "démarrage sensible", cls: "bg-amber-100 text-amber-700" },
+      { max: 28, label: "croissance", cls: "bg-blue-100 text-blue-700" },
+      { max: 56, label: "jeune en développement", cls: "bg-indigo-100 text-indigo-700" },
+      { max: null, label: "prêt à transférer", cls: "bg-emerald-100 text-emerald-700" },
+    ];
 
     // --- Gestion des poulaillers (actions par zone) ---
     const ZONES = ["poulailler poules reproductrices", "espace cailles", "espace poussins", "espace cailleteaux", "autre zone"];
@@ -252,7 +277,28 @@
       { key: "cocciferm",  label: "Cocciferm",     icone: "🧪", traitement: true },
       { key: "vermiferm",  label: "Vermiferm",     icone: "🧪", traitement: true },
     ];
+    // Anciennes clés de traitement (cases cochées d'avant le module « Traitements ») — sert
+    // uniquement à relire l'historique ; les produits vivent maintenant dans config.produits.
     const TRAITEMENTS = ["fortiferm", "cocciferm", "vermiferm"];
+    // Comportements proposés dans le suivi quotidien d'un lot de jeunes (modifiable dans Réglages).
+    // Les deux premiers sont les cas normaux ; les suivants sont des signaux à surveiller — le
+    // regroupement / l'écartement sous la lampe est le meilleur thermomètre chez les poussins.
+    const COMPORTEMENTS_JEUNE = [
+      "actifs, éveillés",
+      "calmes, normaux",
+      "regroupés sous la lampe (ont froid)",
+      "écartés de la lampe (ont chaud)",
+      "entassés dans un coin",
+      "prostrés, abattus",
+      "piaillements incessants",
+      "un sujet à l'écart",
+      "picage entre eux",
+      "boiterie",
+    ];
+    // Motifs proposés quand on note un traitement (modifiable dans Réglages)
+    const MOTIFS_TRAITEMENT = ["prévention", "vermifugation", "coccidiose", "cure de vitamines", "après antibiotique", "stress (transport, chaleur)", "diarrhée", "baisse de forme"];
+    // Unités de dose d'un produit (modifiable dans Réglages)
+    const UNITES_DOSE = ["ml", "g", "dose", "sachet", "comprimé"];
     // Correspondance ancienne action (texte) → clé cochée. « vitamines » devient « fortiferm ».
     const LEGACY_ACTION_MAP = {
       "remplir abreuvoir": "eau", "remplir mangeoire": "nourriture", "nettoyage": "nettoyage",
@@ -292,6 +338,16 @@
       rappelJours: { ...RAPPEL_JOURS },                  // périodicité des rappels produits
       freqSoins: { eau: 1, nourriture: 1, vitamines: 30, vermiferm: 30 },  // (legacy, plus utilisé pour eau/nourriture)
       freqTraitements: JSON.parse(JSON.stringify(FREQ_TRAITEMENTS)),       // jours entre traitements par zone (reproducteurs)
+      couveuses: JSON.parse(JSON.stringify(COUVEUSES_DEFAUT)),  // parc de couveuses (nom, emoji, capacités)
+      typesSante: TYPES_SANTE.slice(),                    // types d'événement du carnet de santé
+      etapesJeunes: JSON.parse(JSON.stringify(ETAPES_JEUNE)),   // étapes d'âge des jeunes (libellé + seuil en jours)
+      statutsJeunes: STATUTS_JEUNES.slice(),              // statuts d'un lot de naissance
+      statutsAbattoir: STATUTS_ABATTOIR.slice(),          // statuts d'un lot destiné à la consommation
+      etatsMateriel: ETATS_MATERIEL.slice(),              // états possibles d'un matériel
+      taillesBagues: ["8", "12", "16", "20"],             // tailles de bagues (mm) gérées
+      comportementsJeunes: COMPORTEMENTS_JEUNE.slice(),   // choix de la liste « Comportement » du suivi quotidien des jeunes
+      motifsTraitement: MOTIFS_TRAITEMENT.slice(),        // propositions du champ « Motif » d'un traitement
+      unitesDose: UNITES_DOSE.slice(),                    // unités de dose d'un produit (ml, g, sachet…)
       croisementsMigres: false,                                            // drapeau : anciens croisements des lots repris dans le journal des croisements
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
       articlesMasques: [],                                                 // articles masqués du stock (ex. intitulé mal écrit) — réaffichables
@@ -510,22 +566,27 @@
       return { futur: false, jour: jc, total, label: "J " + jc + " / " + total };
     }
 
-    // Étapes de vie poussins / cailleteaux (J0→8 sem.). Modifiable plus tard via Réglages.
-    const ETAPES_JEUNE = [
-      { max: 10, label: "démarrage sensible", cls: "bg-amber-100 text-amber-700" },
-      { max: 28, label: "croissance", cls: "bg-blue-100 text-blue-700" },
-      { max: 56, label: "jeune en développement", cls: "bg-indigo-100 text-indigo-700" },
-      { max: Infinity, label: "prêt à transférer", cls: "bg-emerald-100 text-emerald-700" },
-    ];
+    // Étape correspondant à un âge en jours, d'après les étapes des Réglages (repli sur les défauts).
+    // Le dernier palier (max vide/null) attrape tout le reste.
+    function etapeDeJour(j, config) {
+      const etapes = ((config && config.etapesJeunes) || []).length ? config.etapesJeunes : ETAPES_JEUNE;
+      const cls = ["bg-amber-100 text-amber-700", "bg-blue-100 text-blue-700", "bg-indigo-100 text-indigo-700", "bg-emerald-100 text-emerald-700"];
+      for (let i = 0; i < etapes.length; i++) {
+        const e = etapes[i];
+        const max = (e.max === "" || e.max == null) ? Infinity : Number(e.max);
+        if (j <= max) return { ...e, cls: e.cls || cls[Math.min(i, cls.length - 1)] };
+      }
+      return null;
+    }
     // Âge d'un lot de jeunes depuis la date de NAISSANCE : J5, J12 · S2…, + étape auto.
-    function ageJeune(birthDate) {
+    // `config` facultatif : sans lui, on retombe sur les étapes par défaut.
+    function ageJeune(birthDate, config) {
       const j = joursDepuis(birthDate);
       if (j == null) return { jours: null, label: "—", futur: false, etape: null };
       if (j < 0) return { jours: j, label: "date future", futur: true, etape: null };
       const sem = Math.floor(j / 7) + 1;
       const label = j <= 10 ? ("J " + j) : ("J " + j + " · S" + sem);
-      const etape = ETAPES_JEUNE.find((e) => j <= e.max);
-      return { jours: j, sem, label, etape, futur: false };
+      return { jours: j, sem, label, etape: etapeDeJour(j, config), futur: false };
     }
     // Libellé d'espèce d'un jeune : poussin / cailleteau
     const labelJeune = (espece) => (espece === "caille" ? "cailleteau" : "poussin");
@@ -537,6 +598,16 @@
     // Total des décès d'un lot = décès « fiche » (couveuse / saisis à la création) + décès du suivi quotidien.
     function mortsLot(p) {
       return (Number(p && p.morts) || 0) + mortsJours(p);
+    }
+    // Décès des `nJours` premiers jours du suivi (les décisifs) — indicateur de robustesse au démarrage.
+    function mortsPremiersJours(p, nJours) {
+      const j = (p && p.jours) || {};
+      return Object.keys(j).reduce((s, k) => (Number(k) <= nJours ? s + (Number(j[k] && j[k].morts) || 0) : s), 0);
+    }
+    // Nés d'un lot : le champ « nés » s'il est saisi, sinon reconstitué (vivants + décès).
+    function nesLot(p) {
+      if (p && p.nes != null && p.nes !== "") return Number(p.nes) || 0;
+      return (Number(p && p.nombre) || 0) + mortsLot(p);
     }
     // Vivants d'un lot de jeunes = nés − total des décès (fiche + suivi quotidien), toujours à jour même sur d'anciens lots.
     // Repli sur « nombre » (moins les décès quotidiens) quand « nés » n'est pas renseigné (ex. lot acheté).
@@ -559,7 +630,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v97 — 28/07/2026";
+    const APP_VERSION = "v101 — 29/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -654,7 +725,9 @@
       const out = { ...config };
       const nom = (rec.article || "").trim();
       if (nom) {
+        const ancien = ((config && config.memoireArticles) || {})[memArticleKey(nom)] || {};
         const entree = {
+          ...ancien,                 // conserve ce que la saisie de stock ne connaît pas (ex. fiche technique)
           article: nom,
           categorie: rec.categorie || "",
           unite: rec.unite || "",
@@ -679,12 +752,19 @@
     // Répartition des états d'une ligne de matériel : { etat: nb d'unités }.
     // Une ligne peut regrouper plusieurs unités identiques (ex. 8 thermomètres) dont les états
     // diffèrent (7 bon + 1 hors service). Rétro-compatible : sans m.etats, tout est dans m.etat.
+    // Ordonne des états : ceux d'origine dans leur ordre, puis les états ajoutés par l'utilisateur.
+    function ordreEtats(cles) {
+      const connus = ETATS_MATERIEL.filter((e) => cles.includes(e));
+      const autres = cles.filter((e) => !ETATS_MATERIEL.includes(e));
+      return connus.concat(autres);
+    }
     function repartitionEtats(m) {
       const q = Number(m.quantite) || 0;
       const out = {};
       if (m.etats && typeof m.etats === "object") {
         let reste = q;
-        ETATS_MATERIEL.forEach((e) => {
+        // Les états connus d'abord (ordre stable), puis ceux ajoutés par l'utilisateur dans les Réglages
+        ordreEtats(Object.keys(m.etats)).forEach((e) => {
           const n = Math.min(reste, Math.max(0, Math.round(Number(m.etats[e]) || 0)));
           if (n > 0) { out[e] = n; reste -= n; }
         });
@@ -907,11 +987,16 @@
       breederPurchases: "cheptel_breeder_purchases_v1",
       sujets:        "cheptel_sujets_v1",   // identification individuelle (bagues, sexage, croisement)
       croisements:   "cheptel_croisements_v1",  // journal libre des croisements (Identification → Croisements)
+      traitements:   "cheptel_traitements_v1",  // administrations de traitements (Gestion poulailler → Traitements)
       config:        "cheptel_config_v1",
     };
     const sujetsSeed = [];
     // Journal des croisements : { date, espece: "poule"|"caille", nombre, croisement, obs }
     const croisementsSeed = [];
+    // Administrations de traitements — une ligne = une « recette » donnée à un groupe d'animaux :
+    // { date, cible: "zone"|"lot", zone, lot (réf. lot de jeunes), animaux, volumeEau (L),
+    //   duree (jours), motif, produits: [{ nom, dose, unite }], obs }
+    const traitementsSeed = [];
 
     // Export : télécharge un fichier JSON contenant toutes les collections
     function exporterDonnees(store) {
@@ -1123,6 +1208,7 @@
       const [breederPurchases, ajouterBreederPurchase, setBreederPurchases] = useCollection(STORE_KEYS.breederPurchases, breederPurchasesSeed);
       const [sujets, ajouterSujet, setSujets] = useCollection(STORE_KEYS.sujets, sujetsSeed);
       const [croisements, ajouterCroisement, setCroisements] = useCollection(STORE_KEYS.croisements, croisementsSeed);
+      const [traitements, ajouterTraitement, setTraitements] = useCollection(STORE_KEYS.traitements, traitementsSeed);
 
       // Base de données / réglages : objet config persistant, fusionné avec les défauts
       const [config, setConfig] = useState(() => {
@@ -1138,6 +1224,7 @@
         collectes: setCollectes, consommables: setConsommables, materiel: setMateriel,
         poulaillers: setPoulaillers, poussins: setPoussins, lotsStock: setLotsStock,
         breederPurchases: setBreederPurchases, sujets: setSujets, croisements: setCroisements,
+        traitements: setTraitements,
       };
 
       const store = {
@@ -1157,6 +1244,7 @@
         breederPurchases, ajouterBreederPurchase,
         sujets, ajouterSujet,
         croisements, ajouterCroisement,
+        traitements, ajouterTraitement,
         config, setConfig, resetConfig: () => setConfig(configDefaut),
         majLigne: (cle, index, item) => setters[cle]((prev) => prev.map((x, i) => (i === index ? item : x))),
         patchLigne: (cle, index, patch) => setters[cle]((prev) => prev.map((x, i) => (i === index ? { ...x, ...patch } : x))),
@@ -1214,7 +1302,7 @@
       useEffect(() => {
         if (premierRendu.current) { premierRendu.current = false; return; }  // ne pas re-pousser ce qu'on vient de charger
         pushCloudDiffere();
-      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, croisements, config]);
+      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, croisements, traitements, config]);
 
       return <DataContext.Provider value={store}>{children}</DataContext.Provider>;
     }
@@ -1748,7 +1836,7 @@
     // REGISTRE D'ÉLEVAGE : événements réglementaires reconstruits depuis les données existantes —
     // entrées (naissances, achats), sorties (abattages), mortalité (jeunes + reproducteurs),
     // traitements (soins des zones + traitements des lots de jeunes). Tri du plus récent au plus ancien.
-    function lignesRegistre({ poussins, reproducteurs, abattoir, poulaillers, breederPurchases }) {
+    function lignesRegistre({ poussins, reproducteurs, abattoir, poulaillers, breederPurchases, traitements, config }) {
       const out = [];
       const push = (date, cat, nature, espece, nombre, detail) => { if (date) out.push({ date: String(date).slice(0, 10), cat, nature, espece: espece || "—", nombre: (nombre === "" || nombre == null) ? "" : Number(nombre) || 0, detail: detail || "" }); };
       const espJ = (p) => (p.espece === "caille" ? "caille" : "poule");
@@ -1768,6 +1856,18 @@
         TRAITEMENTS.filter((k) => ligneFaitAction(pl, k)).forEach((k) => {
           const q = pl.quantites && pl.quantites[k];
           push(pl.date, "Traitement", lblTrait(k), "—", "", (pl.zone || "") + (q !== "" && q != null ? " · " + q + " ml" : ""));
+        });
+      });
+      // Traitements de la table dédiée : une ligne de registre par produit administré
+      (traitements || []).forEach((t) => {
+        const qui = t.cible === "lot"
+          ? "Lot " + ((lotJeuneDeRef(poussins, t.lot) || {}).id || "sans numéro")
+          : (t.zone || "");
+        const esp = t.cible === "lot" ? ((lotJeuneDeRef(poussins, t.lot) || {}).espece === "caille" ? "caille" : "poule") : "—";
+        (t.produits || []).forEach((pr) => {
+          const dose = (pr.dose !== "" && pr.dose != null) ? " · " + pr.dose + " " + (pr.unite || "ml") : "";
+          const duree = (Number(t.duree) || 1) > 1 ? " · " + t.duree + " j" : "";
+          push(t.date, "Traitement", pr.nom, esp, t.animaux, qui + dose + duree + (t.motif ? " · " + t.motif : ""));
         });
       });
       out.sort((a, b) => b.date.localeCompare(a.date));
@@ -1875,14 +1975,14 @@
        PAGES
        ============================================================ */
     function Dashboard() {
-      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases, races } = useData();
+      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases, races, traitements } = useData();
       const allerA = useContext(NavContext);
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
       const today = AUJOURDHUI.toISOString().slice(0, 10);
 
       // --- Aperçu calendrier : événements d'aujourd'hui + 7 prochains jours (mêmes données que la page Calendrier) ---
-      const evCal = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config);
+      const evCal = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config);
       const semaine = [];
       for (let k = 0; k <= 7; k++) {
         const d = dateDecalee(today, k);
@@ -1892,7 +1992,7 @@
 
       // --- Tâches du jour (poulaillers : nettoyages + rappels) ---
       const np = nettoyagesAPrevoir(poulaillers, config);
-      const rIA = rappelsIntelligents(poulaillers, config);
+      const rIA = rappelsIntelligents(poulaillers, config, traitements);
       const rIAnz = rIA.filter(r => r.action !== "nettoyage");  // le nettoyage est géré par les cartes np
       const rappelsManuels = poulaillers.filter(p => p.rappel && !ligneFaitAction(p, "nettoyage"));
       // « Jamais fait » N'EST PAS un retard (zone existante mais jamais traitée → à planifier, pas une alerte).
@@ -1923,11 +2023,11 @@
         const finRecolte = duree + deltaEclosion;                       // jusqu'à l'éclosion (+ marge)
         const dateDebutRecolte = dateDecalee(l.dateDebut, debutRecolte);
         if (jour === debutRecolte) {
-          aFaire.push("🥚 Récolte prochaine couvée — " + couveuseLbl(l.couveuse) + " (" + l.espece + ") : COMMENCE AUJOURD'HUI — ramasse les œufs pour la relance (conservation < " + conservationOeufs + " j)");
+          aFaire.push("🥚 Récolte prochaine couvée — " + couveuseLbl(config, l.couveuse) + " (" + l.espece + ") : COMMENCE AUJOURD'HUI — ramasse les œufs pour la relance (conservation < " + conservationOeufs + " j)");
         } else if (jour > debutRecolte && jour <= finRecolte) {
-          aFaire.push("🥚 Récolte prochaine couvée en cours — " + couveuseLbl(l.couveuse) + " (" + l.espece + ", J" + jour + "/" + duree + ") : continue de ramasser (depuis le " + frDate(dateDebutRecolte) + ")");
+          aFaire.push("🥚 Récolte prochaine couvée en cours — " + couveuseLbl(config, l.couveuse) + " (" + l.espece + ", J" + jour + "/" + duree + ") : continue de ramasser (depuis le " + frDate(dateDebutRecolte) + ")");
         } else if (jour < debutRecolte) {
-          recolteAVenir.push("🥚 Début récolte prochaine couvée — " + couveuseLbl(l.couveuse) + " (" + l.espece + ") le " + frDate(dateDebutRecolte));
+          recolteAVenir.push("🥚 Début récolte prochaine couvée — " + couveuseLbl(config, l.couveuse) + " (" + l.espece + ") le " + frDate(dateDebutRecolte));
         }
       });
       recolteAVenir.forEach(m => aVenir.push(m));   // visibles dans « Prochains rappels »
@@ -2305,17 +2405,58 @@
       );
     }
 
-    // Pastille couveuse — repère visuel constant : C1 = jaune pastel (couveuse jaune),
-    // C2 = vert pastel (couveuse verte). Utilisée partout où une couveuse est affichée.
-    const COUVEUSE_CLS = { 1: "bg-yellow-100 text-yellow-800 border-yellow-200", 2: "bg-emerald-100 text-emerald-800 border-emerald-200" };
-    const couveuseEmoji = (num) => (Number(num) === 2 ? "🟢" : "🟡");
+    // ===== Parc de couveuses (modifiable dans Réglages) =====
+    // Chaque couveuse a un id (stocké sur le lot), un nom, un emoji de repérage et ses capacités.
+    // Couleur de la pastille déduite de l'emoji → pas de classe Tailwind construite dynamiquement.
+    const COUVEUSE_CLS = {
+      "🟡": "bg-yellow-100 text-yellow-800 border-yellow-200",
+      "🟢": "bg-emerald-100 text-emerald-800 border-emerald-200",
+      "🔵": "bg-blue-100 text-blue-800 border-blue-200",
+      "🔴": "bg-red-100 text-red-700 border-red-200",
+      "🟣": "bg-purple-100 text-purple-700 border-purple-200",
+      "🟠": "bg-orange-100 text-orange-700 border-orange-200",
+    };
+    const EMOJIS_COUVEUSE = Object.keys(COUVEUSE_CLS);
+    // Liste des Réglages, avec repli sur la valeur par défaut si l'utilisateur a tout vidé —
+    // ça évite un <select> vide qui rendrait un formulaire inutilisable.
+    const LISTES_DEFAUT = {
+      statutsRepro: ["actif", "malade", "décédé", "retiré reproduction"],
+      statutsJeunes: STATUTS_JEUNES, statutsAbattoir: STATUTS_ABATTOIR,
+      typesSante: TYPES_SANTE, etatsMateriel: ETATS_MATERIEL,
+      taillesBagues: ["8", "12", "16", "20"], unites: UNITES,
+    };
+    function listeConfig(config, champ) {
+      const l = (config && config[champ]) || [];
+      return l.length ? l : (LISTES_DEFAUT[champ] || []);
+    }
+    function listeCouveuses(config) {
+      const l = (config && config.couveuses) || [];
+      return l.length ? l : COUVEUSES_DEFAUT;
+    }
+    function couveuseDe(config, num) {
+      return listeCouveuses(config).find((c) => Number(c.id) === Number(num)) || null;
+    }
+    // Capacité d'une couveuse pour une espèce (repli sur la constante métier)
+    function capaciteCouveuse(config, num, espece) {
+      const c = couveuseDe(config, num);
+      const champ = espece === "caille" ? "capaciteCaille" : "capacitePoule";
+      const v = c && c[champ];
+      return (v === "" || v == null) ? (CAPACITE[espece] || null) : (Number(v) || null);
+    }
+    const couveuseEmoji = (config, num) => { const c = couveuseDe(config, num); return (c && c.emoji) || "⬜"; };
+    const couveuseNom = (config, num) => { const c = couveuseDe(config, num); return (c && c.nom) || ("Couveuse " + num); };
     // Libellé texte avec emoji, pour les listes/rappels en texte simple
-    const couveuseLbl = (num) => couveuseEmoji(num) + " Couveuse " + num;
+    const couveuseLbl = (config, num) => couveuseEmoji(config, num) + " " + couveuseNom(config, num);
     function CouveuseBadge({ num, court }) {
-      const n = Number(num) || 1;
+      const { config } = useData();
+      const c = couveuseDe(config, num);
+      const emoji = (c && c.emoji) || "⬜";
+      const nom = (c && c.nom) || ("Couveuse " + num);
+      // Version courte : les initiales/numéro du nom (ex. « Couveuse 1 » → « C1 »)
+      const abrege = (nom.match(/\d+/) || [])[0] ? "C" + nom.match(/\d+/)[0] : nom.slice(0, 3);
       return (
-        <span className={"px-2 py-0.5 rounded-full text-xs font-medium border whitespace-nowrap " + (COUVEUSE_CLS[n] || "bg-slate-100 text-slate-600 border-slate-200")}>
-          {couveuseEmoji(n)} {court ? "C" + n : "Couveuse " + n}
+        <span className={"px-2 py-0.5 rounded-full text-xs font-medium border whitespace-nowrap " + (COUVEUSE_CLS[emoji] || "bg-slate-100 text-slate-600 border-slate-200")}>
+          {emoji} {court ? abrege : nom}
         </span>
       );
     }
@@ -2364,13 +2505,13 @@
     function IncubatorCard({ num }) {
       const { lots, suivis, mirages, eclosions, config } = useData();
       const { lot, releves, dernier, total, jourActuel } = infosCouveuse(num, lots, suivis);
-      const cap = lot ? CAPACITE[lot.espece] : null;
+      const cap = lot ? capaciteCouveuse(config, num, lot.espece) : null;
       const recap = recapSuivi(lot, mirages, eclosions, suivis);
       const rv = (v) => (v == null ? "—" : v);
       return (
         <div className="bg-white rounded-xl shadow-sm p-6 border border-slate-100">
           <div className="flex justify-between items-center mb-4">
-            <h3 className={"text-lg font-semibold px-3 py-1 rounded-lg border " + (COUVEUSE_CLS[Number(num)] || "bg-slate-100 text-slate-600 border-slate-200")}>{couveuseEmoji(num)} Couveuse {num}</h3>
+            <h3 className={"text-lg font-semibold px-3 py-1 rounded-lg border " + (COUVEUSE_CLS[couveuseEmoji(config, num)] || "bg-slate-100 text-slate-600 border-slate-200")}>{couveuseEmoji(config, num)} {couveuseNom(config, num)}</h3>
             {lot ? <StatusBadge statut={lot.statut} /> : <span className="text-xs text-slate-400">Vide</span>}
           </div>
           {lot ? (
@@ -2584,9 +2725,10 @@
 
     // Formulaire : nouvelle couvaison (n° de lot généré automatiquement)
     function CouvaisonForm({ onClose, initial, onSave }) {
-      const { genLotId, ajouterLot } = useData();
+      const { genLotId, ajouterLot, config } = useData();
       const [espece, setEspece] = useState(initial ? initial.espece : "poule");
-      const [couveuse, setCouveuse] = useState(initial ? String(initial.couveuse) : "1");
+      const premiere = String((listeCouveuses(config)[0] || {}).id || 1);
+      const [couveuse, setCouveuse] = useState(initial ? String(initial.couveuse) : premiere);
       const [dateDebut, setDateDebut] = useState(initial ? initial.dateDebut : new Date().toISOString().slice(0, 10));
       const [nbOeufs, setNbOeufs] = useState(initial ? String(initial.nbOeufs) : "");
       const [statut, setStatut] = useState(initial ? initial.statut : "en couveuse");
@@ -2618,8 +2760,7 @@
           <div className="grid grid-cols-2 gap-3">
             <Field label="Couveuse utilisée">
               <select className={inputClass} value={couveuse} onChange={(e) => setCouveuse(e.target.value)}>
-                <option value="1">Couveuse 1</option>
-                <option value="2">Couveuse 2</option>
+                {listeCouveuses(config).map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.nom}</option>)}
               </select>
             </Field>
             <Field label="Date de mise en couveuse">
@@ -2755,8 +2896,8 @@
 
     // Formulaire : mettre un lot de stock en couveuse
     function CouvaisonDepuisStockForm({ batch, onClose }) {
-      const { mettreLotEnCouvaison } = useData();
-      const [couveuse, setCouveuse] = useState("1");
+      const { mettreLotEnCouvaison, config } = useData();
+      const [couveuse, setCouveuse] = useState(String((listeCouveuses(config)[0] || {}).id || 1));
       const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
       function submit(e) {
         e.preventDefault();
@@ -2774,8 +2915,7 @@
           <div className="grid grid-cols-2 gap-3">
             <Field label="Couveuse">
               <select className={inputClass} value={couveuse} onChange={(e) => setCouveuse(e.target.value)}>
-                <option value="1">Couveuse 1</option>
-                <option value="2">Couveuse 2</option>
+                {listeCouveuses(config).map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.nom}</option>)}
               </select>
             </Field>
             <Field label="Date de mise en couveuse">
@@ -2876,8 +3016,7 @@
           <h2 className="text-lg font-semibold mb-3">📊 Stats de couvaison</h2>
           {/* Cartes couveuses + courbes T°/H% (déplacées ici depuis le tableau de bord) */}
           <div className="grid md:grid-cols-2 gap-4 mb-6">
-            <IncubatorCard num={1} />
-            <IncubatorCard num={2} />
+            {listeCouveuses(config).map((c) => <IncubatorCard key={c.id} num={c.id} />)}
           </div>
           <div className="mb-6">
             <Section titre="📋 Fiche de référence couvaison"><FicheCouvaison /></Section>
@@ -4139,7 +4278,7 @@
 
     /* ---------- Animaux reproducteurs ---------- */
     function ReproducteurForm({ onClose, initial, onSave }) {
-      const { races, reproducteurs, poussins, ajouterReproducteur } = useData();
+      const { races, reproducteurs, poussins, ajouterReproducteur, config } = useData();
       // Lignées déjà utilisées (reproducteurs + lots de jeunes) → suggestions
       const ligneesConnues = Array.from(new Set([].concat((reproducteurs || []).map(r => r.lignee), (poussins || []).map(p => p.lignee)).map(x => (x || "").trim()).filter(Boolean))).sort();
       const [nom, setNom] = useState(initial ? initial.nom : "");
@@ -4226,10 +4365,7 @@
           <div className="grid grid-cols-2 gap-3">
             <Field label="Statut">
               <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
-                <option value="actif">Actif</option>
-                <option value="malade">Malade</option>
-                <option value="décédé">Décédé</option>
-                <option value="retiré reproduction">Retiré reproduction</option>
+                {listeConfig(config, "statutsRepro").map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
               </select>
             </Field>
             {finNecessaire && (
@@ -4462,10 +4598,10 @@
 
     // Carnet de santé individuel d'un reproducteur : événements datés (maladie, traitement, vaccin…)
     // stockés sur la fiche (`reproducteurs[].sante = [{date, type, description}]`).
-    const TYPES_SANTE = ["maladie", "blessure", "traitement", "vaccin", "vermifuge", "mue", "comportement", "guérison", "autre"];
+    // (TYPES_SANTE est déclaré en haut avec les autres listes métier — il est modifiable dans Réglages.)
     const SANTE_CLS = { maladie: "bg-red-100 text-red-700", blessure: "bg-orange-100 text-orange-700", traitement: "bg-blue-100 text-blue-700", vaccin: "bg-indigo-100 text-indigo-700", vermifuge: "bg-purple-100 text-purple-700", mue: "bg-amber-100 text-amber-700", comportement: "bg-slate-100 text-slate-600", "guérison": "bg-emerald-100 text-emerald-700", autre: "bg-slate-100 text-slate-600" };
     function CarnetSante({ index, onClose }) {
-      const { reproducteurs, patchLigne } = useData();
+      const { reproducteurs, patchLigne, config } = useData();
       const rec = reproducteurs[index] || {};   // lecture fraîche → la liste se met à jour après chaque ajout
       const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
       const [type, setType] = useState("maladie");
@@ -4487,7 +4623,7 @@
               </Field>
               <Field label="Type">
                 <select className={inputClass} value={type} onChange={(e) => setType(e.target.value)}>
-                  {TYPES_SANTE.map((t) => <option key={t} value={t}>{t}</option>)}
+                  {listeConfig(config, "typesSante").map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </Field>
             </div>
@@ -4691,10 +4827,7 @@
             </Field>
             <Field label="Statut">
               <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
-                <option value="en croissance">En croissance</option>
-                <option value="prêt">Prêt</option>
-                <option value="abattu">Abattu</option>
-                <option value="décédé">Décédé</option>
+                {listeConfig(config, "statutsAbattoir").map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
               </select>
             </Field>
           </div>
@@ -5107,8 +5240,93 @@
       );
     }
 
+    // ===== Fiche technique d'un produit =====
+    // Saisie une seule fois par article (rangée dans la mémoire inventaire), puis consultable
+    // partout — notamment au moment d'administrer un traitement dans Gestion poulailler.
+    function FicheProduitForm({ article, onClose }) {
+      const { config, setConfig } = useData();
+      const f = ficheProduit(config, article) || {};
+      const [v, setV] = useState({
+        doseMl: f.doseMl != null ? String(f.doseMl) : "",
+        doseParLitres: f.doseParLitres != null ? String(f.doseParLitres) : "",
+        duree: f.duree != null ? String(f.duree) : "",
+        delaiOeufs: f.delaiOeufs != null ? String(f.delaiOeufs) : "",
+        delaiViande: f.delaiViande != null ? String(f.delaiViande) : "",
+        indications: f.indications || "",
+        mode: f.mode || "",
+        precautions: f.precautions || "",
+        lien: f.lien || "",
+      });
+      const set = (k) => (e) => setV((o) => ({ ...o, [k]: e.target.value }));
+      const num = (x) => (x === "" ? "" : (Number(x) || 0));
+      function submit(e) {
+        e.preventDefault();
+        const fiche = {
+          doseMl: num(v.doseMl), doseParLitres: num(v.doseParLitres), duree: num(v.duree),
+          delaiOeufs: num(v.delaiOeufs), delaiViande: num(v.delaiViande),
+          indications: v.indications.trim(), mode: v.mode.trim(),
+          precautions: v.precautions.trim(), lien: v.lien.trim(),
+        };
+        const cle = memArticleKey(article);
+        setConfig((c) => ({
+          ...c,
+          memoireArticles: { ...(c.memoireArticles || {}), [cle]: { ...((c.memoireArticles || {})[cle] || { article }), article, fiche } },
+        }));
+        onClose();
+      }
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <p className="text-sm text-slate-600">Fiche de <span className="font-medium">{article}</span>.</p>
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-1">💧 Dosage</p>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Quantité (ml)"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseMl} onChange={set("doseMl")} placeholder="3" /></Field>
+              <Field label="Pour … litres d'eau"><input type="number" step="0.1" min="0" className={inputClass} value={v.doseParLitres} onChange={set("doseParLitres")} placeholder="5" /></Field>
+              <Field label="Durée (jours)"><input type="number" min="0" className={inputClass} value={v.duree} onChange={set("duree")} placeholder="5" /></Field>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">Renseigné, ce dosage remplace la règle générale des Réglages quand tu donnes ce produit.</p>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-1">⏳ Délai d'attente <span className="font-normal text-slate-400">(avant de consommer)</span></p>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Œufs (jours)"><input type="number" min="0" className={inputClass} value={v.delaiOeufs} onChange={set("delaiOeufs")} placeholder="0" /></Field>
+              <Field label="Viande (jours)"><input type="number" min="0" className={inputClass} value={v.delaiViande} onChange={set("delaiViande")} placeholder="0" /></Field>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">L'app te préviendra tant que le délai court après une administration.</p>
+          </div>
+          <Field label="Indications (à quoi ça sert)"><textarea className={inputClass} rows="2" value={v.indications} onChange={set("indications")} placeholder="ex. vermifuge — vers ronds et plats" /></Field>
+          <Field label="Mode d'emploi"><textarea className={inputClass} rows="2" value={v.mode} onChange={set("mode")} placeholder="ex. dans l'eau de boisson, renouveler chaque jour, à l'abri de la lumière" /></Field>
+          <Field label="Précautions"><textarea className={inputClass} rows="2" value={v.precautions} onChange={set("precautions")} placeholder="ex. ne pas associer à …, gants recommandés" /></Field>
+          <Field label="Lien (notice du fabricant)"><input className={inputClass} value={v.lien} onChange={set("lien")} placeholder="https://…" /></Field>
+          <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
+    // Affichage en lecture seule d'une fiche technique (depuis Gestion poulailler)
+    function FicheProduitVue({ article, fiche }) {
+      if (!fiche) return <p className="text-sm text-slate-400">Aucune fiche technique pour « {article} ». Tu peux la remplir dans <span className="font-medium">Inventaire consommables → 📄</span>.</p>;
+      const ligne = (label, valeur) => (valeur === "" || valeur == null || valeur === 0) ? null : (
+        <div className="flex gap-2 text-sm"><span className="text-slate-500 shrink-0 w-40">{label}</span><span className="text-slate-800 min-w-0">{valeur}</span></div>
+      );
+      return (
+        <div className="space-y-2">
+          {ligne("💧 Dosage", (fiche.doseMl && fiche.doseParLitres) ? fiche.doseMl + " ml pour " + fiche.doseParLitres + " L d'eau" : "")}
+          {ligne("⏱ Durée conseillée", fiche.duree ? fiche.duree + " jour(s)" : "")}
+          {ligne("⏳ Délai œufs", fiche.delaiOeufs ? fiche.delaiOeufs + " jour(s)" : "")}
+          {ligne("⏳ Délai viande", fiche.delaiViande ? fiche.delaiViande + " jour(s)" : "")}
+          {ligne("Indications", fiche.indications)}
+          {ligne("Mode d'emploi", fiche.mode)}
+          {ligne("⚠️ Précautions", fiche.precautions)}
+          {fiche.lien ? <div className="flex gap-2 text-sm"><span className="text-slate-500 shrink-0 w-40">Notice</span><a href={fiche.lien} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline break-all">{fiche.lien}</a></div> : null}
+          {!fiche.doseMl && !fiche.indications && !fiche.mode && !fiche.precautions && !fiche.lien && <p className="text-sm text-slate-400">Fiche vide pour l'instant.</p>}
+        </div>
+      );
+    }
+
     function InventaireConsommables() {
       const { consommables, config, setConfig, majLigne, supprimerLigne, patchLigne } = useData();
+      const [fiche, setFiche] = useState(null);   // article dont on édite la fiche technique
       const setUrgent = (article) => setConfig((c) => ({ ...c, articlesUrgents: toggleArticleUrgent(c, article) }));
       const setMasque = (article) => setConfig((c) => ({ ...c, articlesMasques: toggleArticleMasque(c, article) }));
       const [vue, setVue] = useState("stock");   // onglet interne : stock | mouvements | depenses
@@ -5213,13 +5431,15 @@
                 </button>,
                 <span className="inline-flex gap-1.5 whitespace-nowrap">
                   <button onClick={() => setSortie(a)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 whitespace-nowrap">↘ Sortir</button>
+                  <button onClick={() => setFiche(a.article)} title="Fiche technique (dosage, délai d'attente, mode d'emploi) — consultable au moment de traiter"
+                    className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (ficheProduit(config, a.article) ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50" : "border-slate-300 text-slate-400 hover:bg-slate-50")}>📄</button>
                   <button onClick={() => setMasque(a.article)} title="Masquer cette ligne du stock (réaffichable en bas de page)"
                     className="px-2 py-1 rounded-lg text-xs font-medium border border-slate-300 text-slate-400 hover:bg-slate-50 whitespace-nowrap">🙈</button>
                 </span>,
               ];
             })}
           />
-          <p className="text-xs text-slate-400 mt-2">🙈 masque une ligne (ex. intitulé mal écrit) sans rien supprimer. Pour corriger vraiment un article mal nommé, modifie ou supprime ses lignes dans l'onglet <span className="font-medium">Mouvements</span>.</p>
+          <p className="text-xs text-slate-400 mt-2">📄 = fiche technique du produit (dosage, délai d'attente, mode d'emploi) — elle s'ouvre aussi depuis <span className="font-medium">Gestion poulailler → Traitements</span> au moment de traiter ; en vert quand elle est remplie. 🙈 masque une ligne (ex. intitulé mal écrit) sans rien supprimer. Pour corriger vraiment un article mal nommé, modifie ou supprime ses lignes dans l'onglet <span className="font-medium">Mouvements</span>.</p>
 
           {/* Articles masqués — repliés, réaffichables */}
           {masques.length > 0 && (
@@ -5290,6 +5510,11 @@
               <FusionArticlesForm articles={st.parArticle.map((a) => a.article)} onClose={() => setFusion(false)} onFusion={fusionnerArticles} />
             </Modal>
           )}
+          {fiche && (
+            <Modal title={"📄 Fiche technique — " + fiche} onClose={() => setFiche(null)}>
+              <FicheProduitForm article={fiche} onClose={() => setFiche(null)} />
+            </Modal>
+          )}
 
           {open && (
             <Modal title={open === "sortie" ? "Sortie de stock" : "Entrée de stock"} onClose={() => setOpen(null)}>
@@ -5316,7 +5541,9 @@
       "bon": "bg-blue-100 text-blue-700",
       "à surveiller": "bg-amber-100 text-amber-700",
       "à réparer": "bg-orange-100 text-orange-700",
+      "à remplacer": "bg-red-100 text-red-700",
       "hors service": "bg-red-100 text-red-700",
+      "remplacé": "bg-slate-200 text-slate-600",
     };
     function EtatMateriel({ etat }) {
       return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ETAT_MATERIEL_CLS[etat] || "bg-slate-100 text-slate-600"}`}>{etat}</span>;
@@ -5324,7 +5551,7 @@
     // Pastilles de répartition des états d'une ligne multi-unités (ex. « 7 bon · 1 hors service »)
     function EtatsLigne({ m }) {
       const rep = repartitionEtats(m);
-      const etats = ETATS_MATERIEL.filter((e) => rep[e]);
+      const etats = ordreEtats(Object.keys(rep));
       if (etats.length <= 1) return <EtatMateriel etat={etats[0] || m.etat} />;
       return (
         <span className="flex flex-wrap gap-1">
@@ -5383,7 +5610,7 @@
             </Field>
             <Field label="État">
               <select className={inputClass} value={etat} onChange={(e) => setEtat(e.target.value)}>
-                {ETATS_MATERIEL.map((s) => <option key={s} value={s}>{s}</option>)}
+                {listeConfig(config, "etatsMateriel").map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
           </div>
@@ -5409,7 +5636,7 @@
             </Field>
             <Field label="Unité de capacité">
               <input className={inputClass} list="materiel-capunites-list" value={capaciteUnite} onChange={(e) => setCapaciteUnite(e.target.value)} placeholder="ex. kg, L, œufs, places" />
-              <datalist id="materiel-capunites-list">{["L", "kg", "g", "œufs", "places"].map((u) => <option key={u} value={u} />)}</datalist>
+              <datalist id="materiel-capunites-list">{listeConfig(config, "unites").concat(["L", "œufs", "places"]).map((u) => <option key={u} value={u} />)}</datalist>
             </Field>
           </div>
           <p className="text-xs text-slate-400 -mt-1">Ex. mangeoire de 5 kg, abreuvoir de 10 L, couveuse de 120 œufs. Sert au récap par catégorie (capacité totale du parc).</p>
@@ -5457,17 +5684,19 @@
     // Ventilation des états d'une ligne multi-unités (ex. 8 thermomètres = 7 bon + 1 hors service).
     // Le total doit faire exactement la quantité de la ligne.
     function EtatsRepartitionForm({ m, onSave, onClose }) {
+      const { config } = useData();
+      const etatsListe = listeConfig(config, "etatsMateriel");
       const q = Number(m.quantite) || 0;
-      const [rep, setRep] = useState(() => { const init = repartitionEtats(m); const o = {}; ETATS_MATERIEL.forEach((e) => { o[e] = init[e] || 0; }); return o; });
-      const total = ETATS_MATERIEL.reduce((s, e) => s + (Number(rep[e]) || 0), 0);
+      const [rep, setRep] = useState(() => { const init = repartitionEtats(m); const o = {}; etatsListe.forEach((e) => { o[e] = init[e] || 0; }); return o; });
+      const total = etatsListe.reduce((s, e) => s + (Number(rep[e]) || 0), 0);
       const ok = total === q;
       const setN = (e, v) => setRep((r) => ({ ...r, [e]: v === "" ? "" : Math.max(0, Math.round(Number(v) || 0)) }));
       function submit(ev) {
         ev.preventDefault();
         if (!ok) return;
-        const etats = {}; ETATS_MATERIEL.forEach((e) => { const n = Number(rep[e]) || 0; if (n > 0) etats[e] = n; });
+        const etats = {}; etatsListe.forEach((e) => { const n = Number(rep[e]) || 0; if (n > 0) etats[e] = n; });
         // État principal de la ligne = celui qui compte le plus d'unités (sert au résumé et à l'ancien modèle)
-        const principal = ETATS_MATERIEL.slice().sort((a, b) => (etats[b] || 0) - (etats[a] || 0))[0] || m.etat;
+        const principal = etatsListe.slice().sort((a, b) => (etats[b] || 0) - (etats[a] || 0))[0] || m.etat;
         onSave({ etats, etat: principal });
         onClose();
       }
@@ -5475,7 +5704,7 @@
         <form onSubmit={submit} className="space-y-3">
           <p className="text-sm text-slate-600"><span className="font-medium">{m.article}</span> — {q} unité{q > 1 ? "s" : ""} au total. Indique combien d'unités sont dans chaque état.</p>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {ETATS_MATERIEL.map((e) => (
+            {listeConfig(config, "etatsMateriel").map((e) => (
               <Field key={e} label={e}>
                 <input type="number" min="0" max={q} className={inputClass} value={rep[e]} onChange={(ev) => setN(e, ev.target.value)} />
               </Field>
@@ -5493,7 +5722,7 @@
     }
 
     function InventaireMateriel() {
-      const { materiel, majMaterielEtat, majLigne, supprimerLigne, patchLigne } = useData();
+      const { materiel, majMaterielEtat, majLigne, supprimerLigne, patchLigne, config } = useData();
       const [vue, setVue] = useState("parc");   // onglet interne : parc | traiter
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
@@ -5593,7 +5822,7 @@
             );
           })()}
           <Table
-            resume={(r, k) => { const m = lignes[k].m; const rep = repartitionEtats(m); const etats = ETATS_MATERIEL.filter(e => rep[e]); return <>{m.urgent ? "⭐ " : ""}<span className="font-medium">{m.article}</span> <span className="text-slate-400">— {etats.map(e => rep[e] + " " + e).join(" · ") || m.etat}</span></>; }}
+            resume={(r, k) => { const m = lignes[k].m; const rep = repartitionEtats(m); const etats = ordreEtats(Object.keys(rep)); return <>{m.urgent ? "⭐ " : ""}<span className="font-medium">{m.article}</span> <span className="text-slate-400">— {etats.map(e => rep[e] + " " + e).join(" · ") || m.etat}</span></>; }}
             columns={["Date d'achat", "Article", "Catégorie", "Qté", "En marche", "Prix u.", "Coût", "État", "Âge", "Obs", "Actions"]}
             rows={lignes.map(({ m, i }) => [
               frDate(m.dateAchat),
@@ -5623,7 +5852,7 @@
                   </button>
                 : <select value={m.etat} onChange={(e) => majMaterielEtat(i, e.target.value)}
                     className="border border-slate-300 rounded-md px-1.5 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500">
-                    {ETATS_MATERIEL.map((s) => <option key={s} value={s}>{s}</option>)}
+                    {listeConfig(config, "etatsMateriel").map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>,
               <span className="whitespace-nowrap">{ageMateriel(m)}</span>,
               <ObsCell texte={m.obs} titre={"Observation — " + m.article} onSave={(v) => patchLigne("materiel", i, { obs: v })} />,
@@ -5745,6 +5974,9 @@
               {ACTIONS_COCHES
                 /* « Restes » réservés aux reproducteurs poules : complètement absent ailleurs (pas grisé) */
                 .filter(({ restes }) => !(restes && restesInterdit))
+                /* Les traitements ont leur propre onglet (💊 Traitements) : une seule porte d'entrée.
+                   Les anciennes lignes cochées restent lisibles dans le Journal. */
+                .filter(({ traitement }) => !traitement)
                 .map(({ key, label, icone }) => (
                   <label key={key} className={"flex items-center gap-2 text-sm px-3 py-2 rounded-lg border cursor-pointer " + (coches[key] ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "border-slate-200 hover:bg-slate-50")}>
                     <input type="checkbox" checked={!!coches[key]} onChange={() => toggle(key)} className="w-4 h-4" />
@@ -5754,7 +5986,10 @@
             </div>
           </div>
 
-          {/* Quantité par traitement coché — en ml. Dose conseillée = abreuvoir « traitement » de la zone. */}
+          <p className="text-xs text-slate-400 -mt-1">💊 Les traitements ne se notent plus ici : ils ont leur onglet <span className="font-medium">Traitements</span> (bouton « + Traitement »), avec les doses, la durée et la fiche technique du produit.</p>
+
+          {/* Ancien bloc « quantité par traitement » — ne s'affiche plus que sur une ligne d'archive
+              qui avait déjà des traitements cochés (les nouvelles saisies passent par l'onglet dédié). */}
           {traitementsCoches.length > 0 && (
             <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 space-y-2">
               <p className="text-sm font-medium text-slate-600">Quantité par traitement <span className="font-normal text-slate-400">(en ml)</span></p>
@@ -5802,13 +6037,48 @@
       return { code: reste < 0 ? "retard" : (reste <= 1 ? "bientot" : "ok"), reste };
     }
 
-    // ===== Dosage automatique des traitements (Fortiferm / Cocciferm / Vermiferm) =====
+    // ===== Produits de traitement =====
+    // La liste vient des RÉGLAGES (« Produits / traitements / vitamines ») : tout produit ajouté
+    // là-bas est immédiatement disponible ici. Les 3 historiques (Fortiferm / Cocciferm /
+    // Vermiferm) n'ont plus rien de spécial, ils sont juste présents par défaut dans cette liste.
+    function produitsTraitement(config, traitements) {
+      const out = [];
+      const vus = new Set();
+      const add = (n) => { const t = String(n || "").trim(); const k = normLibelle(t); if (t && !vus.has(k)) { vus.add(k); out.push(t); } };
+      ((config && config.produits) || []).forEach(add);
+      // Produits déjà administrés mais absents de la liste (saisie libre) → proposés quand même
+      (traitements || []).forEach((t) => (t.produits || []).forEach((p) => add(p.nom)));
+      return out;
+    }
+    // ===== Fiche technique d'un produit =====
+    // Rangée dans la mémoire inventaire (config.memoireArticles), donc rattachée à l'ARTICLE :
+    // saisie une fois dans Inventaire consommables, consultable partout ailleurs.
+    function ficheProduit(config, nom) {
+      const a = suggererArticle(config, nom);
+      return (a && a.fiche) ? a.fiche : null;
+    }
+    // Dose conseillée par la fiche technique du produit (ml pour `volumeL` litres d'eau), sinon null.
+    function doseFiche(fiche, volumeL) {
+      if (!fiche) return null;
+      const ml = Number(fiche.doseMl), par = Number(fiche.doseParLitres);
+      const v = Number(volumeL);
+      if (!ml || !par || !v) return null;
+      return v * ml / par;
+    }
+
+    // ===== Dosage automatique des traitements =====
     // dose (ml) = volume d'eau (L) × règle.ml / règle.parLitres. Défaut : 3 ml / 5 L.
+    // C'est la règle GÉNÉRALE des Réglages ; la fiche technique du produit, si elle existe, prime.
     function doseTraitement(config, volumeL) {
       const r = (config && config.doseRule) || { ml: 3, parLitres: 5 };
       const v = Number(volumeL);
       if (!v || !r.parLitres) return null;
       return v * (Number(r.ml) || 0) / (Number(r.parLitres) || 5);
+    }
+    // Dose à proposer pour un produit : sa fiche technique si elle en donne une, sinon la règle générale.
+    function doseConseillee(config, nomProduit, volumeL) {
+      const f = doseFiche(ficheProduit(config, nomProduit), volumeL);
+      return f != null ? { ml: f, source: "fiche" } : { ml: doseTraitement(config, volumeL), source: "regle" };
     }
     // Formate une dose en ml (1 décimale max), ex. 18 → "18 ml", 10.8 → "10,8 ml", 0.6 → "0,6 ml".
     function formatMl(n) {
@@ -5947,10 +6217,367 @@
         return { zone, dernier, interv, prochainProgramme, ...st };
       }).filter(nz => nz.interv || nz.dernier);  // zones avec une fréquence OU au moins un nettoyage enregistré
     }
+    /* ================= TRAITEMENTS — administrations « façon recette » =================
+       Une ligne = une préparation donnée à un groupe : un ou plusieurs produits (les
+       « ingrédients ») dilués dans un volume d'eau, pour une durée. La cible est soit une ZONE
+       d'adultes, soit un LOT de jeunes — jamais un animal isolé (on traite l'abreuvoir).
+    */
+    // Qui a reçu le traitement, en clair
+    function cibleTraitement(t, poussins, config) {
+      if (t.cible === "lot") {
+        const p = lotJeuneDeRef(poussins, t.lot);
+        return p ? "🐥 " + libelleLotJeune(p) : "🐥 lot supprimé";
+      }
+      return emojiZone(t.zone, config) + " " + (t.zone || "—");
+    }
+    // Clé de regroupement d'une cible (pour les rappels et l'analyse)
+    function cleCible(t) { return t.cible === "lot" ? "lot:" + (t.lot || "") : "zone:" + normLibelle(t.zone); }
+    // Volume d'eau conseillé pour une cible (abreuvoir de traitement de la zone, ou abreuvoir du lot)
+    function volumeCible(config, cible, zone, lotP) {
+      return cible === "lot" ? volumeAbreuvoirJeune(config, lotP || {}) : volumeTraitementZone(config, zone);
+    }
+    // Dernier jour couvert par un traitement (date + durée − 1) : sert aux délais d'attente.
+    function finTraitement(t) {
+      const d = Math.max(1, Number(t.duree) || 1);
+      return dateDecalee(t.date, d - 1);
+    }
+
+    // Fréquence conseillée (jours) entre deux administrations d'un produit pour une cible.
+    // Zones : config.freqTraitements[zone][produit] · Lots de jeunes : config.freqJeunes[produit].
+    // Les clés sont normalisées, donc les anciennes (fortiferm/cocciferm/vermiferm) marchent telles quelles.
+    function freqTraitement(config, type, zone, nomProduit) {
+      const k = normLibelle(nomProduit);
+      if (type === "lot") return Number((config.freqJeunes || {})[k]) || 0;
+      const parZone = {};
+      Object.keys(config.freqTraitements || {}).forEach((z) => { parZone[normLibelle(z)] = config.freqTraitements[z]; });
+      return Number((parZone[normLibelle(zone)] || {})[k]) || 0;
+    }
+
+    /* ---------- Analyse des traitements ----------
+       Comme pour les croisements : calcul LOCAL sur les saisies, pas de modèle externe.
+       On répond à trois questions : qui est à jour, les doses sont-elles cohérentes, et
+       peut-on consommer œufs et viande aujourd'hui (délais d'attente des fiches techniques).
+    */
+    function analyseTraitements({ traitements, poussins, config }) {
+      const today = AUJOURDHUI_ISO;
+      // 1) Les « pensionnaires » : zones d'adultes + lots de jeunes en croissance
+      const cibles = [];
+      zonesAdultes(config).forEach((z) => cibles.push({ cle: "zone:" + normLibelle(z), libelle: emojiZone(z, config) + " " + z, type: "zone", zone: z }));
+      (poussins || []).filter((p) => p.statut === "en croissance").forEach((p) =>
+        cibles.push({ cle: "lot:" + refLotJeune(p), libelle: "🐥 " + libelleLotJeune(p), type: "lot", zone: "", p }));
+
+      // 2) Une ligne par produit réellement administré
+      const admins = [];
+      (traitements || []).forEach((t) => (t.produits || []).forEach((pr) => {
+        if (pr.nom) admins.push({ t, nom: pr.nom, dose: pr.dose, unite: pr.unite || "ml", cle: cleCible(t) });
+      }));
+
+      // 3) Couverture : par cible × produit, dernière fois + prochaine échéance
+      const couverture = cibles.map((c) => {
+        const siens = admins.filter((a) => a.cle === c.cle);
+        const noms = new Set(siens.map((a) => normLibelle(a.nom)));
+        // On surveille aussi les produits qui ont une fréquence réglée mais n'ont JAMAIS été donnés
+        produitsTraitement(config, traitements).forEach((n) => { if (freqTraitement(config, c.type, c.zone, n) > 0) noms.add(normLibelle(n)); });
+        const lignes = Array.from(noms).map((nk) => {
+          const desSiens = siens.filter((a) => normLibelle(a.nom) === nk).sort((x, y) => String(x.t.date).localeCompare(String(y.t.date)));
+          const nom = desSiens.length ? desSiens[desSiens.length - 1].nom
+            : (produitsTraitement(config, traitements).find((n) => normLibelle(n) === nk) || nk);
+          const freq = freqTraitement(config, c.type, c.zone, nom);
+          const dernier = desSiens.length ? desSiens[desSiens.length - 1].t.date : null;
+          let code = "ok", reste = null, prochain = null;
+          if (!dernier) code = freq ? "jamais" : "aucun";
+          else if (freq) {
+            reste = freq - joursDepuis(dernier);
+            prochain = dateDecalee(dernier, freq);
+            code = reste < 0 ? "retard" : (reste <= 2 ? "bientot" : "ok");
+          }
+          // Intervalle moyen réellement pratiqué (au moins 2 administrations)
+          let ecartMoyen = null;
+          if (desSiens.length >= 2) {
+            let s = 0;
+            for (let i = 1; i < desSiens.length; i++) s += Math.abs(joursDepuis(desSiens[i - 1].t.date) - joursDepuis(desSiens[i].t.date));
+            ecartMoyen = Math.round(s / (desSiens.length - 1));
+          }
+          return { nom, freq, dernier, prochain, reste, code, nb: desSiens.length, ecartMoyen };
+        }).sort((a, b) => a.nom.localeCompare(b.nom));
+        return { ...c, lignes };
+      }).filter((c) => c.lignes.length);
+
+      // 4) Délais d'attente EN COURS (œufs / viande) d'après les fiches techniques
+      const delais = [];
+      admins.forEach((a) => {
+        const f = ficheProduit(config, a.nom);
+        if (!f) return;
+        [["delaiOeufs", "les œufs"], ["delaiViande", "la viande"]].forEach(([champ, quoi]) => {
+          const j = Number(f[champ]) || 0;
+          if (!j) return;
+          const finConso = dateDecalee(finTraitement(a.t), j);
+          if (finConso >= today) {
+            delais.push({ quoi, produit: a.nom, cible: cibleTraitement(a.t, poussins, config), jusquau: finConso, restant: Math.max(0, -joursDepuis(finConso)) });
+          }
+        });
+      });
+
+      // 5) Doses nettement éloignées de la dose conseillée (± 25 %)
+      const doses = [];
+      admins.forEach((a) => {
+        if (a.unite !== "ml" || a.dose === "" || a.dose == null) return;
+        const vol = Number(a.t.volumeEau);
+        if (!vol) return;
+        const d = doseConseillee(config, a.nom, vol);
+        if (d.ml == null || d.ml <= 0) return;
+        const ecart = Math.round(((Number(a.dose) - d.ml) / d.ml) * 100);
+        if (Math.abs(ecart) >= 25) doses.push({ produit: a.nom, date: a.t.date, cible: cibleTraitement(a.t, poussins, config), donne: Number(a.dose), conseille: d.ml, ecart, source: d.source });
+      });
+
+      // 6) Consommation par produit
+      const parProduit = {};
+      admins.forEach((a) => {
+        const k = normLibelle(a.nom);
+        const g = parProduit[k] || (parProduit[k] = { nom: a.nom, nb: 0, total: 0, unite: a.unite, dernier: null, cibles: new Set(), fiche: !!ficheProduit(config, a.nom) });
+        g.nb++;
+        if (a.unite === g.unite && a.dose !== "" && a.dose != null) g.total += Number(a.dose) || 0;
+        g.cibles.add(a.cle);
+        if (!g.dernier || a.t.date > g.dernier) g.dernier = a.t.date;
+      });
+      const produits = Object.keys(parProduit).map((k) => ({ ...parProduit[k], nbCibles: parProduit[k].cibles.size }))
+        .sort((a, b) => String(b.dernier).localeCompare(String(a.dernier)));
+
+      // 7) Lecture en clair
+      const conclusions = [];
+      const retards = [];
+      couverture.forEach((c) => c.lignes.forEach((l) => { if (l.code === "retard") retards.push({ c, l }); if (l.code === "jamais") retards.push({ c, l }); }));
+      if (!admins.length) {
+        conclusions.push({ t: "info", txt: "Aucun traitement noté pour l'instant. Clique « + Traitement » : l'analyse se remplit toute seule ensuite." });
+      } else {
+        delais.forEach((d) => conclusions.push({
+          t: "alerte",
+          txt: "Ne pas consommer " + d.quoi + " de " + d.cible + " avant le " + frDate(d.jusquau) + " (" + d.restant + " j) — délai d'attente de " + d.produit + ".",
+        }));
+        retards.filter((x) => x.l.code === "retard").forEach(({ c, l }) =>
+          conclusions.push({ t: "alerte", txt: c.libelle + " : " + l.nom + " en retard de " + (-l.reste) + " j (dernier le " + frDate(l.dernier) + ", conseillé tous les " + l.freq + " j)." }));
+        // « Jamais donné » : regroupé en UNE ligne — sinon, avec 5 pensionnaires × 3 produits,
+        // l'analyse serait noyée sous 15 lignes identiques. Le détail est sur les cartes en dessous.
+        const jamais = retards.filter((x) => x.l.code === "jamais");
+        if (jamais.length) {
+          const produitsJamais = Array.from(new Set(jamais.map((x) => x.l.nom)));
+          const ciblesJamais = Array.from(new Set(jamais.map((x) => x.c.libelle)));
+          conclusions.push({
+            t: "manque",
+            txt: "Jamais donné : " + produitsJamais.join(", ") + " — sur " + ciblesJamais.length + " pensionnaire(s). "
+              + "Soit tu les notes après les avoir donnés, soit tu mets leur fréquence à 0 dans les Réglages pour arrêter le rappel.",
+          });
+        }
+        doses.forEach((d) => conclusions.push({
+          t: "prudence",
+          txt: d.produit + " le " + frDate(d.date) + " (" + d.cible + ") : " + formatMl(d.donne) + " donnés pour " + formatMl(d.conseille) + " conseillés — " + (d.ecart > 0 ? "+" : "") + d.ecart + " %.",
+        }));
+        // Régularité : l'intervalle réellement pratiqué colle-t-il à la fréquence conseillée ?
+        couverture.forEach((c) => c.lignes.forEach((l) => {
+          if (l.ecartMoyen && l.freq && l.ecartMoyen < l.freq * 0.6)
+            conclusions.push({ t: "prudence", txt: c.libelle + " : " + l.nom + " redonné tous les " + l.ecartMoyen + " j en moyenne pour " + l.freq + " j conseillés — traitements trop rapprochés." });
+        }));
+        const sansFiche = produits.filter((p) => !p.fiche);
+        if (sansFiche.length) conclusions.push({
+          t: "manque",
+          txt: "Sans fiche technique : " + sansFiche.map((p) => p.nom).join(", ") + ". Remplis-les (Inventaire consommables → 📄) pour avoir dose conseillée et délai d'attente.",
+        });
+        const aJour = couverture.every((c) => c.lignes.every((l) => l.code === "ok" || l.code === "aucun"));
+        if (aJour && !delais.length) conclusions.push({ t: "top", txt: "Tout le monde est à jour et aucun délai d'attente en cours : œufs et viande consommables." });
+      }
+      return { couverture, delais, doses, produits, conclusions, nbAdmins: admins.length };
+    }
+
+    function TraitementForm({ onClose, initial, onSave }) {
+      const { config, poussins, traitements, ajouterTraitement } = useData();
+      const zones = zonesAdultes(config);
+      const lotsJeunes = poussins.filter((p) => p.statut === "en croissance");
+      const produitsDispo = produitsTraitement(config, traitements);
+      const motifs = (config.motifsTraitement && config.motifsTraitement.length) ? config.motifsTraitement : MOTIFS_TRAITEMENT;
+      const unitesDose = (config.unitesDose && config.unitesDose.length) ? config.unitesDose : UNITES_DOSE;
+
+      const [date, setDate] = useState(initial ? initial.date : AUJOURDHUI_ISO);
+      const [cible, setCible] = useState(initial ? initial.cible : (zones.length ? "zone" : "lot"));
+      const [zone, setZone] = useState(initial ? (initial.zone || "") : (zones[0] || ""));
+      const [lot, setLot] = useState(initial ? (initial.lot || "") : (lotsJeunes.length ? refLotJeune(lotsJeunes[0]) : ""));
+      const [animaux, setAnimaux] = useState(initial && initial.animaux != null ? String(initial.animaux) : "");
+      const [volumeEau, setVolumeEau] = useState(initial && initial.volumeEau != null ? String(initial.volumeEau) : "");
+      const [duree, setDuree] = useState(initial && initial.duree != null ? String(initial.duree) : "1");
+      const [motif, setMotif] = useState(initial ? (initial.motif || "") : "");
+      const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
+      const [produits, setProduits] = useState(
+        initial && Array.isArray(initial.produits) && initial.produits.length
+          ? initial.produits.map((p) => ({ nom: p.nom || "", dose: p.dose != null ? String(p.dose) : "", unite: p.unite || "ml" }))
+          : [{ nom: "", dose: "", unite: "ml" }]
+      );
+      const [voirFiche, setVoirFiche] = useState(null);   // nom du produit dont on regarde la fiche
+
+      const lotP = cible === "lot" ? lotJeuneDeRef(poussins, lot) : null;
+      // Volume d'eau : ce que l'utilisateur saisit, sinon celui de l'abreuvoir de la cible
+      const volumeAuto = volumeCible(config, cible, zone, lotP);
+      const volume = volumeEau !== "" ? Number(volumeEau) : volumeAuto;
+      // Effectif proposé : les vivants du lot (pour une zone, on ne sait pas → laissé libre)
+      useEffect(() => {
+        if (initial) return;
+        if (cible === "lot" && lotP) setAnimaux(String(vivantsLot(lotP)));
+      }, [cible, lot]);
+
+      const majP = (k, champ, v) => setProduits((ps) => ps.map((p, i) => (i === k ? { ...p, [champ]: v } : p)));
+      // Remplit la dose conseillée du produit (sa fiche technique si elle existe, sinon la règle générale)
+      const appliquerDose = (k) => {
+        const d = doseConseillee(config, produits[k].nom, volume);
+        if (d.ml != null) majP(k, "dose", String(Number(d.ml.toFixed(2))));
+      };
+
+      function submit(e) {
+        e.preventDefault();
+        const clean = produits
+          .map((p) => ({ nom: (p.nom || "").trim(), dose: p.dose === "" ? "" : (Number(p.dose) || 0), unite: p.unite || "ml" }))
+          .filter((p) => p.nom);
+        if (!clean.length) return;
+        const rec = {
+          ...(initial || {}),
+          date, cible,
+          zone: cible === "zone" ? zone : "",
+          lot: cible === "lot" ? lot : "",
+          animaux: animaux === "" ? "" : (Number(animaux) || 0),
+          volumeEau: volumeEau === "" ? (volumeAuto != null ? volumeAuto : "") : (Number(volumeEau) || 0),
+          duree: Number(duree) || 1,
+          motif: motif.trim(), produits: clean, obs: obs.trim(),
+        };
+        (onSave || ajouterTraitement)(rec);
+        onClose();
+      }
+
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Date">
+              <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
+            </Field>
+            <Field label="Durée (jours)">
+              <input type="number" min="1" className={inputClass} value={duree} onChange={(e) => setDuree(e.target.value)} />
+            </Field>
+          </div>
+
+          {/* Qui reçoit — une zone d'adultes ou un lot de jeunes */}
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-2">Pour qui ?</p>
+            <div className="flex gap-2 mb-2">
+              {[["zone", "🐔 Une zone d'adultes"], ["lot", "🐥 Un lot de jeunes"]].map(([id, lbl]) => (
+                <button key={id} type="button" onClick={() => setCible(id)}
+                  className={"px-3 py-1.5 rounded-lg text-sm border " + (cible === id ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50")}>{lbl}</button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {cible === "zone"
+                ? <Field label="Zone">
+                    <select className={inputClass} value={zone} onChange={(e) => setZone(e.target.value)}>
+                      {zones.map((z) => <option key={z} value={z}>{z}</option>)}
+                    </select>
+                  </Field>
+                : <Field label="Lot">
+                    <select className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)}>
+                      {lotsJeunes.length === 0 && <option value="">— aucun lot en croissance —</option>}
+                      {lotsJeunes.map((p) => { const r = refLotJeune(p); return <option key={r} value={r}>{libelleLotJeune(p)}</option>; })}
+                    </select>
+                  </Field>}
+              <Field label="Nombre d'animaux">
+                <input type="number" min="0" className={inputClass} value={animaux} onChange={(e) => setAnimaux(e.target.value)} placeholder="facultatif" />
+              </Field>
+            </div>
+          </div>
+
+          {/* La « recette » : volume d'eau + un ou plusieurs produits dedans */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+            <div className="flex items-end gap-3 flex-wrap">
+              <div className="w-40">
+                <Field label="Eau (litres)">
+                  <input type="number" step="0.1" min="0" className={inputClass} value={volumeEau} onChange={(e) => setVolumeEau(e.target.value)}
+                    placeholder={volumeAuto != null ? String(volumeAuto) : "ex. 5"} />
+                </Field>
+              </div>
+              <p className="text-xs text-slate-500 pb-2">
+                {volumeAuto != null
+                  ? <>Abreuvoir de cette cible : <span className="font-medium">{volumeAuto} L</span> (laisse vide pour l'utiliser).</>
+                  : <span className="text-amber-600">⚠️ Aucun abreuvoir réglé pour cette cible — Réglages → Abreuvoirs / volumes.</span>}
+              </p>
+            </div>
+
+            <p className="text-sm font-medium text-slate-600">🧪 Produits mis dans cette eau</p>
+            {produits.map((p, k) => {
+              const f = ficheProduit(config, p.nom);
+              const d = doseConseillee(config, p.nom, volume);
+              return (
+                <div key={k} className="bg-white rounded-lg border border-slate-200 p-2 space-y-1.5">
+                  <div className="flex gap-2 items-center">
+                    <input list="produits-traitement-list" className={inputClass + " flex-1 min-w-0"} value={p.nom}
+                      onChange={(e) => majP(k, "nom", e.target.value)} placeholder="ex. Vermiferm" />
+                    <input type="number" step="0.01" min="0" className={inputClass + " w-24"} value={p.dose}
+                      onChange={(e) => majP(k, "dose", e.target.value)} placeholder="dose" />
+                    <select className={inputClass + " w-20"} value={p.unite} onChange={(e) => majP(k, "unite", e.target.value)}>
+                      {unitesDose.map((u) => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                    {produits.length > 1 && (
+                      <button type="button" onClick={() => setProduits((ps) => ps.filter((_, i) => i !== k))}
+                        className="px-2 rounded-lg text-red-500 hover:bg-red-50" title="Retirer ce produit">×</button>
+                    )}
+                  </div>
+                  {p.nom && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      {d.ml != null && (
+                        <button type="button" onClick={() => appliquerDose(k)}
+                          className="px-2 py-0.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 whitespace-nowrap">
+                          dose conseillée {formatMl(d.ml)}
+                        </button>
+                      )}
+                      <span className="text-slate-400">
+                        {d.ml == null ? "Pas de dose calculable (volume d'eau manquant)."
+                          : d.source === "fiche" ? "d'après la fiche technique du produit" : "d'après la règle générale des Réglages"}
+                      </span>
+                      <button type="button" onClick={() => setVoirFiche(p.nom)}
+                        className={"px-2 py-0.5 rounded-lg border whitespace-nowrap " + (f ? "border-slate-300 text-slate-600 hover:bg-slate-50" : "border-slate-200 text-slate-400 hover:bg-slate-50")}>
+                        📄 fiche{f ? "" : " (vide)"}
+                      </button>
+                      {f && f.delaiOeufs ? <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium whitespace-nowrap">⏳ œufs {f.delaiOeufs} j</span> : null}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <datalist id="produits-traitement-list">{produitsDispo.map((n) => <option key={n} value={n} />)}</datalist>
+            <button type="button" onClick={() => setProduits((ps) => ps.concat([{ nom: "", dose: "", unite: "ml" }]))}
+              className="text-sm text-emerald-600 hover:underline">+ Ajouter un produit</button>
+            <p className="text-xs text-slate-400">Un produit absent de la liste ? Écris-le : il sera proposé les fois suivantes. Pour l'avoir en permanence, ajoute-le dans <span className="font-medium">Réglages → Produits / traitements</span>.</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Motif">
+              <input className={inputClass} list="motifs-traitement-list" value={motif} onChange={(e) => setMotif(e.target.value)} placeholder="ex. vermifugation de printemps" />
+              <datalist id="motifs-traitement-list">
+                {motifs.map((m) => <option key={m} value={m} />)}
+              </datalist>
+            </Field>
+            <Field label="Observation">
+              <input className={inputClass} value={obs} onChange={(e) => setObs(e.target.value)} placeholder="ex. bu sans problème" />
+            </Field>
+          </div>
+
+          <FormButtons onClose={onClose} />
+          {voirFiche && (
+            <Modal title={"📄 Fiche technique — " + voirFiche} onClose={() => setVoirFiche(null)}>
+              <FicheProduitVue article={voirFiche} fiche={ficheProduit(config, voirFiche)} />
+              <p className="text-xs text-slate-400 mt-3">La fiche se remplit dans <span className="font-medium">Inventaire consommables</span> (bouton 📄 sur la ligne du produit).</p>
+            </Modal>
+          )}
+        </form>
+      );
+    }
+
     // Rappels intelligents : pour chaque zone de soin × action périodique, calcule la
     // dernière fois faite (depuis les lignes cochées) et la prochaine échéance selon la fréquence.
     // code: "retard" | "aujourdhui" | "avenir" | "jamais".
-    function rappelsIntelligents(poulaillers, config) {
+    function rappelsIntelligents(poulaillers, config, traitements) {
       const intervParZone = {};
       Object.keys(config.intervalleNettoyage || {}).forEach((k) => { intervParZone[normLibelle(k)] = config.intervalleNettoyage[k]; });
       const ftNorm = {};
@@ -5958,21 +6585,33 @@
       const zones = (config.zones && config.zones.length) ? config.zones : Object.keys(config.intervalleNettoyage || {});
       // Zone « de soin » adulte = a une fréquence de nettoyage ET n'est pas une zone de jeunes
       const zonesSoin = zones.filter((z) => intervParZone[normLibelle(z)] && !estZoneJeune(z, config));
+      // Dernière administration d'un produit sur une zone, prise dans la table des traitements
+      const dernierTraitement = (nz, cleProduit) => {
+        const dates = (traitements || [])
+          .filter((t) => t.cible !== "lot" && normLibelle(t.zone) === nz && (t.produits || []).some((p) => normLibelle(p.nom) === cleProduit))
+          .map((t) => t.date).sort();
+        return dates.length ? dates[dates.length - 1] : null;
+      };
       const out = [];
       zonesSoin.forEach((zone) => {
         const nz = normLibelle(zone);
         const ftZone = ftNorm[nz] || {};
-        // Pas de rappel pour eau / nourriture (gérés à vue). Seulement nettoyage + traitements.
-        const suivis = [
-          { key: "nettoyage", label: "Nettoyage", freq: intervParZone[nz] },
-          { key: "fortiferm", label: "Fortiferm", freq: ftZone.fortiferm != null ? ftZone.fortiferm : 30 },
-          { key: "cocciferm", label: "Cocciferm", freq: ftZone.cocciferm != null ? ftZone.cocciferm : 30 },
-          { key: "vermiferm", label: "Vermiferm", freq: ftZone.vermiferm != null ? ftZone.vermiferm : 30 },
-        ];
-        suivis.forEach(({ key, label, freq }) => {
+        // Pas de rappel pour eau / nourriture (gérés à vue). Nettoyage + tous les produits ayant une fréquence.
+        const suivis = [{ key: "nettoyage", label: "Nettoyage", freq: intervParZone[nz] }];
+        Object.keys(ftZone).forEach((k) => {
+          const freq = Number(ftZone[k]) || 0;
+          if (!freq) return;
+          // Libellé lisible : le produit tel qu'écrit dans les Réglages, sinon la clé
+          const nom = ((config.produits || []).find((p) => normLibelle(p) === normLibelle(k))) || k;
+          suivis.push({ key: normLibelle(k), label: nom.charAt(0).toUpperCase() + nom.slice(1), freq, produit: true });
+        });
+        suivis.forEach(({ key, label, freq, produit }) => {
           if (!freq) return;  // 0 = pas de rappel pour cette action
+          // Un produit peut avoir été noté à l'ancienne (case cochée du journal) OU dans la table des traitements
           const dates = poulaillers.filter((p) => normLibelle(p.zone) === nz && ligneFaitAction(p, key)).map((p) => p.date).sort();
-          const dernier = dates.length ? dates[dates.length - 1] : null;
+          const dernierCoche = dates.length ? dates[dates.length - 1] : null;
+          const dernierTrait = produit ? dernierTraitement(nz, key) : null;
+          const dernier = [dernierCoche, dernierTrait].filter(Boolean).sort().pop() || null;
           let code, reste = null, prochain = null;
           if (!dernier) { code = "jamais"; }
           else {
@@ -6029,6 +6668,16 @@
     }
     // Couleurs de bagues EN STOCK par taille — normalise l'ancien format (tableau unique) et
     // garantit les tailles. Résultat : { "8": [...], "12": [...], "16": [...], "20": [...] }.
+    // Tailles de bagues proposées : la plus petite pour les cailles, les autres pour les poules
+    // (et seulement les grandes pour un adulte reproducteur). La liste vient des Réglages.
+    function taillesPour(config, espece, adulte) {
+      const t = listeConfig(config, "taillesBagues").slice().sort((a, b) => Number(a) - Number(b));
+      if (!t.length) return [];
+      if (espece === "caille") return [t[0]];
+      const grandes = t.slice(1);                       // on retire la taille « caille »
+      if (!adulte) return grandes.length ? grandes : t;
+      return grandes.slice(-2).length ? grandes.slice(-2) : t;   // adulte = les 2 plus grandes
+    }
     function palettesBagues(config) {
       const c = config && config.couleursBagues;
       if (Array.isArray(c)) return { "8": [], "12": c.slice(), "16": c.slice(), "20": [] };   // ancien format
@@ -6065,10 +6714,141 @@
       return p.id ? p.id + " · " + labelJeune(p.espece) : labelJeune(p.espece) + " né le " + frDate(p.date);
     }
 
+    /* ---------- Analyse des croisements ----------
+       Tout est calculé EN LOCAL à partir de tes propres saisies : aucune intelligence artificielle,
+       aucun modèle externe, aucune donnée inventée. Ce sont des moyennes pondérées sur tes lots.
+       Deux familles d'indicateurs, qui ne viennent pas du même endroit :
+       · REPRODUCTION → couvée d'origine du lot de naissance (mirages + éclosion) : fertilité,
+         éclosion, réussite globale. C'est ce que valent les PARENTS.
+       · RÉSISTANCE  → lot de naissance lui-même : survie et décès des 10 premiers jours.
+       Limite assumée : quand un lot porte PLUSIEURS croisements, on ne sait pas quel poussin est
+       mort ; le taux du lot est alors attribué à chaque croisement (pondéré par son effectif) et
+       la ligne est marquée « lot mixte ».
+    */
+    function analyseCroisements({ croisements, poussins, lots, mirages, eclosions, suivis }) {
+      // 1) Rattacher chaque note à son lot de naissance + repérer les lots à plusieurs croisements
+      const notes = (croisements || []).map((c) => ({ c, p: lotJeuneDeRef(poussins, c.lot) }));
+      const parLot = {};
+      notes.forEach(({ c, p }) => {
+        if (!p) return;
+        const k = c.lot;
+        if (!parLot[k]) parLot[k] = { p, noms: new Set(), nb: 0 };
+        parLot[k].noms.add(normLibelle(c.croisement));
+        parLot[k].nb++;
+      });
+
+      // 2) Regrouper par croisement
+      const groupes = {};
+      let notesSansLot = 0;
+      notes.forEach(({ c, p }) => {
+        const cle = normLibelle(c.croisement);
+        if (!cle) return;
+        const g = groupes[cle] || (groupes[cle] = { nom: c.croisement, notes: 0, jeunes: 0, lots: [], mixte: false, sansCouvee: 0 });
+        g.notes++;
+        g.jeunes += Number(c.nombre) || 0;
+        if (!p) { notesSansLot++; return; }
+        const info = parLot[c.lot];
+        if (info.noms.size > 1) g.mixte = true;
+        // Effectif du croisement dans ce lot : le nombre saisi, sinon une part égale des nés
+        const effectif = Number(c.nombre) > 0 ? Number(c.nombre) : Math.round(nesLot(p) / Math.max(1, info.nb));
+        g.lots.push({ p, effectif: Math.max(1, effectif) });
+      });
+
+      // 3) Moyennes pondérées par l'effectif de jeunes concerné
+      const res = Object.keys(groupes).map((cle) => {
+        const g = groupes[cle];
+        let pS = 0, sSurvie = 0, sPrecoce = 0;
+        let pR = 0, sFec = 0, sEcl = 0, sGlob = 0, nFec = 0, nEcl = 0, nGlob = 0;
+        const lotsIds = new Set();
+        g.lots.forEach(({ p, effectif }) => {
+          lotsIds.add(refLotJeune(p));
+          const nes = nesLot(p);
+          if (nes > 0) {
+            pS += effectif;
+            sSurvie += (vivantsLot(p) / nes) * effectif;
+            sPrecoce += (mortsPremiersJours(p, 10) / nes) * effectif;
+          }
+          // Couvée d'origine du lot de naissance (champ « Lot de couvaison lié » de sa fiche)
+          const couvee = (lots || []).find((l) => l.id === p.lot);
+          const r = couvee ? recapSuivi(couvee, mirages, eclosions, suivis) : null;
+          if (!r) { g.sansCouvee++; return; }
+          pR += effectif;
+          if (r.tauxFec != null) { sFec += r.tauxFec * effectif; nFec += effectif; }
+          if (r.tauxEcl != null) { sEcl += r.tauxEcl * effectif; nEcl += effectif; }
+          if (r.tauxGlobal != null) { sGlob += r.tauxGlobal * effectif; nGlob += effectif; }
+        });
+        const jeunes = g.jeunes || pS;
+        const nbLots = lotsIds.size;
+        // Fiabilité : avec 1 lot de 7 poussins on ne conclut rien — autant le dire clairement.
+        const fiabilite = (nbLots >= 3 && jeunes >= 30) ? "bonne" : ((nbLots >= 2 || jeunes >= 15) ? "moyenne" : "faible");
+        return {
+          nom: g.nom, notes: g.notes, jeunes, nbLots, mixte: g.mixte, sansCouvee: g.sansCouvee, fiabilite,
+          survie:   pS ? Math.round((sSurvie / pS) * 100) : null,
+          precoce:  pS ? Math.round((sPrecoce / pS) * 100) : null,
+          fertilite: nFec ? Math.round(sFec / nFec) : null,
+          eclosion:  nEcl ? Math.round(sEcl / nEcl) : null,
+          reussite:  nGlob ? Math.round(sGlob / nGlob) : null,
+        };
+      }).sort((a, b) => (b.survie != null ? b.survie : -1) - (a.survie != null ? a.survie : -1));
+
+      // 4) Lecture en clair : classements + alertes + ce qu'il manque pour conclure
+      const conclusions = [];
+      const meilleur = (champ) => res.filter((r) => r[champ] != null).sort((a, b) => b[champ] - a[champ])[0] || null;
+      const bRepro = meilleur("reussite"), bSurvie = meilleur("survie");
+      const solide = res.filter((r) => r.fiabilite !== "faible");
+
+      if (!res.length) {
+        conclusions.push({ t: "info", txt: "Aucune note pour l'instant : ajoute une ligne ci-dessus (avec le lot concerné) et l'analyse se calcule toute seule." });
+      } else {
+        if (bRepro) conclusions.push({
+          t: "top",
+          txt: "Meilleure reproduction : " + bRepro.nom + " — " + bRepro.reussite + " % de réussite (poussins nés ÷ œufs incubés)"
+            + (bRepro.fertilite != null ? ", fertilité " + bRepro.fertilite + " %" : "") + ".",
+        });
+        if (bSurvie) conclusions.push({
+          t: "top",
+          txt: "Poussins les plus résistants : " + bSurvie.nom + " — " + bSurvie.survie + " % encore vivants"
+            + (bSurvie.precoce != null ? ", " + bSurvie.precoce + " % de pertes sur les 10 premiers jours" : "") + ".",
+        });
+        const ecart = res.filter((r) => r.survie != null);
+        if (ecart.length >= 2) {
+          const pire = ecart[ecart.length - 1];
+          if (bSurvie && pire.nom !== bSurvie.nom && (bSurvie.survie - pire.survie) >= 15) {
+            conclusions.push({ t: "info", txt: "Écart net de survie : " + bSurvie.nom + " (" + bSurvie.survie + " %) contre " + pire.nom + " (" + pire.survie + " %) — " + (bSurvie.survie - pire.survie) + " points." });
+          }
+        }
+        res.forEach((r) => {
+          if (r.survie != null && r.survie < 80) conclusions.push({ t: "alerte", txt: r.nom + " : seulement " + r.survie + " % de survie — à surveiller de près." });
+          else if (r.precoce != null && r.precoce >= 10) conclusions.push({ t: "alerte", txt: r.nom + " : " + r.precoce + " % de pertes dans les 10 premiers jours (démarrage difficile : température, eau, alimentation)." });
+          if (r.fertilite != null && r.fertilite < 60) conclusions.push({ t: "alerte", txt: r.nom + " : fertilité de " + r.fertilite + " % seulement — vérifie l'âge du mâle et le rapport mâle/femelles." });
+        });
+        if (!solide.length) conclusions.push({ t: "prudence", txt: "Trop peu de données pour trancher : les classements ci-dessus sont indicatifs. Il faut au moins 2 lots (ou ~15 jeunes) par croisement pour que ça veuille dire quelque chose." });
+        if (res.some((r) => r.mixte)) conclusions.push({ t: "prudence", txt: "Certains lots portent plusieurs croisements : impossible de savoir quel poussin est mort. Le taux du lot est alors attribué à chaque croisement (lignes marquées « lot mixte »)." });
+        const sansC = res.filter((r) => r.sansCouvee).length;
+        if (sansC) conclusions.push({ t: "manque", txt: "Fertilité et éclosion manquantes pour " + sansC + " croisement(s) : leur lot de naissance n'est relié à aucune couvée (champ « Lot de couvaison lié » de la fiche du lot)." });
+        if (notesSansLot) conclusions.push({ t: "manque", txt: notesSansLot + " note(s) sans lot : elles ne comptent pas dans les statistiques. Choisis leur lot dans la colonne « Lot »." });
+      }
+      return { res, conclusions, notesSansLot };
+    }
+
     // Journal des croisements — saisie libre : « le JJ/MM, N jeunes du lot X issus de Marans × Sussex ».
     // Le lot est une simple étiquette : rien n'est calculé ni recopié dans la fiche du lot.
+    // Badge de fiabilité d'une ligne d'analyse (taille de l'échantillon)
+    function BadgeFiabilite({ n }) {
+      const table = { bonne: ["bg-emerald-100 text-emerald-700", "fiable"], moyenne: ["bg-amber-100 text-amber-700", "à confirmer"], faible: ["bg-slate-200 text-slate-600", "trop peu de données"] };
+      const m = table[n] || table.faible;
+      return <span className={"px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap " + m[0]}>{m[1]}</span>;
+    }
+    // Pourcentage coloré : vert au-dessus du seuil « bon », rouge en dessous du seuil « mauvais »
+    function Pct({ v, bon, mauvais }) {
+      if (v == null) return <span className="text-slate-300">—</span>;
+      const cls = v >= bon ? "text-emerald-600 font-medium" : (v <= mauvais ? "text-red-600 font-medium" : "text-slate-700");
+      return <span className={cls + " whitespace-nowrap"}>{v} %</span>;
+    }
+
     function JournalCroisements() {
-      const { croisements, poussins, reproducteurs, ajouterCroisement, patchLigne, supprimerLigne } = useData();
+      const { croisements, poussins, lots, mirages, eclosions, suivis, reproducteurs, ajouterCroisement, patchLigne, supprimerLigne } = useData();
+      const analyse = analyseCroisements({ croisements, poussins, lots, mirages, eclosions, suivis });
       const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
       const [espece, setEspece] = useState("poule");
       const [nombre, setNombre] = useState("");
@@ -6170,6 +6950,50 @@
                 ])}
               />}
           <p className="text-xs text-slate-400 mt-2">Tout se modifie directement dans le tableau. Pour voir ce que donnerait un croisement (couleur, ponte…), va dans <span className="font-medium">Catalogue des races → 🧬 Croisements</span>.</p>
+
+          {/* ---- Analyse : ce que disent les données saisies ---- */}
+          <h2 className="text-lg font-semibold mt-8 mb-1">📊 Ce que disent tes données</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            Calculé sur ton élevage, à partir des notes ci-dessus rattachées à un lot.
+            <span className="font-medium"> Reproduction</span> = ce que valent les parents (fertilité et éclosion de la couvée d'origine du lot).
+            <span className="font-medium"> Résistance</span> = ce que valent les poussins (survie du lot, et pertes des 10 premiers jours).
+          </p>
+
+          {/* Lecture en clair */}
+          <div className="space-y-2 mb-4">
+            {analyse.conclusions.map((c, k) => {
+              const st = {
+                top:      ["bg-emerald-50 border-emerald-200 text-emerald-800", "🏆"],
+                alerte:   ["bg-red-50 border-red-200 text-red-700", "⚠️"],
+                prudence: ["bg-amber-50 border-amber-200 text-amber-800", "🤔"],
+                manque:   ["bg-slate-50 border-slate-200 text-slate-600", "➕"],
+                info:     ["bg-slate-50 border-slate-200 text-slate-600", "ℹ️"],
+              }[c.t] || ["bg-slate-50 border-slate-200 text-slate-600", "ℹ️"];
+              return <p key={k} className={"text-sm rounded-xl border px-3 py-2 " + st[0]}>{st[1]} {c.txt}</p>;
+            })}
+          </div>
+
+          {analyse.res.length > 0 && <>
+            <Table
+              resume={(r, k) => { const a = analyse.res[k]; return <><span className="font-medium">{a.nom}</span> <span className="text-slate-400">· survie {a.survie != null ? a.survie + " %" : "—"} · réussite {a.reussite != null ? a.reussite + " %" : "—"}</span></>; }}
+              columns={["Croisement", "Jeunes notés", "Lots", "Fertilité", "Éclosion", "Réussite", "Survie", "Pertes J1-J10", "Fiabilité"]}
+              rows={analyse.res.map((a) => [
+                <span className="font-medium whitespace-nowrap">{a.nom}{a.mixte ? <span className="text-amber-600 font-normal text-xs" title="Ce croisement partage un lot avec d'autres : impossible de savoir quel poussin est mort"> · lot mixte</span> : null}</span>,
+                a.jeunes || "—",
+                a.nbLots || "—",
+                <Pct v={a.fertilite} bon={80} mauvais={60} />,
+                <Pct v={a.eclosion} bon={80} mauvais={60} />,
+                <Pct v={a.reussite} bon={65} mauvais={45} />,
+                <Pct v={a.survie} bon={90} mauvais={80} />,
+                a.precoce == null ? <span className="text-slate-300">—</span>
+                  : <span className={(a.precoce >= 10 ? "text-red-600 font-medium" : "text-slate-700") + " whitespace-nowrap"}>{a.precoce} %</span>,
+                <BadgeFiabilite n={a.fiabilite} />,
+              ])}
+            />
+            <p className="text-xs text-slate-400 mt-2">
+              <span className="font-medium">Fertilité</span> = œufs fécondés ÷ œufs mis en couveuse (dernier mirage) · <span className="font-medium">Éclosion</span> = nés ÷ fécondés · <span className="font-medium">Réussite</span> = nés ÷ œufs incubés · <span className="font-medium">Survie</span> = encore vivants ÷ nés. Le classement se lit du plus au moins résistant. « Fiabilité » dépend de la taille de l'échantillon : <span className="font-medium">fiable</span> = 3 lots et 30 jeunes minimum ; en dessous, c'est une tendance, pas une conclusion.
+            </p>
+          </>}
         </div>
       );
     }
@@ -6265,7 +7089,7 @@
                               </select>,
                               <select className={selCls} value={s.bagueTaille || ""} onChange={(e) => patchLigne("sujets", si, { bagueTaille: e.target.value })}>
                                 <option value="">à baguer</option>
-                                {(espI === "caille" ? ["8"] : ["12", "16", "20"]).map((t) => <option key={t} value={t}>{t} mm</option>)}
+                                {taillesPour(config, espI).map((t) => <option key={t} value={t}>{t} mm</option>)}
                               </select>,
                               <span className="flex items-center gap-1.5">
                                 <select className={selCls} value={s.bagueCouleur || ""} onChange={(e) => patchLigne("sujets", si, { bagueCouleur: e.target.value })}>
@@ -6300,7 +7124,7 @@
                     espI === "caille"
                       ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 whitespace-nowrap">8 mm</span>
                       : <select className={selCls} value={r.bagueTaille || "16"} onChange={(e) => patchLigne("reproducteurs", i, { bagueTaille: e.target.value })}>
-                          {["16", "20"].map((t) => <option key={t} value={t}>{t} mm</option>)}
+                          {taillesPour(config, espI, true).map((t) => <option key={t} value={t}>{t} mm</option>)}
                         </select>,
                     <span className="flex items-center gap-1.5">
                       <select className={selCls} value={r.bagueCouleur || ""} onChange={(e) => patchLigne("reproducteurs", i, { bagueCouleur: e.target.value })}>
@@ -6318,15 +7142,18 @@
     }
 
     function GestionPoulaillers() {
-      const { poulaillers, poussins, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
-      const [vue, setVue] = useState("soins");   // onglet interne : soins | bebe | rappels | journal
+      const { poulaillers, poussins, traitements, config, majLigne, supprimerLigne, patchLigne, ajouterPoulailler } = useData();
+      const [vue, setVue] = useState("soins");   // onglet interne : soins | bebe | traitements | identif | rappels | journal
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
+      const [openTrait, setOpenTrait] = useState(false);   // modale « + Traitement »
+      const [editTrait, setEditTrait] = useState(null);    // { index, rec }
       const [bebeLot, setBebeLot] = useState(null);   // lot pré-sélectionné quand on ouvre l'onglet Bébé
       const today = AUJOURDHUI.toISOString().slice(0, 10);
 
+      const anaTrait = analyseTraitements({ traitements, poussins, config });
       const nettoyages = nettoyagesAPrevoir(poulaillers, config);
-      const rappelsIA = rappelsIntelligents(poulaillers, config);
+      const rappelsIA = rappelsIntelligents(poulaillers, config, traitements);
       const retard = rappelsIA.filter(r => r.code === "retard");          // vrais retards (date dépassée)
       const duJour = rappelsIA.filter(r => r.code === "aujourdhui");
       const aPlanifier = rappelsIA.filter(r => r.code === "jamais");      // jamais fait = à planifier, PAS une alerte
@@ -6410,18 +7237,21 @@
       const actionsLabel = (p) => { const d = ACTIONS_COCHES.filter(a => ligneFaitAction(p, a.key)); return d.length ? d.map(a => a.label).join(", ") : (p.action || "Rappel"); };
       // Température seule : l'humidité ne sert pas au poulailler (elle reste suivie dans les couveuses).
       const th = (p) => (p.temperature !== "" && p.temperature != null ? p.temperature + "°" : "—");
+      // Traitements du plus récent au plus ancien (l'index d'origine sert à modifier / supprimer)
+      const traitementsTries = traitements.map((t, i) => ({ t, i })).sort((a, b) => String(b.t.date).localeCompare(String(a.t.date)));
 
       return (
         <div>
           <PageHeader
             title="Gestion du poulailler"
             subtitle="Tout au même endroit : reproducteurs, animaux à grossir et bébés. Soins, nettoyage et traitements mutualisés."
-            action={vue !== "bebe" ? <AddButton onClick={() => setOpen(true)} label="Ajouter une action" /> : null}
+            action={vue === "traitements" ? <AddButton onClick={() => setOpenTrait(true)} label="Traitement" />
+              : (vue !== "bebe" ? <AddButton onClick={() => setOpen(true)} label="Ajouter une action" /> : null)}
           />
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["soins", "🩺 Soin du jour"], ["bebe", "🐥 Bébé"], ["identif", "🏷️ Identification"], ["rappels", "🔔 Rappel" + ((retard.length + duJour.length) ? " · " + (retard.length + duJour.length) : "")], ["journal", "📜 Journal"]].map(([id, lbl]) => (
+            {[["soins", "🩺 Soin du jour"], ["bebe", "🐥 Bébé"], ["traitements", "💊 Traitements" + (traitements.length ? " · " + traitements.length : "")], ["identif", "🏷️ Identification"], ["rappels", "🔔 Rappel" + ((retard.length + duJour.length) ? " · " + (retard.length + duJour.length) : "")], ["journal", "📜 Journal"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVue(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vue === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
@@ -6498,6 +7328,99 @@
           </>}
 
           {vue === "bebe" && <Poussins key={bebeLot} embedded initialLotIndex={bebeLot} initialSub={bebeLot != null ? "sem" : undefined} />}
+
+          {vue === "traitements" && <>
+          <h2 className="text-lg font-semibold mb-1">💊 Traitements donnés</h2>
+          <p className="text-xs text-slate-500 mb-4">Une ligne = une préparation : un volume d'eau, un ou plusieurs produits dedans, pour une zone d'adultes ou un lot de jeunes. Tous les produits de <span className="font-medium">Réglages → Produits / traitements</span> sont disponibles (et tu peux en écrire un nouveau à la volée).</p>
+
+          {traitements.length === 0
+            ? <p className="text-sm text-slate-400 mb-6">Rien de noté. Clique « + Traitement » en haut à droite.</p>
+            : <Table
+                resume={(r, k) => { const t = traitementsTries[k].t; return <>{frDate(t.date)} — {cibleTraitement(t, poussins, config)}<span className="text-slate-400"> · {(t.produits || []).map((p) => p.nom).join(", ")}</span></>; }}
+                columns={["Date", "Pour qui", "Recette", "Eau", "Animaux", "Durée", "Motif", "Obs", ""]}
+                rows={traitementsTries.map(({ t, i }) => [
+                  <span className="whitespace-nowrap">{frDate(t.date)}</span>,
+                  <span className="whitespace-nowrap">{cibleTraitement(t, poussins, config)}</span>,
+                  <span className="flex flex-wrap gap-1">
+                    {(t.produits || []).map((p, k) => (
+                      <span key={k} className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 whitespace-nowrap"
+                        title={ficheProduit(config, p.nom) ? "Fiche technique disponible" : "Pas de fiche technique"}>
+                        🧪 {p.nom}{p.dose !== "" && p.dose != null ? " " + p.dose + " " + (p.unite || "ml") : ""}
+                      </span>
+                    ))}
+                  </span>,
+                  t.volumeEau !== "" && t.volumeEau != null ? t.volumeEau + " L" : "—",
+                  t.animaux !== "" && t.animaux != null ? t.animaux : "—",
+                  (Number(t.duree) || 1) + " j",
+                  t.motif || "—",
+                  <ObsCell texte={t.obs} titre={"Observation — " + frDate(t.date)} onSave={(v) => patchLigne("traitements", i, { obs: v })} />,
+                  <RowActions onEdit={() => setEditTrait({ index: i, rec: t })} onDelete={() => supprimerLigne("traitements", i)} />,
+                ])}
+              />}
+
+          {/* ---- Analyse locale ---- */}
+          <h2 className="text-lg font-semibold mt-8 mb-1">📊 Analyse des traitements</h2>
+          <p className="text-xs text-slate-500 mb-3">Calculée sur tes saisies : qui est à jour, les doses sont-elles cohérentes avec les fiches techniques, et peux-tu consommer œufs et viande aujourd'hui.</p>
+
+          <div className="space-y-2 mb-4">
+            {anaTrait.conclusions.map((c, k) => {
+              const st = {
+                top:      ["bg-emerald-50 border-emerald-200 text-emerald-800", "✅"],
+                alerte:   ["bg-red-50 border-red-200 text-red-700", "⚠️"],
+                prudence: ["bg-amber-50 border-amber-200 text-amber-800", "🤔"],
+                manque:   ["bg-slate-50 border-slate-200 text-slate-600", "➕"],
+                info:     ["bg-slate-50 border-slate-200 text-slate-600", "ℹ️"],
+              }[c.t] || ["bg-slate-50 border-slate-200 text-slate-600", "ℹ️"];
+              return <p key={k} className={"text-sm rounded-xl border px-3 py-2 " + st[0]}>{st[1]} {c.txt}</p>;
+            })}
+          </div>
+
+          {/* Couverture : une carte par pensionnaire */}
+          {anaTrait.couverture.length > 0 && <>
+            <h3 className="text-sm font-semibold text-slate-500 mb-2">Où en est chaque pensionnaire</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              {anaTrait.couverture.map((c) => (
+                <div key={c.cle} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+                  <p className="text-sm font-medium text-slate-700 mb-2 truncate">{c.libelle}</p>
+                  <ul className="space-y-1">
+                    {c.lignes.map((l, k) => {
+                      const st = {
+                        retard:  ["text-red-600", "⚠️ en retard de " + (-l.reste) + " j"],
+                        bientot: ["text-amber-600", "⏰ à refaire dans " + l.reste + " j"],
+                        jamais:  ["text-slate-500", "jamais donné"],
+                        aucun:   ["text-slate-400", "1 fois, pas de fréquence réglée"],
+                        ok:      ["text-emerald-600", l.freq ? "à jour · prochain " + frDate(l.prochain) : "à jour"],
+                      }[l.code] || ["text-slate-500", ""];
+                      return (
+                        <li key={k} className="text-xs flex items-start justify-between gap-2">
+                          <span className="text-slate-700 min-w-0 truncate">{l.nom}{l.nb ? <span className="text-slate-400"> ×{l.nb}</span> : null}</span>
+                          <span className={st[0] + " shrink-0 text-right"}>{st[1]}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </>}
+
+          {/* Consommation par produit */}
+          {anaTrait.produits.length > 0 && <>
+            <h3 className="text-sm font-semibold text-slate-500 mb-2">Par produit</h3>
+            <Table
+              columns={["Produit", "Administrations", "Quantité totale", "Pensionnaires", "Dernier", "Fiche technique"]}
+              rows={anaTrait.produits.map((p) => [
+                <span className="font-medium whitespace-nowrap">🧪 {p.nom}</span>,
+                p.nb,
+                p.total ? Number(p.total.toFixed(2)) + " " + p.unite : "—",
+                p.nbCibles,
+                frDate(p.dernier),
+                p.fiche ? <span className="text-emerald-600 whitespace-nowrap">📄 remplie</span> : <span className="text-slate-400 whitespace-nowrap">à remplir</span>,
+              ])}
+            />
+          </>}
+          <p className="text-xs text-slate-400 mt-2">Les fréquences conseillées se règlent dans <span className="font-medium">Réglages → Fréquences des traitements</span> (par zone) et <span className="font-medium">→ Soins des jeunes</span> (par lot). Une fréquence à 0 = pas de rappel.</p>
+          </>}
 
           {vue === "identif" && <Identification />}
 
@@ -6609,6 +7532,16 @@
               <PoulaillerForm initial={edit.rec} onSave={(rec) => majLigne("poulaillers", edit.index, rec)} onClose={() => setEdit(null)} />
             </Modal>
           )}
+          {openTrait && (
+            <Modal title="💊 Nouveau traitement" onClose={() => setOpenTrait(false)}>
+              <TraitementForm onClose={() => setOpenTrait(false)} />
+            </Modal>
+          )}
+          {editTrait && (
+            <Modal title="💊 Modifier le traitement" onClose={() => setEditTrait(null)}>
+              <TraitementForm initial={editTrait.rec} onSave={(rec) => majLigne("traitements", editTrait.index, rec)} onClose={() => setEditTrait(null)} />
+            </Modal>
+          )}
         </div>
       );
     }
@@ -6630,7 +7563,8 @@
     /* ---------- Poussins / cailleteaux ---------- */
     // Badge d'étape automatique selon l'âge (depuis la naissance)
     function EtapeJeune({ birthDate }) {
-      const a = ageJeune(birthDate);
+      const { config } = useData();
+      const a = ageJeune(birthDate, config);
       if (a.futur) return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">⚠️ date future</span>;
       if (!a.etape) return <span className="text-slate-300">—</span>;
       return <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${a.etape.cls}`}>{a.etape.label}</span>;
@@ -6738,7 +7672,7 @@
           <div className="grid grid-cols-2 gap-3">
             <Field label="Statut">
               <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
-                {["en croissance", "transféré reproduction", "transféré consommation", "vendu", "mort"].map((s) => <option key={s} value={s}>{s}</option>)}
+                {listeConfig(config, "statutsJeunes").map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
             <Field label="🏠 Où sont-ils logés ?">
@@ -6804,7 +7738,8 @@
 
     // Formulaire détail d'un jour de suivi (J1–J10)
     function SuiviJourForm({ lotIndex, p, jour, onClose }) {
-      const { patchLigne } = useData();
+      const { patchLigne, config } = useData();
+      const comportements = (config.comportementsJeunes && config.comportementsJeunes.length) ? config.comportementsJeunes : COMPORTEMENTS_JEUNE;
       const d = (p.jours && p.jours[jour]) || {};
       const [eau, setEau] = useState(!!d.eau);
       const [nourriture, setNourriture] = useState(!!d.nourriture);
@@ -6813,9 +7748,12 @@
       // Pas d'humidité pour les jeunes non plus : elle n'est relevée que dans les couveuses.
       const [morts, setMorts] = useState(d.morts != null ? String(d.morts) : "0");
       const [comportement, setComportement] = useState(d.comportement || "");
-      const [alimentation, setAlimentation] = useState(d.alimentation || "");
-      const [obs, setObs] = useState(d.obs || "");
-      const [probleme, setProbleme] = useState(d.probleme || "");
+      // « Changement d'alimentation » et « Problème éventuel » ont été supprimés : tout se note
+      // dans l'observation. Ce qui avait été saisi dans ces champs y est repris à l'ouverture.
+      const [obs, setObs] = useState(
+        [d.obs, d.alimentation ? "Alimentation : " + d.alimentation : "", d.probleme ? "Problème : " + d.probleme : ""]
+          .filter(Boolean).join(" · ")
+      );
       const sem = Math.floor((jour - 1) / 7) + 1;
       // « Vivants » n'est plus saisi : effectif de la veille − morts du jour, recalculé en direct.
       const vivantsVeille = vivantsAuJour(p, jour - 1);
@@ -6827,9 +7765,10 @@
           temp: temp === "" ? "" : Number(temp),
           vivants: vivantsCalcJour, morts: Number(morts) || 0,
           tousVivants: (Number(morts) || 0) === 0 ? !!d.tousVivants : false,
-          comportement: comportement.trim(), alimentation: alimentation.trim(), obs: obs.trim(), probleme: probleme.trim(),
+          comportement, obs: obs.trim(),
         };
-        delete maj.humidite;   // ancien champ : plus relevé chez les jeunes
+        delete maj.humidite;                            // ancien champ : plus relevé chez les jeunes
+        delete maj.alimentation; delete maj.probleme;   // repris dans l'observation à l'ouverture
         patchLigne("poussins", lotIndex, { jours: { ...(p.jours || {}), [jour]: maj } });
         onClose();
       }
@@ -6858,10 +7797,17 @@
             </Field>
           </div>
           <p className="text-xs text-slate-400 -mt-1">Vivants = effectif de la veille ({vivantsVeille}) − morts du jour. Pas de mort ? Utilise la case « ✅ Tous vivants » directement dans le tableau.</p>
-          <Field label="Comportement"><input className={inputClass} value={comportement} onChange={(e) => setComportement(e.target.value)} placeholder="ex. actifs, regroupés…" /></Field>
-          <Field label="Changement d'alimentation (si besoin)"><input className={inputClass} value={alimentation} onChange={(e) => setAlimentation(e.target.value)} placeholder="ex. démarrage → croissance" /></Field>
-          <Field label="Observation"><textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} /></Field>
-          <Field label="Problème éventuel"><textarea className={inputClass} rows="2" value={probleme} onChange={(e) => setProbleme(e.target.value)} placeholder="ex. boiterie, picage…" /></Field>
+          <Field label="Comportement">
+            <select className={inputClass} value={comportement} onChange={(e) => setComportement(e.target.value)}>
+              <option value="">— non noté —</option>
+              {/* Une ancienne saisie libre reste proposée pour ne pas la perdre */}
+              {comportement && !comportements.includes(comportement) && <option value={comportement}>{comportement}</option>}
+              {comportements.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Observation">
+            <textarea className={inputClass} rows="3" value={obs} onChange={(e) => setObs(e.target.value)} placeholder="tout ce que tu veux noter sur la journée" />
+          </Field>
           <FormButtons onClose={onClose} />
         </form>
       );
@@ -7163,7 +8109,7 @@
 
     /* ---------- Historique / archives ---------- */
     function Historique() {
-      const { lots, materiel, suivis, mirages, eclosions, collectes, poulaillers, consommables, lotsStock, supprimerLigne, reproducteurs, poussins, abattoir, breederPurchases, config } = useData();
+      const { lots, materiel, suivis, mirages, eclosions, collectes, poulaillers, consommables, lotsStock, supprimerLigne, reproducteurs, poussins, abattoir, breederPurchases, traitements, config } = useData();
       // Lots terminés + résultats de couvée (fécondés / nés / taux) + date d'éclosion réelle
       const lotsTermines = lots.map((l, i) => ({ l, i }))
         .filter(x => x.l.statut === "terminé")
@@ -7263,7 +8209,7 @@
 
           {vue === "registre" && (() => {
             // Registre d'élevage : reconstruit automatiquement depuis les données déjà saisies
-            const toutes = lignesRegistre({ poussins, reproducteurs, abattoir, poulaillers, breederPurchases });
+            const toutes = lignesRegistre({ poussins, reproducteurs, abattoir, poulaillers, breederPurchases, traitements, config });
             const annees = Array.from(new Set(toutes.map((l) => l.date.slice(0, 4)))).sort().reverse();
             const anSel = String(anRegistre || (annees[0] || ""));
             const lignesR = anRegistre === "tout" ? toutes : toutes.filter((l) => l.date.slice(0, 4) === anSel);
@@ -7328,8 +8274,50 @@
       );
     }
 
+    // Variante d'EditeurListe où certaines valeurs sont VERROUILLÉES : elles sont comparées
+    // ailleurs dans le code (filtres, calculs), donc supprimables nulle part. On peut toujours
+    // ajouter ses propres valeurs à côté — c'est l'essentiel de ce que veut l'utilisateur.
+    function EditeurListeVerrou({ titre, items, verrous, onChange, aide }) {
+      const [nouveau, setNouveau] = useState("");
+      const estVerrou = (it) => (verrous || []).map(normLibelle).includes(normLibelle(it));
+      const ajouter = () => { const v = nouveau.trim(); if (v && !items.map(normLibelle).includes(normLibelle(v))) onChange(items.concat([v])); setNouveau(""); };
+      return (
+        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
+          <p className="text-sm font-semibold text-slate-700 mb-2">{titre}</p>
+          <div className="flex flex-wrap gap-2 mb-2">
+            {items.map((it, i) => (
+              <span key={i} className={"inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs " + (estVerrou(it) ? "bg-slate-200 text-slate-500" : "bg-slate-100 text-slate-700")}>
+                {estVerrou(it) ? "🔒 " : ""}{it}
+                {!estVerrou(it) && <button onClick={() => onChange(items.filter((_, k) => k !== i))} className="text-slate-400 hover:text-red-500 text-sm leading-none">×</button>}
+              </span>
+            ))}
+            {items.length === 0 && <span className="text-xs text-slate-400">Vide</span>}
+          </div>
+          <div className="flex gap-2">
+            <input className={inputClass + " text-sm"} value={nouveau} onChange={(e) => setNouveau(e.target.value)} placeholder="Ajouter…"
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); ajouter(); } }} />
+            <button type="button" onClick={ajouter} className="px-3 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white">+</button>
+          </div>
+          {aide && <p className="text-xs text-slate-400 mt-2">🔒 {aide}</p>}
+        </div>
+      );
+    }
+
     function Reglages() {
       const { config, setConfig, resetConfig } = useData();
+      // Parc de couveuses : modification d'une case, ajout, retrait
+      const setCouv = (i, champ, val) => setConfig((c) => ({
+        ...c,
+        couveuses: (c.couveuses || []).map((x, k) => (k === i ? { ...x, [champ]: (champ === "nom" || champ === "emoji") ? val : (val === "" ? "" : (Number(val) || 0)) } : x)),
+      }));
+      const ajouterCouv = () => setConfig((c) => {
+        const l = (c.couveuses || []).slice();
+        // id = max + 1, jamais réutilisé : les couvées passées gardent leur référence
+        const id = l.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1;
+        l.push({ id, nom: "Couveuse " + id, emoji: EMOJIS_COUVEUSE[(id - 1) % EMOJIS_COUVEUSE.length], capacitePoule: 120, capaciteCaille: 240 });
+        return { ...c, couveuses: l };
+      });
+      const supprCouv = (i) => setConfig((c) => ({ ...c, couveuses: (c.couveuses || []).filter((_, k) => k !== i) }));
       const [cat, setCat] = useState("general");   // onglet interne de la base de données
       const setListe = (champ) => (arr) => setConfig((c) => ({ ...c, [champ]: arr }));
       // Titre d'onglet personnalisé (vide = titre par défaut)
@@ -7455,6 +8443,50 @@
             <EditeurListe titre="Espèces" items={config.especes} onChange={setListe("especes")} />
             <EditeurListe titre="Fournisseurs (liste auto)" items={config.fournisseurs || []} onChange={setListe("fournisseurs")} />
             <EditeurListe titre="Types d'achat reproducteurs" items={config.typesAchatRepro || []} onChange={setListe("typesAchatRepro")} />
+            <EditeurListe titre="Comportements des jeunes (suivi quotidien)" items={config.comportementsJeunes || []} onChange={setListe("comportementsJeunes")} />
+            <EditeurListe titre="Motifs de traitement" items={config.motifsTraitement || []} onChange={setListe("motifsTraitement")} />
+            <EditeurListe titre="Unités de dose (traitements)" items={config.unitesDose || []} onChange={setListe("unitesDose")} />
+            <EditeurListe titre="Types d'événement — carnet de santé" items={config.typesSante || []} onChange={setListe("typesSante")} />
+            <EditeurListe titre="Tailles de bagues (mm)" items={config.taillesBagues || []} onChange={setListe("taillesBagues")} />
+            <EditeurListeVerrou titre="États du matériel" items={config.etatsMateriel || []} verrous={ETATS_MATERIEL_VERROU} onChange={setListe("etatsMateriel")}
+              aide="« hors service » et « remplacé » servent aux calculs (unités en marche, sortie du parc) : ils ne peuvent pas être retirés." />
+            <EditeurListeVerrou titre="Statuts des lots de jeunes" items={config.statutsJeunes || []} verrous={["en croissance"]} onChange={setListe("statutsJeunes")}
+              aide="« en croissance » sert de filtre partout (soin du jour, traitements, identification) : il ne peut pas être retiré." />
+            <EditeurListeVerrou titre="Statuts — animaux consommation" items={config.statutsAbattoir || []} verrous={["abattu", "décédé"]} onChange={setListe("statutsAbattoir")}
+              aide="« abattu » et « décédé » sont utilisés par les calculs de retard d'abattage." />
+            <EditeurListeVerrou titre="Statuts reproducteurs" items={config.statutsRepro || []} verrous={["actif", "décédé"]} onChange={setListe("statutsRepro")}
+              aide="« actif » compte les effectifs du cheptel et « décédé » alimente le registre : ils ne peuvent pas être retirés." />
+          </div>
+
+          {/* Parc de couveuses */}
+          <h2 className="text-lg font-semibold mb-3">Couveuses</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 overflow-x-auto">
+            <p className="text-xs text-slate-400 mb-3">Ajoute une couveuse et elle apparaît partout : choix à la mise en couvaison, pastilles de couleur, cartes de suivi. L'<span className="font-medium">emoji</span> est le repère visuel (il donne la couleur de la pastille). Les <span className="font-medium">capacités</span> servent d'indication au remplissage.</p>
+            <table className="w-full text-sm">
+              <thead className="text-slate-500 text-left"><tr>
+                <th className="px-2 py-1 font-medium">Nom</th><th className="px-2 py-1 font-medium">Repère</th>
+                <th className="px-2 py-1 font-medium">Capacité poule</th><th className="px-2 py-1 font-medium">Capacité caille</th><th className="px-2 py-1"></th>
+              </tr></thead>
+              <tbody>
+                {(config.couveuses || []).map((c, i) => (
+                  <tr key={c.id} className="border-t border-slate-100">
+                    <td className="px-2 py-1"><input className={numCls + " w-40"} value={c.nom || ""} onChange={(e) => setCouv(i, "nom", e.target.value)} /></td>
+                    <td className="px-2 py-1">
+                      <select className={numCls} value={c.emoji || "🟡"} onChange={(e) => setCouv(i, "emoji", e.target.value)}>
+                        {EMOJIS_COUVEUSE.map((em) => <option key={em} value={em}>{em}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1"><input type="number" min="0" className={numCls} value={c.capacitePoule != null ? c.capacitePoule : ""} onChange={(e) => setCouv(i, "capacitePoule", e.target.value)} /></td>
+                    <td className="px-2 py-1"><input type="number" min="0" className={numCls} value={c.capaciteCaille != null ? c.capaciteCaille : ""} onChange={(e) => setCouv(i, "capaciteCaille", e.target.value)} /></td>
+                    <td className="px-2 py-1 text-right">
+                      <button onClick={() => supprCouv(i)} className="px-1.5 py-0.5 rounded hover:bg-red-50 text-red-500" title="Retirer cette couveuse">🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button onClick={ajouterCouv} className="mt-2 text-sm text-emerald-600 hover:underline">+ Ajouter une couveuse</button>
+            <p className="text-xs text-slate-400 mt-2">Retirer une couveuse ne touche pas aux couvées déjà enregistrées dessus (elles gardent leur numéro et s'affichent en gris).</p>
           </div>
           </>}
 
@@ -7545,7 +8577,7 @@
           {/* Bagues : couleurs en stock par taille (listes de l'onglet Identification) */}
           <h2 className="text-lg font-semibold mb-3">🏷️ Bagues — couleurs en stock par taille</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-2 space-y-3">
-            {["8", "12", "16", "20"].map((t) => {
+            {listeConfig(config, "taillesBagues").map((t) => {
               const pal = palettesBagues(config);
               return (
                 <div key={t} className="flex items-center gap-3 flex-wrap">
@@ -7681,9 +8713,11 @@
           {/* Fréquences des traitements par zone (rappels) */}
           <h2 className="text-lg font-semibold mb-3">Fréquence des traitements (jours par zone)</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 overflow-x-auto">
+            {/* Une colonne par produit de la liste ci-dessus : ajoute un produit et il apparaît ici */}
             <table className="w-full text-sm">
               <thead className="text-slate-500 text-left"><tr>
-                <th className="px-2 py-1 font-medium">Zone</th><th className="px-2 py-1 font-medium">Fortiferm</th><th className="px-2 py-1 font-medium">Cocciferm</th><th className="px-2 py-1 font-medium">Vermiferm</th>
+                <th className="px-2 py-1 font-medium">Zone</th>
+                {(config.produits || []).map((p) => <th key={p} className="px-2 py-1 font-medium whitespace-nowrap">{p}</th>)}
               </tr></thead>
               <tbody>
                 {config.zones.map((z) => {
@@ -7691,15 +8725,16 @@
                   return (
                     <tr key={z} className="border-t border-slate-100">
                       <td className="px-2 py-1 text-slate-700">{z}</td>
-                      {["fortiferm", "cocciferm", "vermiferm"].map((k) => (
-                        <td key={k} className="px-2 py-1"><input type="number" min="0" className={numCls} value={ft[k] != null ? ft[k] : ""} onChange={(e) => setFreqTrait(z, k, e.target.value)} /></td>
-                      ))}
+                      {(config.produits || []).map((p) => {
+                        const k = normLibelle(p);
+                        return <td key={k} className="px-2 py-1"><input type="number" min="0" className={numCls} value={ft[k] != null ? ft[k] : ""} onChange={(e) => setFreqTrait(z, k, e.target.value)} /></td>;
+                      })}
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-            <p className="text-xs text-slate-400 mt-2">Jours entre deux traitements (0 = pas de rappel). Par défaut 30 j (1 mois) pour poules et cailles reproductrices. Eau et nourriture ne génèrent pas de rappel.</p>
+            <p className="text-xs text-slate-400 mt-2">Jours entre deux traitements (vide ou 0 = pas de rappel). Par défaut 30 j (1 mois) pour poules et cailles reproductrices. Les colonnes suivent la liste <span className="font-medium">Produits / traitements / vitamines</span> ci-dessus : ajoute un produit là-haut et il apparaît ici. Eau et nourriture ne génèrent pas de rappel.</p>
           </div>
 
           {/* Abreuvoirs / volumes (dosage automatique) */}
@@ -7832,19 +8867,19 @@
     }
     // À la première ouverture de la journée : notifie retards + soins + événements du jour (1 seule notification).
     function NotificationsDaemon() {
-      const { lots, poulaillers, poussins, reproducteurs, abattoir, config } = useData();
+      const { lots, poulaillers, poussins, reproducteurs, abattoir, config, traitements } = useData();
       useEffect(() => {
         if (!config.notifications) return;
         if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
         if (localStorage.getItem("cheptel_notif_jour") === AUJOURDHUI_ISO) return;   // déjà notifié aujourd'hui
         const lignes = [];
         nettoyagesAPrevoir(poulaillers, config).forEach((n) => { if (n.code === "retard") lignes.push("🔴 Nettoyer " + n.zone + " (retard)"); });
-        rappelsIntelligents(poulaillers, config).forEach((r) => {
+        rappelsIntelligents(poulaillers, config, traitements).forEach((r) => {
           if (r.action === "nettoyage") return;   // géré par la ligne ci-dessus
           if (r.code === "retard") lignes.push("🔴 " + r.label + " — " + r.zone);
           else if (r.code === "aujourdhui") lignes.push("🟠 " + r.label + " — " + r.zone);
         });
-        (evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config)[AUJOURDHUI_ISO] || [])
+        (evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config)[AUJOURDHUI_ISO] || [])
           .forEach((e) => lignes.push(e.icon + " " + e.label));
         if (!lignes.length) return;
         if (envoyerNotification("🐔 Cheptel — aujourd'hui", lignes.slice(0, 8).join("\n") + (lignes.length > 8 ? "\n…" : "")))
@@ -7855,7 +8890,7 @@
 
     // Construit tous les événements datés de l'élevage → { "YYYY-MM-DD": [ {icon,label,color,page} ] }.
     // Partagé entre la page Calendrier et l'aperçu « Cette semaine » du tableau de bord.
-    function evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config) {
+    function evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config) {
       const events = {};
       const add = (date, ev) => { if (!date) return; (events[date] = events[date] || []).push(ev); };
       // Couvaisons : couleur par ESPÈCE (poule = ambre, caille = indigo) → repère la couveuse d'un coup d'œil.
@@ -7873,7 +8908,7 @@
           add(dateDecalee(l.dateDebut, Math.max(0, duree - cons + delta)), { icon: "🥚", label: "Début récolte prochaine couvée — couveuse " + l.couveuse + " (" + l.espece + ")", color: cE, page: "lots" });
         }
       });
-      rappelsIntelligents(poulaillers, config).forEach((r) => { if (r.prochain) add(r.prochain, { icon: "🔔", label: r.label + " — " + r.zone, color: "red", page: "poulaillers" }); });
+      rappelsIntelligents(poulaillers, config, traitements).forEach((r) => { if (r.prochain) add(r.prochain, { icon: "🔔", label: r.label + " — " + r.zone, color: "red", page: "poulaillers" }); });
       poulaillers.forEach((p) => { if (p.rappel && !ligneFaitAction(p, "nettoyage")) add(p.rappel, { icon: "⏰", label: "Rappel — " + p.zone, color: "red", page: "poulaillers" }); });
       // Transferts prévus des bébés à la fin du suivi (≈ 8 semaines depuis la naissance)
       const nS = (config.jeunes && config.jeunes.suiviSemaines) || 8;
@@ -7903,14 +8938,14 @@
     // Chaque événement a une `page` cible → cliquable pour s'y rendre.
     function Calendrier() {
       const allerA = useContext(NavContext);
-      const { lots, poulaillers, poussins, reproducteurs, abattoir, config } = useData();
+      const { lots, poulaillers, poussins, reproducteurs, abattoir, config, traitements } = useData();
       const now = new Date();
       const [vue, setVue] = useState({ y: now.getFullYear(), m: now.getMonth() });
       const [jourSel, setJourSel] = useState(AUJOURDHUI_ISO);
       const pad = (n) => String(n).padStart(2, "0");
       const isoDate = (y, m, d) => y + "-" + pad(m + 1) + "-" + pad(d);
 
-      const events = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir }, config);
+      const events = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config);
 
       const dot = { indigo: "bg-indigo-500", emerald: "bg-emerald-500", amber: "bg-amber-500", orange: "bg-orange-500", red: "bg-red-500", purple: "bg-purple-500", slate: "bg-slate-500" };
       const chip = { indigo: "bg-indigo-100 text-indigo-700", emerald: "bg-emerald-100 text-emerald-700", amber: "bg-amber-100 text-amber-700", orange: "bg-orange-100 text-orange-700", red: "bg-red-100 text-red-700", purple: "bg-purple-100 text-purple-700", slate: "bg-slate-200 text-slate-700" };
