@@ -728,7 +728,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v114 — 30/07/2026";
+    const APP_VERSION = "v116 — 30/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -744,12 +744,11 @@
       const map = {};   // article -> agrégat
       consommables.forEach((c) => {
         const q = Number(c.quantite) || 0;
-        const a = map[c.article] || (map[c.article] = { article: c.article, categorie: c.categorie, unite: c.unite, conditionnement: "", entrees: 0, sorties: 0, seuil: 0, prixRef: 0 });
+        const a = map[c.article] || (map[c.article] = { article: c.article, categorie: c.categorie, unite: c.unite, entrees: 0, sorties: 0, seuil: 0, prixRef: 0 });
         if (c.mouvement === "sortie") a.sorties += q;
         else { a.entrees += q; if (Number(c.prixUnitaire) > 0) a.prixRef = Number(c.prixUnitaire); }
         if (Number(c.seuil) > 0) a.seuil = Number(c.seuil);
         if (c.unite) a.unite = c.unite;
-        if (c.conditionnement) a.conditionnement = c.conditionnement;   // ex. « 20 kg » le sac
       });
       const parArticle = Object.keys(map).map((k) => {
         const a = map[k];
@@ -2059,10 +2058,14 @@
       });
       // Traitements de la table dédiée : une ligne de registre par produit administré
       (traitements || []).forEach((t) => {
-        const qui = t.cible === "lot"
-          ? "Lot " + ((lotJeuneDeRef(poussins, t.lot) || {}).id || "sans numéro")
-          : (t.zone || "");
-        const esp = t.cible === "lot" ? ((lotJeuneDeRef(poussins, t.lot) || {}).espece === "caille" ? "caille" : "poule") : "—";
+        const cbs = ciblesDe(t);
+        const qui = cbs.map((c) => (c.type === "lot"
+          ? "Lot " + ((lotJeuneDeRef(poussins, c.ref) || {}).id || "sans numéro")
+          : c.ref)).join(" + ") || "—";
+        // Espèce : celle des lots visés si tous concordent, sinon « — » (traitement mixte)
+        const esps = Array.from(new Set(cbs.filter((c) => c.type === "lot")
+          .map((c) => ((lotJeuneDeRef(poussins, c.ref) || {}).espece === "caille" ? "caille" : "poule"))));
+        const esp = esps.length === 1 ? esps[0] : "—";
         (t.produits || []).forEach((pr) => {
           const dose = (pr.dose !== "" && pr.dose != null) ? " · " + pr.dose + " " + (pr.unite || "ml") : "";
           const duree = (Number(t.duree) || 1) > 1 ? " · " + t.duree + " j" : "";
@@ -5270,7 +5273,8 @@
       const [categorie, setCategorie] = useState(initial ? initial.categorie : CONSO_CATS_C[0]);
       const [mouvement, setMouvement] = useState(initial ? initial.mouvement : (mouvementInit || "entrée"));
       const [quantite, setQuantite] = useState(initial ? String(initial.quantite) : "");
-      // Unité par défaut = « pièce » (on compte souvent 1 sac, peu importe son poids ; le poids va dans « conditionnement »)
+      // Unité par défaut = « pièce » : on compte des SACS, pas des kilos. Le poids du sac est
+      // déjà dans le nom de l'article (« Granulé poule 20 Kg ») et n'a pas à être ressaisi.
       const [unite, setUnite] = useState(initial ? initial.unite : "pièce");
       const [conditionnement, setConditionnement] = useState(initial ? (initial.conditionnement || "") : "");
       const [prixUnitaire, setPrixUnitaire] = useState(initial ? String(initial.prixUnitaire) : "");
@@ -5350,8 +5354,8 @@
                 {CONSO_CATS_C.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </Field>
-            <Field label="Conditionnement (informatif)">
-              <input className={inputClass} value={conditionnement} onChange={(e) => setConditionnement(e.target.value)} placeholder="ex. 20 kg, 4 kg, 900 g, 1 L" />
+            <Field label="Conditionnement (facultatif)">
+              <input className={inputClass} value={conditionnement} onChange={(e) => setConditionnement(e.target.value)} placeholder="laisse vide — on compte des sacs" />
             </Field>
           </div>
           <div className="grid grid-cols-3 gap-3">
@@ -5743,18 +5747,15 @@
                 <span className="font-medium">{a.article}</span>,
                 a.categorie,
                 /* Le seuil n'a plus sa colonne (trop de place) : il reste lisible en info-bulle du stock. */
-                <span className="inline-flex flex-col gap-0.5">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}
-                      title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>{a.stock}</span>
-                    <select className="border border-slate-200 rounded-md px-1 py-0.5 text-xs bg-white text-slate-600"
-                      title="Changer l'unité de cet article (appliquée à tous ses mouvements)"
-                      value={a.unite || ""} onChange={(e) => setUniteArticle(a.article, e.target.value)}>
-                      {(a.unite && !listeConfig(config, "unites").map(normLibelle).includes(normLibelle(a.unite))) && <option value={a.unite}>{a.unite}</option>}
-                      {listeConfig(config, "unites").map((u) => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                  </span>
-                  {a.conditionnement ? <span className="text-xs font-normal text-slate-400">{a.conditionnement} / {a.unite}</span> : null}
+                <span className="inline-flex items-center gap-1.5">
+                  <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}
+                    title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>{a.stock}</span>
+                  <select className="border border-slate-200 rounded-md px-1 py-0.5 text-xs bg-white text-slate-600"
+                    title="Changer l'unité de cet article (appliquée à tous ses mouvements)"
+                    value={a.unite || ""} onChange={(e) => setUniteArticle(a.article, e.target.value)}>
+                    {(a.unite && !listeConfig(config, "unites").map(normLibelle).includes(normLibelle(a.unite))) && <option value={a.unite}>{a.unite}</option>}
+                    {listeConfig(config, "unites").map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
                 </span>,
                 (() => {
                   const sc = infoSac(a.article);
@@ -6796,18 +6797,40 @@
        d'adultes, soit un LOT de jeunes — jamais un animal isolé (on traite l'abreuvoir).
     */
     // Qui a reçu le traitement, en clair
-    function cibleTraitement(t, poussins, config) {
-      if (t.cible === "lot") {
-        const p = lotJeuneDeRef(poussins, t.lot);
+    // Un traitement peut viser PLUSIEURS groupes à la fois : les poussins logés chez les poules
+    // boivent au même abreuvoir, donc une seule préparation les couvre tous. `cibles` est un
+    // tableau [{ type: "zone"|"lot", ref }]. Les lignes d'avant n'avaient qu'une cible unique
+    // (`cible`/`zone`/`lot`) → relues ici, rien à migrer.
+    function ciblesDe(t) {
+      if (Array.isArray(t.cibles) && t.cibles.length) return t.cibles;
+      if (t.cible === "lot") return t.lot ? [{ type: "lot", ref: t.lot }] : [];
+      return t.zone ? [{ type: "zone", ref: t.zone }] : [];
+    }
+    // Libellé d'UNE cible
+    function libelleCible(c, poussins, config) {
+      if (c.type === "lot") {
+        const p = lotJeuneDeRef(poussins, c.ref);
         return p ? "🐥 " + libelleLotJeune(p) : "🐥 lot supprimé";
       }
-      return emojiZone(t.zone, config) + " " + (t.zone || "—");
+      return emojiZone(c.ref, config) + " " + (c.ref || "—");
+    }
+    // Libellé de toutes les cibles d'un traitement
+    function cibleTraitement(t, poussins, config) {
+      const l = ciblesDe(t).map((c) => libelleCible(c, poussins, config));
+      return l.length ? l.join(" + ") : "—";
     }
     // Clé de regroupement d'une cible (pour les rappels et l'analyse)
-    function cleCible(t) { return t.cible === "lot" ? "lot:" + (t.lot || "") : "zone:" + normLibelle(t.zone); }
-    // Volume d'eau conseillé pour une cible (abreuvoir de traitement de la zone, ou abreuvoir du lot)
-    function volumeCible(config, cible, zone, lotP) {
-      return cible === "lot" ? volumeAbreuvoirJeune(config, lotP || {}) : volumeTraitementZone(config, zone);
+    function cleCible(c) { return c.type === "lot" ? "lot:" + (c.ref || "") : "zone:" + normLibelle(c.ref); }
+    // Volume d'eau conseillé : le premier abreuvoir trouvé parmi les cibles — elles partagent
+    // le même point d'eau, c'est justement la raison pour laquelle on les traite ensemble.
+    function volumeCibles(config, cibles, poussins) {
+      for (const c of cibles || []) {
+        const v = c.type === "lot"
+          ? volumeAbreuvoirJeune(config, lotJeuneDeRef(poussins, c.ref) || {})
+          : volumeTraitementZone(config, c.ref);
+        if (v != null) return v;
+      }
+      return null;
     }
     // Dernier jour couvert par un traitement (date + durée − 1) : sert aux délais d'attente.
     function finTraitement(t) {
@@ -6840,14 +6863,16 @@
         cibles.push({ cle: "lot:" + refLotJeune(p), libelle: "🐥 " + libelleLotJeune(p), type: "lot", zone: "", p }));
 
       // 2) Une ligne par produit réellement administré
+      // Une administration peut couvrir PLUSIEURS pensionnaires (même abreuvoir) : on la compte
+      // pour chacun d'eux dans la couverture, sans la dupliquer dans les autres statistiques.
       const admins = [];
       (traitements || []).forEach((t) => (t.produits || []).forEach((pr) => {
-        if (pr.nom) admins.push({ t, nom: pr.nom, dose: pr.dose, unite: pr.unite || "ml", cle: cleCible(t) });
+        if (pr.nom) admins.push({ t, nom: pr.nom, dose: pr.dose, unite: pr.unite || "ml", cles: ciblesDe(t).map(cleCible) });
       }));
 
       // 3) Couverture : par cible × produit, dernière fois + prochaine échéance
       const couverture = cibles.map((c) => {
-        const siens = admins.filter((a) => a.cle === c.cle);
+        const siens = admins.filter((a) => a.cles.includes(c.cle));
         const noms = new Set(siens.map((a) => normLibelle(a.nom)));
         // On surveille aussi les produits qui ont une fréquence réglée mais n'ont JAMAIS été donnés
         produitsTraitement(config, traitements).forEach((n) => { if (freqTraitement(config, c.type, c.zone, n) > 0) noms.add(normLibelle(n)); });
@@ -6921,7 +6946,7 @@
         const g = parProduit[k] || (parProduit[k] = { nom: a.nom, nb: 0, total: 0, unite: a.unite, dernier: null, cibles: new Set(), fiche: !!ficheProduit(config, a.nom) });
         g.nb++;
         if (a.unite === g.unite && a.dose !== "" && a.dose != null) g.total += Number(a.dose) || 0;
-        g.cibles.add(a.cle);
+        a.cles.forEach((k) => g.cibles.add(k));
         if (!g.dernier || a.t.date > g.dernier) g.dernier = a.t.date;
       });
       const produits = Object.keys(parProduit).map((k) => ({ ...parProduit[k], nbCibles: parProduit[k].cibles.size }))
@@ -6986,9 +7011,15 @@
       const unitesDose = (config.unitesDose && config.unitesDose.length) ? config.unitesDose : UNITES_DOSE;
 
       const [date, setDate] = useState(dep && dep.date ? dep.date : AUJOURDHUI_ISO);
-      const [cible, setCible] = useState(dep && dep.cible ? dep.cible : (zones.length ? "zone" : "lot"));
-      const [zone, setZone] = useState(dep && dep.zone ? dep.zone : (zones[0] || ""));
-      const [lot, setLot] = useState(dep && dep.lot ? dep.lot : (lotsJeunes.length ? refLotJeune(lotsJeunes[0]) : ""));
+      // Cibles multiples : on coche tout ce qui partage le même abreuvoir
+      const [cibles, setCibles] = useState(() => {
+        const c = dep ? ciblesDe(dep) : [];
+        return c.length ? c : (zones.length ? [{ type: "zone", ref: zones[0] }] : []);
+      });
+      const estCoche = (type, ref) => cibles.some((c) => c.type === type && c.ref === ref);
+      const toggleCible = (type, ref) => setCibles((l) => (l.some((c) => c.type === type && c.ref === ref)
+        ? l.filter((c) => !(c.type === type && c.ref === ref))
+        : l.concat([{ type, ref }])));
       const [animaux, setAnimaux] = useState(dep && dep.animaux != null ? String(dep.animaux) : "");
       const [voie, setVoie] = useState(dep ? (dep.voie || "eau") : "eau");
       // « support » = eau (L) ou aliment (kg) ; l'externe n'en a pas. `volumeEau` = ancien nom du champ.
@@ -7006,18 +7037,22 @@
       );
       const [voirFiche, setVoirFiche] = useState(null);   // nom du produit dont on regarde la fiche
 
-      const lotP = cible === "lot" ? lotJeuneDeRef(poussins, lot) : null;
       const vInfo = voieDe(voie);
-      // Eau : volume pré-rempli depuis l'abreuvoir de la cible. Aliment / externe : rien d'automatique.
-      const volumeAuto = voie === "eau" ? volumeCible(config, cible, zone, lotP) : null;
+      // Eau : volume pré-rempli depuis l'abreuvoir partagé. Aliment / externe : rien d'automatique.
+      const volumeAuto = voie === "eau" ? volumeCibles(config, cibles, poussins) : null;
       const supportQte = support !== "" ? Number(support) : volumeAuto;
       // Base du calcul de dose : litres, kilos, ou effectif pour un traitement externe « par animal »
       const baseDose = voie === "externe" ? (animaux === "" ? null : Number(animaux)) : supportQte;
-      // Effectif proposé : les vivants du lot (pour une zone, on ne sait pas → laissé libre)
+      // Effectif proposé : la somme des lots cochés (une zone d'adultes n'a pas d'effectif connu ici)
+      const effectifLots = cibles.reduce((s2, c) => {
+        if (c.type !== "lot") return s2;
+        const p = lotJeuneDeRef(poussins, c.ref);
+        return s2 + (p ? vivantsLot(p) : 0);
+      }, 0);
       useEffect(() => {
         if (initial) return;
-        if (cible === "lot" && lotP) setAnimaux(String(vivantsLot(lotP)));
-      }, [cible, lot]);
+        if (effectifLots > 0) setAnimaux(String(effectifLots));
+      }, [effectifLots]);
 
       const majP = (k, champ, v) => setProduits((ps) => ps.map((p, i) => (i === k ? { ...p, [champ]: v } : p)));
       // Remplit la dose conseillée du produit (sa fiche technique si elle existe, sinon la règle générale)
@@ -7032,11 +7067,10 @@
           .map((p) => ({ nom: (p.nom || "").trim(), dose: p.dose === "" ? "" : (Number(p.dose) || 0), unite: p.unite || "ml" }))
           .filter((p) => p.nom);
         if (!clean.length) return;
+        if (!cibles.length) return;
         const rec = {
           ...(initial || {}),
-          date, cible,
-          zone: cible === "zone" ? zone : "",
-          lot: cible === "lot" ? lot : "",
+          date, cibles,
           animaux: animaux === "" ? "" : (Number(animaux) || 0),
           voie,
           support: voie === "externe" ? "" : (support === "" ? (volumeAuto != null ? volumeAuto : "") : (Number(support) || 0)),
@@ -7045,7 +7079,8 @@
           duree: Number(duree) || 1,
           motif: motif.trim(), produits: clean, obs: obs.trim(),
         };
-        delete rec.volumeEau;   // remplacé par `support` + `supportUnite`
+        delete rec.volumeEau;                          // remplacé par `support` + `supportUnite`
+        delete rec.cible; delete rec.zone; delete rec.lot;   // remplacés par `cibles`
         (onSave || ajouterTraitement)(rec);
         onClose();
       }
@@ -7061,30 +7096,39 @@
             </Field>
           </div>
 
-          {/* Qui reçoit — une zone d'adultes ou un lot de jeunes */}
+          {/* Qui reçoit — on coche TOUT ce qui partage la même préparation (même abreuvoir) */}
           <div>
-            <p className="text-sm font-medium text-slate-600 mb-2">Pour qui ?</p>
-            <div className="flex gap-2 mb-2">
-              {[["zone", "🐔 Une zone d'adultes"], ["lot", "🐥 Un lot de jeunes"]].map(([id, lbl]) => (
-                <button key={id} type="button" onClick={() => setCible(id)}
-                  className={"px-3 py-1.5 rounded-lg text-sm border " + (cible === id ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50")}>{lbl}</button>
-              ))}
+            <p className="text-sm font-medium text-slate-600 mb-1">Pour qui ?</p>
+            <p className="text-xs text-slate-400 mb-2">Coche tout ce qui boit au même endroit : une seule préparation, une seule ligne.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {zones.map((z) => {
+                const on = estCoche("zone", z);
+                return (
+                  <label key={"z" + z} className={"flex items-center gap-2 text-sm px-3 py-2 rounded-lg border cursor-pointer " + (on ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "border-slate-200 hover:bg-slate-50")}>
+                    <input type="checkbox" checked={on} onChange={() => toggleCible("zone", z)} className="w-4 h-4" />
+                    <span className="min-w-0 truncate">{emojiZone(z, config)} {z}</span>
+                  </label>
+                );
+              })}
+              {lotsJeunes.map((p) => {
+                const r = refLotJeune(p), on = estCoche("lot", r);
+                return (
+                  <label key={"l" + r} className={"flex items-center justify-between gap-2 text-sm px-3 py-2 rounded-lg border cursor-pointer " + (on ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "border-slate-200 hover:bg-slate-50")}>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <input type="checkbox" checked={on} onChange={() => toggleCible("lot", r)} className="w-4 h-4" />
+                      <span className="min-w-0 truncate">🐥 {libelleLotJeune(p)}</span>
+                    </span>
+                    <span className="text-xs text-slate-400 shrink-0">{vivantsLot(p)}</span>
+                  </label>
+                );
+              })}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              {cible === "zone"
-                ? <Field label="Zone">
-                    <select className={inputClass} value={zone} onChange={(e) => setZone(e.target.value)}>
-                      {zones.map((z) => <option key={z} value={z}>{z}</option>)}
-                    </select>
-                  </Field>
-                : <Field label="Lot">
-                    <select className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)}>
-                      {lotsJeunes.length === 0 && <option value="">— aucun lot en croissance —</option>}
-                      {lotsJeunes.map((p) => { const r = refLotJeune(p); return <option key={r} value={r}>{libelleLotJeune(p)}</option>; })}
-                    </select>
-                  </Field>}
+            {!cibles.length && <p className="text-xs text-amber-600 mt-2">⚠️ Coche au moins un destinataire.</p>}
+            <div className="mt-3">
               <Field label="Nombre d'animaux">
-                <input type="number" min="0" className={inputClass} value={animaux} onChange={(e) => setAnimaux(e.target.value)} placeholder="facultatif" />
+                <input type="number" min="0" className={inputClass} value={animaux} onChange={(e) => setAnimaux(e.target.value)}
+                  placeholder={effectifLots > 0 ? String(effectifLots) : "facultatif"} />
+                <p className="text-xs text-slate-400 mt-1">Pré-rempli avec les jeunes cochés ; ajoute les adultes s'il y en a.</p>
               </Field>
             </div>
           </div>
