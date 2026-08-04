@@ -297,6 +297,66 @@
     ];
     // Motifs proposés quand on note un traitement (modifiable dans Réglages)
     const MOTIFS_TRAITEMENT = ["prévention", "vermifugation", "coccidiose", "cure de vitamines", "après antibiotique", "stress (transport, chaleur)", "diarrhée", "baisse de forme"];
+
+    // ===== Fiches techniques des produits de l'élevage =====
+    // Relevées directement sur les étiquettes des bidons (photos du 30/07/2026). Elles servent de
+    // valeurs de départ : toute modification faite dans l'app les remplace définitivement.
+    const FICHES_PRODUITS = {
+      "volacrine poux": {
+        article: "Volacrine Poux", categorie: "compléments", unite: "g",
+        fiche: {
+          doseMl: "", doseParLitres: "",
+          doseAlim: 15, doseParKg: 1, uniteAlim: "g",
+          doseExt: "", uniteExt: "ml", baseExt: "par application",
+          duree: 7, delaiOeufs: 0, delaiViande: 0,
+          indications: "Aliment complémentaire minéral. Améliore le confort en cas de présence de parasites, notamment poux rouges. N'est PAS un acaricide : ne traite pas le poulailler.",
+          mode: "Mélanger 15 g (≈ 1 dosette ½) à 1 kg de graines dans un récipient fermé, avec un peu d'huile type colza pour faire adhérer la poudre. Prévention : 7 jours, à renouveler tous les 2 mois en hiver et tous les mois en été. En présence de parasites : 7 jours, à renouveler au minimum une fois à une semaine d'intervalle.",
+          precautions: "Stocker au frais, au sec, à l'abri de la lumière. Sans risque de surdosage. Compatible avec la consommation des œufs.",
+          lien: "",
+        },
+      },
+      "fortiferme": {
+        article: "Fortiferme", categorie: "compléments", unite: "ml",
+        fiche: {
+          doseMl: 2, doseParLitres: 1,
+          doseAlim: "", doseParKg: "", uniteAlim: "g",
+          doseExt: "", uniteExt: "ml", baseExt: "par application",
+          duree: 5, delaiOeufs: 0, delaiViande: 0,
+          indications: "Concentré de vitamines (A, D3, E, PP, C, B1, B2, B5, biotine). Relance l'organisme dans les périodes difficiles : retard de croissance, coup de froid, maladie.",
+          mode: "Diluer dans l'eau de boisson pendant 5 jours : 2 ml par litre (2 cuillères à café pour 5 L). À distribuer avant les périodes de forte production (croissance, ponte) ou en cas de baisse de forme.",
+          precautions: "Usage ponctuel, pas une routine mensuelle. Ne pas associer à d'autres acides organiques utilisés à teneur maximale.",
+          lien: "",
+        },
+      },
+      "vermiferme fort": {
+        article: "Vermiferme Fort", categorie: "compléments", unite: "ml",
+        fiche: {
+          doseMl: 3, doseParLitres: 5,
+          doseAlim: "", doseParKg: "", uniteAlim: "g",
+          doseExt: "", uniteExt: "ml", baseExt: "par application",
+          duree: 5, delaiOeufs: 0, delaiViande: 0,
+          indications: "Oligo-éléments + plantes (thym, ail, tanaisie, fenugrec). Renforce l'organisme contre les parasites internes (vers). Aliment complémentaire — ne remplace pas un vermifuge vétérinaire sur une infestation avérée.",
+          mode: "Diluer dans l'eau de boisson : 3 ml pour 5 litres, pendant 5 jours, à renouveler tous les mois. Première distribution dès l'âge de 10 jours et obligatoirement avant la première mise en parcours extérieur.",
+          precautions: "⚠️ Ne pas donner en même temps que le Cocciferme Fort : les deux contiennent des acides organiques (acide formique + formiate de sodium), et leur usage simultané est contre-indiqué.",
+          lien: "",
+        },
+      },
+      "cocciferme fort": {
+        article: "Cocciferme Fort", categorie: "compléments", unite: "ml",
+        fiche: {
+          doseMl: 3, doseParLitres: 5,
+          doseAlim: "", doseParKg: "", uniteAlim: "g",
+          doseExt: "", uniteExt: "ml", baseExt: "par application",
+          duree: 5, delaiOeufs: 0, delaiViande: 0,
+          indications: "Oligo-éléments + plantes (thym, échinacée, tanaisie, fenugrec, ail). Soutient l'organisme face au stress de la première sortie et aux agresseurs des zones humides (œufs et larves de parasites autour des abreuvoirs). Aliment complémentaire — n'est PAS un anticoccidien : une coccidiose déclarée relève du vétérinaire.",
+          mode: "Diluer dans l'eau de boisson : 3 ml pour 5 litres (1 bouchon), à renouveler tous les mois. Première distribution dès l'âge de 10 jours et obligatoirement avant la première mise en parcours extérieur. (Durée non précisée sur l'étiquette : 5 jours retenus par cohérence avec le Vermiferme Fort.)",
+          precautions: "⚠️ Ne pas donner en même temps que le Vermiferme Fort : les deux contiennent des acides organiques (acide formique + formiate de sodium), et leur usage simultané est contre-indiqué.",
+          lien: "",
+        },
+      },
+    };
+    // Anciens noms raccourcis → nom exact relevé sur le bidon (migration unique)
+    const RENOMMAGES_PRODUITS = { "vermiferm": "Vermiferme Fort", "cocciferm": "Cocciferme Fort", "fortiferm": "Fortiferme" };
     // Voies d'administration d'un traitement. Structurel (chacune change le formulaire et le
     // calcul de dose) → non modifiable, contrairement aux produits et aux motifs.
     // `support` = ce dans quoi le produit est dilué/mélangé ; l'externe n'en a pas.
@@ -331,11 +391,15 @@
     const INTERVALLE_NETTOYAGE = { "espace poussins": 1, "espace cailleteaux": 1, "espace cailles": 15, "poulailler poules reproductrices": 15 };
     const RAPPEL_JOURS = { "Vermiferm": 30, "vitamines": 30 };  // rappels périodiques conseillés (legacy)
     // Fréquence des traitements (jours) par zone : Fortiferm / Cocciferm / Vermiferm
+    // Clés = nom de produit normalisé. « Tous les mois » d'après les étiquettes Gamiferme.
+    // Fortiferme à 0 : c'est un coup de pouce ponctuel (baisse de forme, avant la ponte), pas une
+    // routine — un rappel mensuel ne ferait que du bruit.
+    const FREQ_MOIS = { "vermiferme fort": 30, "cocciferme fort": 30, "fortiferme": 0, "volacrine poux": 30 };
     const FREQ_TRAITEMENTS = {
-      "poulailler poules reproductrices": { fortiferm: 30, cocciferm: 30, vermiferm: 30 },
-      "espace cailles":                   { fortiferm: 30, cocciferm: 30, vermiferm: 30 },
-      "espace poussins":                  { fortiferm: 30, cocciferm: 30, vermiferm: 30 },
-      "espace cailleteaux":               { fortiferm: 30, cocciferm: 30, vermiferm: 30 },
+      "poulailler poules reproductrices": { ...FREQ_MOIS },
+      "espace cailles":                   { ...FREQ_MOIS },
+      "espace poussins":                  { ...FREQ_MOIS },
+      "espace cailleteaux":               { ...FREQ_MOIS },
     };
 
     // --- BASE DE DONNÉES / RÉGLAGES (modifiable par l'utilisateur, persistée) ---
@@ -343,7 +407,7 @@
     const configDefaut = {
       zones: ZONES.slice(),
       actions: ACTIONS_POULAILLER.slice(),
-      produits: ["Vermiferm", "Cocciferm", "Fortiferm", "Vitamines", "Restes alimentaires"],
+      produits: ["Vermiferme Fort", "Cocciferme Fort", "Fortiferme", "Volacrine Poux", "Vitamines", "Restes alimentaires"],
       unites: UNITES.slice(),
       catsConso: CONSO_CATS.slice(),
       catsMateriel: MATERIEL_CATS.slice(),
@@ -352,7 +416,9 @@
       titresOnglets: {},                                 // titres d'onglets personnalisés par l'utilisateur : { [pageId]: "Mon titre" } (vide = titre par défaut)
       ongletsMasques: [],                                // ids de pages masquées du menu (Réglages reste toujours visible)
       fournisseurs: [],                                  // liste auto des fournisseurs / éleveurs (mémorisée à la saisie)
-      memoireArticles: {},                               // mémoire inventaire : nom normalisé -> { article, categorie, unite, conditionnement, seuil, fournisseur }
+      // Mémoire inventaire : nom normalisé -> { article, categorie, unite, conditionnement, seuil, fournisseur, fiche }
+      // Pré-remplie avec les fiches techniques relevées sur les bidons de l'élevage.
+      memoireArticles: JSON.parse(JSON.stringify(FICHES_PRODUITS)),
       restesInterdits: ["espace cailles"],               // zones où les restes sont interdits
       zonesJeunes: ["espace poussins", "espace cailleteaux"],  // zones gérées dans « Poussins & cailleteaux » (exclues de Gestion poulailler)
       intervalleNettoyage: { ...INTERVALLE_NETTOYAGE },  // jours entre nettoyages par zone
@@ -370,6 +436,7 @@
       motifsTraitement: MOTIFS_TRAITEMENT.slice(),        // propositions du champ « Motif » d'un traitement
       lieuxExterne: LIEUX_EXTERNE.slice(),                // où s'applique un traitement externe
       unitesDose: UNITES_DOSE.slice(),                    // unités de dose d'un produit (ml, g, sachet…)
+      produitsRenommes: false,                                             // drapeau : produits renommés avec leur nom exact + fiches techniques posées
       croisementsMigres: false,                                            // drapeau : anciens croisements des lots repris dans le journal des croisements
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
       articlesMasques: [],                                                 // articles masqués du stock (ex. intitulé mal écrit) — réaffichables
@@ -402,7 +469,7 @@
         { zone: "espace cailleteaux",                type: "cailleteaux", volume: "", actif: true, traitement: false, obs: "à compléter (petits abreuvoirs bleus)" },
       ],
       // Fréquence des traitements des jeunes par lot (jours) — modifiable. Nettoyage quotidien.
-      freqJeunes: { nettoyage: 1, fortiferm: 30, cocciferm: 30, vermiferm: 30 },
+      freqJeunes: { nettoyage: 1, ...FREQ_MOIS },
       // Seuils d'âge reproducteurs en MOIS (modifiables) : min ponte/repro, fin d'âge optimal, début de déclin
       agesRepro: {
         "poule":          { min: 5,   optimal: 36, declin: 48 },
@@ -652,7 +719,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v103 — 30/07/2026";
+    const APP_VERSION = "v104 — 30/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1319,6 +1386,52 @@
         });
         if (anciens.length) setCroisements((prev) => prev.concat(anciens));
         setConfig((c) => ({ ...c, croisementsMigres: true }));
+      }, []);
+
+      // Migration unique : les 3 produits Gamiferme prennent leur nom exact (relevé sur les bidons)
+      // et le Volacrine Poux rejoint la liste. Les fréquences déjà réglées sont recopiées sous la
+      // nouvelle clé — sinon le renommage ferait silencieusement disparaître les rappels.
+      useEffect(() => {
+        if (config.produitsRenommes) return;
+        setConfig((c) => {
+          const out = { ...c };
+          // a) liste des produits
+          const liste = (c.produits || []).map((p) => RENOMMAGES_PRODUITS[normLibelle(p)] || p);
+          Object.keys(FICHES_PRODUITS).forEach((k) => {
+            const nom = FICHES_PRODUITS[k].article;
+            if (!liste.map(normLibelle).includes(normLibelle(nom))) liste.push(nom);
+          });
+          out.produits = liste;
+          // b) fréquences par zone : ancienne clé → nouvelle clé
+          const ft = {};
+          Object.keys(c.freqTraitements || {}).forEach((z) => {
+            const zone = { ...(c.freqTraitements[z] || {}) };
+            // La valeur réglée par l'utilisateur PRIME sur celle des défauts (déjà fusionnée par
+            // mergeConfig) : on écrase, puis on retire l'ancienne clé pour ne pas doubler le rappel.
+            Object.keys(RENOMMAGES_PRODUITS).forEach((vieux) => {
+              const neuf = normLibelle(RENOMMAGES_PRODUITS[vieux]);
+              if (zone[vieux] != null) { zone[neuf] = zone[vieux]; delete zone[vieux]; }
+            });
+            zone["fortiferme"] = 0;   // usage ponctuel : pas de rappel périodique
+            ft[z] = zone;
+          });
+          out.freqTraitements = ft;
+          // c) idem pour les lots de jeunes
+          const fj = { ...(c.freqJeunes || {}) };
+          Object.keys(RENOMMAGES_PRODUITS).forEach((vieux) => {
+            const neuf = normLibelle(RENOMMAGES_PRODUITS[vieux]);
+            if (fj[vieux] != null) { fj[neuf] = fj[vieux]; delete fj[vieux]; }
+          });
+          fj["fortiferme"] = 0;
+          out.freqJeunes = fj;
+          // d) fiches techniques : ajoutées si l'article n'en a pas encore
+          const mem = { ...(c.memoireArticles || {}) };
+          Object.keys(FICHES_PRODUITS).forEach((k) => {
+            if (!mem[k] || !mem[k].fiche) mem[k] = { ...(mem[k] || {}), ...FICHES_PRODUITS[k] };
+          });
+          out.memoireArticles = mem;
+          return { ...out, produitsRenommes: true };
+        });
       }, []);
 
       // Auto-synchronisation cloud : envoi différé après toute modification (si connecté)
@@ -8927,12 +9040,12 @@
                 <input type="number" step="0.1" min="0" className={numCls} value={(config.doseRule || {}).ml != null ? config.doseRule.ml : ""} onChange={(e) => setDoseRule("ml", e.target.value)} /> ml pour
                 <input type="number" step="0.1" min="0" className={numCls} value={(config.doseRule || {}).parLitres != null ? config.doseRule.parLitres : ""} onChange={(e) => setDoseRule("parLitres", e.target.value)} /> L d'eau
               </div>
-              <p className="text-xs text-slate-400 mt-2">S'applique à Fortiferm, Cocciferm et Vermiferm. Défaut : 3 ml / 5 L. Dose = volume × {(config.doseRule || {}).ml || 3} / {(config.doseRule || {}).parLitres || 5}.</p>
+              <p className="text-xs text-slate-400 mt-2">Règle de repli, utilisée seulement quand la <span className="font-medium">fiche technique</span> du produit ne donne pas de dosage (Gestion poulailler → Traitements → 📄). Ne vaut que pour l'eau de boisson. Dose = litres × {(config.doseRule || {}).ml || 3} / {(config.doseRule || {}).parLitres || 5}.</p>
             </div>
             <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
               <p className="text-sm font-semibold text-slate-700 mb-2">Fréquence des soins des jeunes (jours par lot)</p>
               <div className="grid grid-cols-2 gap-2">
-                {[["nettoyage", "Nettoyage"], ["fortiferm", "Fortiferm"], ["cocciferm", "Cocciferm"], ["vermiferm", "Vermiferm"]].map(([k, lbl]) => (
+                {[["nettoyage", "Nettoyage"]].concat((config.produits || []).map((p) => [normLibelle(p), p])).map(([k, lbl]) => (
                   <label key={k} className="text-xs text-slate-500">{lbl}
                     <input type="number" min="0" className={numCls + " mt-1 block"} value={(config.freqJeunes || {})[k] != null ? config.freqJeunes[k] : ""} onChange={(e) => setFreqJeune(k, e.target.value)} />
                   </label>
