@@ -366,6 +366,7 @@
       { id: "externe",    label: "Traitement externe",    icone: "🧴", support: "",               unite: "",   doseUnite: "ml" },
     ];
     const voieDe = (id) => VOIES_TRAITEMENT.find((v) => v.id === id) || VOIES_TRAITEMENT[0];
+    const vInfoDefaut = (dep) => voieDe(dep && dep.voie).doseUnite;
     const libelleVoieCourt = (id) => ({ eau: "eau", nourriture: "nourriture", externe: "externe" }[id || "eau"] || "eau");
     // Quantité de support d'une administration : { qte, unite }. Les lignes d'avant la gestion des
     // voies n'ont que `volumeEau` → relues comme des litres d'eau.
@@ -380,6 +381,9 @@
     const LIEUX_EXTERNE = ["sur l'animal", "litière", "poulailler (pulvérisation)", "nids", "perchoirs", "bain de poussière"];
     // Unités de dose d'un produit (modifiable dans Réglages)
     const UNITES_DOSE = ["ml", "g", "dose", "sachet", "comprimé"];
+    // Unités de capacité d'un matériel (mangeoire de 5 kg, abreuvoir de 10 L, couveuse de 120 œufs).
+    // Modifiable dans Réglages, et complétée automatiquement par toute unité tapée à la main.
+    const UNITES_CAPACITE = ["kg", "g", "L", "ml", "œufs", "places", "m²"];
     // Correspondance ancienne action (texte) → clé cochée. « vitamines » devient « fortiferm ».
     const LEGACY_ACTION_MAP = {
       "remplir abreuvoir": "eau", "remplir mangeoire": "nourriture", "nettoyage": "nettoyage",
@@ -436,8 +440,10 @@
       motifsTraitement: MOTIFS_TRAITEMENT.slice(),        // propositions du champ « Motif » d'un traitement
       lieuxExterne: LIEUX_EXTERNE.slice(),                // où s'applique un traitement externe
       unitesDose: UNITES_DOSE.slice(),                    // unités de dose d'un produit (ml, g, sachet…)
+      unitesCapacite: UNITES_CAPACITE.slice(),            // unités de capacité d'un matériel (kg, L, œufs…) — s'enrichit toute seule
       produitsRenommes: false,                                             // drapeau : produits renommés avec leur nom exact + fiches techniques posées
       croisementsMigres: false,                                            // drapeau : anciens croisements des lots repris dans le journal des croisements
+      bacs: {},                                                            // contenants en cours : cle article -> { niveau, maj }
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
       articlesMasques: [],                                                 // articles masqués du stock (ex. intitulé mal écrit) — réaffichables
       notifications: false,                                                // notification quotidienne (retards + événements du jour) à l'ouverture
@@ -719,7 +725,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v104 — 30/07/2026";
+    const APP_VERSION = "v109 — 30/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -735,11 +741,12 @@
       const map = {};   // article -> agrégat
       consommables.forEach((c) => {
         const q = Number(c.quantite) || 0;
-        const a = map[c.article] || (map[c.article] = { article: c.article, categorie: c.categorie, unite: c.unite, entrees: 0, sorties: 0, seuil: 0, prixRef: 0 });
+        const a = map[c.article] || (map[c.article] = { article: c.article, categorie: c.categorie, unite: c.unite, conditionnement: "", entrees: 0, sorties: 0, seuil: 0, prixRef: 0 });
         if (c.mouvement === "sortie") a.sorties += q;
         else { a.entrees += q; if (Number(c.prixUnitaire) > 0) a.prixRef = Number(c.prixUnitaire); }
         if (Number(c.seuil) > 0) a.seuil = Number(c.seuil);
         if (c.unite) a.unite = c.unite;
+        if (c.conditionnement) a.conditionnement = c.conditionnement;   // ex. « 20 kg » le sac
       });
       const parArticle = Object.keys(map).map((k) => {
         const a = map[k];
@@ -771,7 +778,10 @@
       const k = memArticleKey(nom);
       if (!k) return null;
       if (mem[k]) return mem[k];
-      // ressemblance : une clé contient l'autre (ex. "granulé poussin" ~ "granulé poussin 20 kg")
+      // Ressemblance : une clé contient l'autre (ex. « granulé poussin » ~ « granulé poussin 20 kg »).
+      // Seuil de 4 caractères : sans lui, taper « G » suffisait à faire correspondre n'importe quel
+      // article contenant un « g » et à pré-remplir son unité en douce.
+      if (k.length < 4) return null;
       const cands = Object.keys(mem).filter((mk) => mk.includes(k) || k.includes(mk));
       if (!cands.length) return null;
       cands.sort((a, b) => Math.abs(a.length - k.length) - Math.abs(b.length - k.length));
@@ -864,9 +874,14 @@
       return out;
     }
     // Unités en état de marche = neuf + bon + à surveiller
+    // Unités réellement utilisables d'une ligne de matériel.
+    // On compte TOUT sauf les états explicitement hors service : sinon un état ajouté par
+    // l'utilisateur (ex. « prêté ») disparaissait du parc sans prévenir, et la capacité avec lui.
+    const ETATS_HORS_MARCHE = ["à réparer", "hors service", "remplacé"];
     function nbEnMarche(m) {
       const r = repartitionEtats(m);
-      return (r["neuf"] || 0) + (r["bon"] || 0) + (r["à surveiller"] || 0);
+      const hs = ETATS_HORS_MARCHE.map(normLibelle);
+      return Object.keys(r).reduce((s, e) => (hs.includes(normLibelle(e)) ? s : s + (Number(r[e]) || 0)), 0);
     }
     // Sous le seuil d'alerte (même logique que les consommables : seuil > 0 et unités en marche <= seuil)
     function materielSousSeuil(m) {
@@ -1808,6 +1823,50 @@
     // - resume(row, i) : si fourni, sur téléphone chaque ligne devient une carte « repliée »
     //   (résumé sur une ligne, détails au clic). L'ordinateur garde le tableau complet.
     // - rowClass(row, i) : classe CSS optionnelle par ligne (ex. mise en évidence criticité).
+    // Un texte contient-il tous les mots cherchés ? Insensible à la casse et aux accents, et
+    // multi-mots : « gran pou » retrouve « Granulé poule pondeuse ».
+    function correspondRecherche(champs, q) {
+      const mots = normLibelle(q).split(" ").filter(Boolean);
+      if (!mots.length) return true;
+      const texte = normLibelle(champs.filter(Boolean).join(" "));
+      return mots.every((m) => texte.includes(m));
+    }
+    // Barre de recherche + filtres au-dessus d'un tableau.
+    // `filtres` : [{ label, valeur, onChange, options: [valeurs] }] — « Tous » est ajouté d'office.
+    function BarreRecherche({ valeur, onChange, placeholder, filtres, nb, total, onReset }) {
+      const actif = (valeur || "").trim() !== "" || (filtres || []).some((f) => f.valeur !== "");
+      return (
+        <div className="mb-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[12rem]">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">🔍</span>
+              <input className={inputClass + " pl-9"} value={valeur} onChange={(e) => onChange(e.target.value)}
+                placeholder={placeholder || "Rechercher…"} />
+              {(valeur || "") !== "" && (
+                <button type="button" onClick={() => onChange("")} title="Effacer"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 px-1">×</button>
+              )}
+            </div>
+            {(filtres || []).map((f, k) => (
+              <select key={k} className={inputClass + " w-auto"} value={f.valeur} onChange={(e) => f.onChange(e.target.value)}>
+                <option value="">{f.label} : tous</option>
+                {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            ))}
+            {actif && (
+              <button type="button" onClick={onReset}
+                className="px-2.5 py-2 rounded-lg text-xs font-medium border border-slate-300 text-slate-500 hover:bg-slate-50 whitespace-nowrap">Réinitialiser</button>
+            )}
+          </div>
+          {actif && (
+            <p className="text-xs text-slate-400 mt-1.5">
+              {nb === 0 ? "Aucun résultat." : nb + " résultat" + (nb > 1 ? "s" : "") + " sur " + total + "."}
+            </p>
+          )}
+        </div>
+      );
+    }
+
     function Table({ columns, rows, resume, rowClass }) {
       const rc = (i) => (rowClass ? (" " + (rowClass(rows[i], i) || "")) : "");
       // Détail (paires libellé · valeur) réutilisé par les deux modes mobiles
@@ -2381,7 +2440,6 @@
                 items={lots.filter((l) => l.statut === "en couveuse").map((l) => l.id + " · " + l.espece + " · " + l.nbOeufs + " œufs · mis le " + frDate(l.dateDebut))}
                 vide="Aucun lot en couveuse" />
 
-              <p className="text-xs text-slate-400 mt-3">Stock actif = œufs en lot « en stock » ; en couveuse = œufs des lots d'incubation en cours ; consommés = collectes « consommation ». Poules et cailles comptées séparément.</p>
             </Section>
           </Section>
 
@@ -2459,7 +2517,6 @@
               <StatCard label={"Dépenses matériel " + ANNEE_COURANTE} value={eur(sm.depenseAnneeCourante)} color="indigo" />
               <StatCard label="À traiter" value={sm.nbAReparer} color="orange" />
             </div>
-            <p className="text-xs text-slate-400 mt-3">Détails dans les onglets <span className="font-medium">Inventaire consommables</span> / <span className="font-medium">matériel</span> ; les articles ⭐ urgents et le matériel à traiter remontent dans « Alertes importantes ».</p>
           </Section>
 
           {/* COÛTS & RENTABILITÉ (année en cours) */}
@@ -2472,7 +2529,6 @@
             </div>
             <p className="text-xs text-slate-500 mb-2 mt-5 font-medium">Répartition des dépenses par catégorie</p>
             <VentilationDepenses consommables={consommables} materiel={materiel} breederPurchases={breederPurchases} annee={ANNEE_COURANTE} />
-            <p className="text-xs text-slate-400 mt-2 mb-1">Ventilation de toutes tes dépenses selon les catégories des inventaires (consommables/matériel) et le type d'achat reproducteur. Choisis l'année dans le menu pour comparer.</p>
             <p className="text-xs text-slate-500 mb-2 mt-4 font-medium">Production & coût de revient</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <StatCard label="Œufs récoltés" value={oeufsAn} />
@@ -2480,7 +2536,7 @@
               <StatCard label="Coût aliment / œuf" value={coutParOeuf != null ? eur(coutParOeuf) : "—"} color="purple" sub={prixOeuf ? "valeur œuf : " + eur(prixOeuf) : ""} />
               <StatCard label="Coût / poussin né" value={coutParPoussin != null ? eur(coutParPoussin) : "—"} color="purple" sub="toutes dépenses" />
             </div>
-            <p className="text-xs text-slate-400 mt-3">Estimations {ANNEE_COURANTE} : « coût aliment / œuf » = dépenses consommables ÷ œufs récoltés ; « coût / poussin né » = toutes les dépenses ÷ poussins nés. Valeur d'un œuf modifiable dans Réglages.{valeurOeufsAn ? " Valeur des œufs récoltés : " + eur(valeurOeufsAn) + "." : ""}</p>
+          <p className="text-xs text-slate-400 mt-3">Estimations {ANNEE_COURANTE}, pas une compta. Valeur d'un œuf modifiable dans Réglages.</p>
           </Section>
 
           {/* STATISTIQUES DÉTAILLÉES */}
@@ -2561,7 +2617,7 @@
       statutsRepro: ["actif", "malade", "décédé", "retiré reproduction"],
       statutsJeunes: STATUTS_JEUNES, statutsAbattoir: STATUTS_ABATTOIR,
       typesSante: TYPES_SANTE, etatsMateriel: ETATS_MATERIEL,
-      taillesBagues: ["8", "12", "16", "20"], unites: UNITES,
+      taillesBagues: ["8", "12", "16", "20"], unites: UNITES, unitesCapacite: UNITES_CAPACITE,
     };
     function listeConfig(config, champ) {
       const l = (config && config[champ]) || [];
@@ -3060,7 +3116,6 @@
               <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
             </Field>
           </div>
-          <p className="text-xs text-slate-400">Un lot de couvaison sera créé avec ces {batch.total} œufs. Le lot de stock passera en « mis en couveuse » et quittera le stock actif.</p>
           <FormButtons onClose={onClose} />
         </form>
       );
@@ -3708,7 +3763,6 @@
               <input type="number" min="0" className={inputClass} value={retires} onChange={(e) => setRetires(e.target.value)} />
             </Field>
           </div>
-          <p className="text-xs text-slate-400 -mt-1">Décès = nés morts en couveuse (déduits des vivants au passage en Bébé). Œufs retirés = œufs cassés/pourris enlevés (info couvaison, sans effet sur les vivants).</p>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
@@ -4073,7 +4127,6 @@
           {bloc("🐔 Motifs à deux zones — corps + camail/queue", "Deux couleurs réparties par zones du corps (le dessin de chaque plume reste simple).", PLUMAGES_POULE_ZONES)}
           {bloc("✒️ Dessins de plume — chaque plume est dessinée", "Liserés, pointes, barres ou perles répétés sur chaque plume. Un même dessin existe souvent en doré ET argenté.", PLUMAGES_POULE_DESSINS)}
           {bloc("🐦 Cailles — variétés de plumage", "Variétés de la caille japonaise (Coturnix japonica), celle qu'on élève pour les œufs et la chair.", PLUMAGES_CAILLE)}
-          <p className="text-xs text-slate-400">Référence pour identifier tes animaux — la couleur/variété exacte de chaque reproducteur se note dans sa fiche (champ « couleur »). Beaucoup de races existent dans plusieurs de ces coloris.</p>
         </div>
       );
     }
@@ -4498,7 +4551,6 @@
           <Field label="Lignée / famille (anti-consanguinité)">
             <input className={inputClass} list="repro-lignees-list" value={lignee} onChange={(e) => setLignee(e.target.value)} placeholder="ex. Lignée A, descendants de Cléo…" />
             <datalist id="repro-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
-            <p className="text-xs text-slate-400 mt-1">Donne la même lignée aux animaux apparentés. L'appli te prévient si 2 reproducteurs actifs d'une même lignée pourraient être accouplés.</p>
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Statut">
@@ -5111,7 +5163,6 @@
                 </div>
               ))}
             </div>
-            <p className="text-xs text-slate-400 mb-6">Ces lots vivent encore dans <span className="font-medium">Gestion poulailler → Bébé</span> : vers 8 semaines, le bouton « →Conso » les transfère ici pour la suite (pesées, abattage, congélateur).</p>
           </>}
 
           <Table
@@ -5172,10 +5223,15 @@
 
     /* ---------- Inventaire consommables ---------- */
     // Pastille état stock (bas / ok)
-    function StockBadge({ bas }) {
-      return bas
-        ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">⚠️ à racheter</span>
-        : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">ok</span>;
+    // `bas` = stock sous le seuil · `bac` = contenant en cours presque vide ou vide
+    function StockBadge({ bas, bac }) {
+      if (bas || bac) return (
+        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 whitespace-nowrap"
+          title={bac && !bas ? "Le bac en cours est presque vide (le stock de sacs, lui, est encore au-dessus du seuil)" : "Stock sous le seuil d'alerte"}>
+          ⚠️ à racheter{bac && !bas ? " (bac)" : ""}
+        </span>
+      );
+      return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">ok</span>;
     }
 
     // Fusionne un article mal écrit dans le bon : tous ses mouvements sont renommés (rien n'est supprimé).
@@ -5198,7 +5254,6 @@
               {articles.filter((a) => normLibelle(a) !== normLibelle(source)).map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </Field>
-          <p className="text-xs text-slate-400">Toutes les entrées/sorties de l'article mal écrit sont renommées vers l'article correct : le stock se recalcule tout seul. Rien n'est supprimé.</p>
           <FormButtons onClose={onClose} />
         </form>
       );
@@ -5477,15 +5532,34 @@
       const { consommables, config, setConfig, majLigne, supprimerLigne, patchLigne } = useData();
       const setUrgent = (article) => setConfig((c) => ({ ...c, articlesUrgents: toggleArticleUrgent(c, article) }));
       const setMasque = (article) => setConfig((c) => ({ ...c, articlesMasques: toggleArticleMasque(c, article) }));
+      const setBac = (article, niveau) => setConfig((c) => {
+        const cle = memArticleKey(article);
+        const bacs = { ...(c.bacs || {}) };
+        if (!niveau) delete bacs[cle]; else bacs[cle] = { niveau, maj: AUJOURDHUI_ISO };
+        return { ...c, bacs };
+      });
       const [vue, setVue] = useState("stock");   // onglet interne : stock | mouvements | depenses
       const [open, setOpen] = useState(null);   // null | "entrée" | "sortie"
       const [sortie, setSortie] = useState(null); // article sélectionné pour sortie rapide
       const [edit, setEdit] = useState(null);   // { index, rec }
       const st = statsConsommables(consommables);
       // Articles masqués (intitulé mal écrit, doublon…) : cachés du stock, réaffichables plus bas
-      const visibles = st.parArticle.filter((a) => !articleEstMasque(config, a.article));
+      const tousVisibles = st.parArticle.filter((a) => !articleEstMasque(config, a.article));
+      // Recherche + filtres du tableau « Stock par article »
+      const [qStock, setQStock] = useState("");
+      const [fCat, setFCat] = useState("");
+      const [fStatut, setFStatut] = useState("");
+      const visibles = tousVisibles.filter((a) => {
+        if (!correspondRecherche([a.article, a.categorie, a.unite], qStock)) return false;
+        if (fCat && normLibelle(a.categorie) !== normLibelle(fCat)) return false;
+        if (fStatut === "à racheter" && !a.bas) return false;
+        if (fStatut === "ok" && a.bas) return false;
+        return true;
+      });
       const masques = st.parArticle.filter((a) => articleEstMasque(config, a.article));
-      const aRacheter = visibles.filter((a) => a.bas);
+      // À racheter = stock sous le seuil OU bac en cours presque vide (le bac prime : c'est lui
+      // qu'on regarde au quotidien, le stock ne compte que les sacs encore fermés).
+      const aRacheter = tousVisibles.filter((a) => a.bas || bacARacheter(config, a.article));
       const valeurStockVisible = visibles.reduce((s, a) => s + Math.max(0, a.stock) * a.prixRef, 0);
       // Fusion d'articles : renomme tous les mouvements de « source » (mal écrit) vers « dest » (correct)
       const [fusion, setFusion] = useState(false);
@@ -5503,7 +5577,17 @@
       const chartData = Object.keys(st.depMois).sort().map((m) => ({ label: moisFr(m), y: st.depMois[m] }));
       const valReelle = (c) => (Number(c.quantite) || 0) * (Number(c.prixUnitaire) || 0);
       const cout = (c) => Math.max(0, valReelle(c) - (Number(c.remise) || 0));   // prix payé (remise déduite)
-      const mvts = consommables.map((c, i) => ({ c, i })).sort((a, b) => b.c.date.localeCompare(a.c.date));
+      const tousMvts = consommables.map((c, i) => ({ c, i })).sort((a, b) => b.c.date.localeCompare(a.c.date));
+      // Recherche + filtres du tableau « Mouvements »
+      const [qMvt, setQMvt] = useState("");
+      const [fMvtType, setFMvtType] = useState("");
+      const [fMvtCat, setFMvtCat] = useState("");
+      const mvts = tousMvts.filter(({ c }) => {
+        if (!correspondRecherche([c.article, c.categorie, c.fournisseur, c.obs], qMvt)) return false;
+        if (fMvtType && normLibelle(c.mouvement) !== normLibelle(fMvtType)) return false;
+        if (fMvtCat && normLibelle(c.categorie) !== normLibelle(fMvtCat)) return false;
+        return true;
+      });
 
       return (
         <div>
@@ -5523,7 +5607,7 @@
             <StatCard label="Valeur du stock" value={eur(valeurStockVisible)} sub={masques.length ? "hors " + masques.length + " article(s) masqué(s)" : undefined} />
             <StatCard label={"Dépenses " + ANNEE_COURANTE} value={eur(st.depAnnee[String(ANNEE_COURANTE)] || 0)} color="indigo" />
             <StatCard label="Dépenses ce mois" value={eur(st.depMois[MOIS_COURANT] || 0)} color="purple" />
-            <StatCard label="À racheter" value={aRacheter.length} color="orange" sub="stock sous le seuil" />
+            <StatCard label="À racheter" value={aRacheter.length} color="orange" sub="seuil atteint ou bac vide" />
           </div>
 
           {/* Onglets internes */}
@@ -5539,19 +5623,68 @@
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-6">
             <p className="text-sm font-semibold text-slate-700 mb-2">À racheter <span className="text-slate-400 font-normal">({aRacheter.length})</span></p>
             {aRacheter.length === 0
-              ? <p className="text-sm text-slate-400">Aucun article sous le seuil. 👍</p>
+              ? <p className="text-sm text-slate-400">Rien à racheter. 👍</p>
               : <div className="flex flex-wrap gap-2">
                   {aRacheter.map((a, i) => {
                     const u = articleEstUrgent(config, a.article);
+                    const parBac = bacARacheter(config, a.article);
                     return (
                       <span key={i} className={"inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border " + (u ? "bg-red-50 text-red-700 border-red-200" : "bg-slate-50 text-slate-600 border-slate-200")}>
-                        {u ? "⭐" : "⚠️"} {a.article} <span className={u ? "text-red-400" : "text-slate-400"}>· {a.stock} {a.unite} / seuil {a.seuil}</span>
+                        {u ? "⭐" : "⚠️"} {a.article}
+                        <span className={u ? "text-red-400" : "text-slate-400"}>
+                          {parBac && !a.bas
+                            ? " · 📦 bac " + niveauBacDe((bacDe(config, a.article) || {}).niveau).court
+                            : " · " + a.stock + " " + a.unite + " / seuil " + a.seuil}
+                        </span>
                       </span>
                     );
                   })}
                 </div>}
-            <p className="text-xs text-slate-400 mt-2">⭐ = urgent (remonte en « Alertes importantes » du tableau de bord). Les autres restent ici sans surcharger le tableau de bord.</p>
           </div>
+
+          {/* Récap par catégorie — même principe que le parc matériel : combien d'articles, quel
+              stock cumulé par unité, et combien sont à racheter. */}
+          {(() => {
+            const parCat = {};
+            tousVisibles.forEach((a) => {
+              const label = (a.categorie || "autre").trim() || "autre";
+              const cle = normLibelle(label);
+              const c = parCat[cle] || (parCat[cle] = { label, articles: 0, aRacheter: 0, stocks: {}, valeur: 0 });
+              c.articles += 1;
+              if (a.bas || bacARacheter(config, a.article)) c.aRacheter += 1;
+              const u = (a.unite || "").trim() || "u.";
+              c.stocks[u] = (c.stocks[u] || 0) + Math.max(0, a.stock);
+              c.valeur += Math.max(0, a.stock) * a.prixRef;
+            });
+            const cats = Object.keys(parCat).sort((x, y) => parCat[x].label.localeCompare(parCat[y].label));
+            if (!cats.length) return null;
+            const emojiCat = (n) => { if (n.includes("poule") || n.includes("caille") || n.includes("aliment")) return "🌾"; if (n.includes("copeau") || n.includes("paille") || n.includes("liti")) return "🪵"; if (n.includes("nettoy")) return "🧽"; if (n.includes("compl") || n.includes("sant")) return "🧪"; return "📦"; };
+            const fmtN = (x) => (Math.round(x * 10) / 10).toLocaleString("fr-FR");
+            return (
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-slate-600 mb-2">📦 Récap par catégorie</h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {cats.map((cle) => {
+                    const c = parCat[cle];
+                    const unites = Object.keys(c.stocks);
+                    return (
+                      <div key={cle} className="bg-white rounded-xl border border-slate-100 shadow-sm p-3">
+                        <p className="text-sm font-medium text-slate-700 capitalize">{emojiCat(cle)} {c.label}</p>
+                        <p className="text-lg font-semibold text-emerald-600">
+                          {unites.length ? unites.map((u) => fmtN(c.stocks[u]) + " " + u).join(" · ") : "—"}
+                        </p>
+                        <p className="text-xs text-slate-500">{eur(c.valeur)} de stock</p>
+                        <p className="text-[11px] text-slate-400">
+                          {c.articles} article{c.articles > 1 ? "s" : ""}
+                          {c.aRacheter ? <span className="text-red-600 font-medium"> · {c.aRacheter} à racheter</span> : null}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Stock par article + action rapide "Sortir" */}
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
@@ -5561,9 +5694,16 @@
                 className="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">🔀 Fusionner deux articles</button>
             )}
           </div>
+          <BarreRecherche valeur={qStock} onChange={setQStock} placeholder="Rechercher un article…"
+            nb={visibles.length} total={tousVisibles.length}
+            onReset={() => { setQStock(""); setFCat(""); setFStatut(""); }}
+            filtres={[
+              { label: "Catégorie", valeur: fCat, onChange: setFCat, options: Array.from(new Set(tousVisibles.map((a) => a.categorie).filter(Boolean))).sort() },
+              { label: "Statut", valeur: fStatut, onChange: setFStatut, options: ["à racheter", "ok"] },
+            ]} />
           <Table
             resume={(r, i) => { const a = visibles[i]; return <span className={a.bas ? "font-medium text-red-600" : "font-medium"}>{a.article}</span>; }}
-            columns={["Article", "Catégorie", "Stock actuel", "Statut", "Urgent", "Action"]}
+            columns={["Article", "Catégorie", "Stock actuel", "📦 Bac en cours", "Statut", "Urgent", "Action"]}
             rows={visibles.map((a) => {
               const u = articleEstUrgent(config, a.article);
               return [
@@ -5571,11 +5711,27 @@
                 a.categorie,
                 /* Le seuil n'a plus sa colonne (trop de place) : il reste lisible en info-bulle du stock. */
                 <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}
-                  title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>{a.stock} {a.unite}</span>,
-                <StockBadge bas={a.bas} />,
+                  title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>
+                  {a.stock} {a.unite}
+                  {a.conditionnement ? <span className="block text-xs font-normal text-slate-400">{a.conditionnement} / {a.unite}</span> : null}
+                </span>,
+                (() => {
+                  const b = bacDe(config, a.article);
+                  const n = niveauBacDe(b && b.niveau);
+                  return (
+                    <span className="inline-flex flex-col gap-0.5">
+                      <select className={"border border-slate-300 rounded-md px-1.5 py-0.5 text-xs bg-white " + n.cls}
+                        value={(b && b.niveau) || ""} onChange={(e) => setBac(a.article, e.target.value)}>
+                        {NIVEAUX_BAC.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                      </select>
+                      {b && b.maj ? <span className="text-[10px] text-slate-400">maj {frDate(b.maj)}</span> : null}
+                    </span>
+                  );
+                })(),
+                <StockBadge bas={a.bas} bac={bacARacheter(config, a.article)} />,
                 <button onClick={() => setUrgent(a.article)} title={u ? "Retirer des alertes importantes" : "Mettre en alerte importante"}
                   className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (u ? "bg-amber-100 text-amber-700 border-amber-300" : "bg-white text-slate-400 border-slate-300 hover:bg-slate-50")}>
-                  {u ? "⭐ urgent" : "☆"}
+                  {u ? "⭐" : "☆"}
                 </button>,
                 <span className="inline-flex gap-1.5 whitespace-nowrap">
                   <button onClick={() => setSortie(a)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 whitespace-nowrap">↘ Sortir</button>
@@ -5585,7 +5741,7 @@
               ];
             })}
           />
-          <p className="text-xs text-slate-400 mt-2">🙈 masque une ligne (ex. intitulé mal écrit) sans rien supprimer. Pour corriger vraiment un article mal nommé, modifie ou supprime ses lignes dans l'onglet <span className="font-medium">Mouvements</span>.</p>
+          <p className="text-xs text-slate-400 mt-2">🙈 masque une ligne sans rien supprimer.</p>
 
           {/* Articles masqués — repliés, réaffichables */}
           {masques.length > 0 && (
@@ -5603,7 +5759,6 @@
                     </li>
                   ))}
                 </ul>
-                <p className="text-xs text-slate-400 mt-2">Ces articles ne comptent plus dans « À racheter » ni dans les alertes du tableau de bord. Leurs mouvements restent visibles dans l'onglet Mouvements.</p>
               </div>
             </details>
           )}
@@ -5626,6 +5781,13 @@
           {vue === "mouvements" && <>
           {/* Mouvements */}
           <h2 className="text-lg font-semibold mb-3">Mouvements de stock</h2>
+          <BarreRecherche valeur={qMvt} onChange={setQMvt} placeholder="Rechercher un article, un fournisseur, une note…"
+            nb={mvts.length} total={tousMvts.length}
+            onReset={() => { setQMvt(""); setFMvtType(""); setFMvtCat(""); }}
+            filtres={[
+              { label: "Sens", valeur: fMvtType, onChange: setFMvtType, options: ["entrée", "sortie"] },
+              { label: "Catégorie", valeur: fMvtCat, onChange: setFMvtCat, options: Array.from(new Set(tousMvts.map(({ c }) => c.categorie).filter(Boolean))).sort() },
+            ]} />
           <Table
             resume={(r, k) => { const c = mvts[k].c; return <>{frDate(c.date)} — {c.article} — <span className={c.mouvement === "sortie" ? "text-amber-700" : "text-emerald-700"}>{c.mouvement === "sortie" ? "Sortie" : "Entrée"}</span></>; }}
             columns={["Date", "Article", "Catégorie", "Mouvement", "Quantité", "Prix u.", "Coût", "Fournisseur", "Obs", ""]}
@@ -5740,6 +5902,11 @@
           obs: obs.trim(),
         };
         if (rec.fournisseur) setConfig((c) => ({ ...c, fournisseurs: memoriserFournisseur(c, rec.fournisseur) }));
+        // Une unité tapée à la main rejoint la liste : plus besoin d'aller la déclarer avant.
+        if (rec.capaciteUnite) setConfig((c) => {
+          const l = listeConfig(c, "unitesCapacite");
+          return l.map(normLibelle).includes(normLibelle(rec.capaciteUnite)) ? c : { ...c, unitesCapacite: l.concat([rec.capaciteUnite]) };
+        });
         (onSave || ajouterMateriel)(rec);
         onClose();
       }
@@ -5776,11 +5943,11 @@
               <input type="number" step="0.1" min="0" className={inputClass} value={capacite} onChange={(e) => setCapacite(e.target.value)} placeholder="ex. 5" />
             </Field>
             <Field label="Unité de capacité">
-              <input className={inputClass} list="materiel-capunites-list" value={capaciteUnite} onChange={(e) => setCapaciteUnite(e.target.value)} placeholder="ex. kg, L, œufs, places" />
-              <datalist id="materiel-capunites-list">{listeConfig(config, "unites").concat(["L", "œufs", "places"]).map((u) => <option key={u} value={u} />)}</datalist>
+              <input className={inputClass} list="materiel-capunites-list" value={capaciteUnite} onChange={(e) => setCapaciteUnite(e.target.value)} placeholder="tape ou choisis : kg, L, œufs…" />
+              <datalist id="materiel-capunites-list">{listeConfig(config, "unitesCapacite").map((u) => <option key={u} value={u} />)}</datalist>
             </Field>
           </div>
-          <p className="text-xs text-slate-400 -mt-1">Ex. mangeoire de 5 kg, abreuvoir de 10 L, couveuse de 120 œufs. Sert au récap par catégorie (capacité totale du parc).</p>
+          <p className="text-xs text-slate-400 -mt-1">Ex. mangeoire 5 kg, abreuvoir 10 L. L'unité s'écrit librement et sera mémorisée.</p>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Valeur réelle (€)">
               <input className={inputClass + " bg-slate-100"} value={eur(valeurReelle)} readOnly />
@@ -5872,7 +6039,17 @@
       const valReelle = (m) => (Number(m.quantite) || 0) * (Number(m.prixUnitaire) || 0);
       const cout = (m) => Math.max(0, valReelle(m) - (Number(m.remise) || 0));   // prix payé (remise déduite)
       // index d'origine conservé pour la modification d'état après tri ; on masque les "remplacé"
-      const lignes = materiel.map((m, i) => ({ m, i })).filter(x => x.m.etat !== "remplacé").sort((a, b) => b.m.dateAchat.localeCompare(a.m.dateAchat));
+      const toutesLignes = materiel.map((m, i) => ({ m, i })).filter(x => x.m.etat !== "remplacé").sort((a, b) => b.m.dateAchat.localeCompare(a.m.dateAchat));
+      // Recherche + filtres du parc matériel
+      const [qMat, setQMat] = useState("");
+      const [fMatCat, setFMatCat] = useState("");
+      const [fMatEtat, setFMatEtat] = useState("");
+      const lignes = toutesLignes.filter(({ m }) => {
+        if (!correspondRecherche([m.article, m.categorie, m.fournisseur, m.capaciteUnite, m.obs], qMat)) return false;
+        if (fMatCat && normLibelle(m.categorie) !== normLibelle(fMatCat)) return false;
+        if (fMatEtat && !Object.keys(repartitionEtats(m)).map(normLibelle).includes(normLibelle(fMatEtat))) return false;
+        return true;
+      });
       // Libellé « Thermomètre (1/8) » quand seule une partie des unités de la ligne est concernée
       const libNb = ({ m, nb, q }) => m.article + (q > 1 ? " (" + nb + "/" + q + ")" : "");
       const aTraiter = (titre, items, couleur) => <DashListe titre={titre} items={items.map(libNb)} couleur={couleur} vide="Aucun" />;
@@ -5911,7 +6088,6 @@
                 items={st.sousSeuil.map(({ m, marche }) => m.article + " — " + marche + " en état de marche (seuil " + m.seuil + ")")}
                 vide="Aucun matériel sous son seuil" />
             </div>
-            <p className="text-xs text-slate-400 mb-2">Seuls les matériels marqués ⭐ urgent remontent dans les « Alertes importantes » du tableau de bord — les autres restent listés ici.</p>
           </>}
 
           {vue === "parc" && <>
@@ -5919,8 +6095,9 @@
           {(() => {
             const parCat = {};
             materiel.filter((m) => m.etat !== "remplacé").forEach((m) => {
-              const cat = (m.categorie || "autre").trim() || "autre";
-              const c = parCat[cat] || (parCat[cat] = { articles: 0, unites: 0, marche: 0, caps: {} });
+              const label = (m.categorie || "autre").trim() || "autre";
+              const cat = normLibelle(label);   // « Couveuse » et « couveuse » = une seule carte
+              const c = parCat[cat] || (parCat[cat] = { label, articles: 0, unites: 0, marche: 0, caps: {} });
               const q = Number(m.quantite) || 0, em = nbEnMarche(m);
               c.articles += 1; c.unites += q; c.marche += em;
               const cap = Number(m.capacite) || 0;
@@ -5943,7 +6120,7 @@
                     const unites = Object.keys(c.caps);
                     return (
                       <div key={cat} className="bg-white rounded-xl border border-slate-100 shadow-sm p-3">
-                        <p className="text-sm font-medium text-slate-700 capitalize">{emojiCat(cat)} {cat}</p>
+                        <p className="text-sm font-medium text-slate-700 capitalize">{emojiCat(cat)} {c.label}</p>
                         <p className="text-lg font-semibold text-emerald-600">{c.marche}<span className="text-sm font-normal text-slate-400"> / {c.unites} en marche</span></p>
                         {unites.length
                           ? unites.map((u) => (
@@ -5958,10 +6135,16 @@
                     );
                   })}
                 </div>
-                <p className="text-xs text-slate-400 mt-2">La capacité se renseigne sur chaque article (Modifier → « Capacité par unité ») : mangeoire 5 kg, abreuvoir 10 L… Le chiffre vert = unités en état de marche (HS et à réparer exclus selon la ventilation des états).</p>
               </div>
             );
           })()}
+          <BarreRecherche valeur={qMat} onChange={setQMat} placeholder="Rechercher un matériel, un fournisseur…"
+            nb={lignes.length} total={toutesLignes.length}
+            onReset={() => { setQMat(""); setFMatCat(""); setFMatEtat(""); }}
+            filtres={[
+              { label: "Catégorie", valeur: fMatCat, onChange: setFMatCat, options: Array.from(new Set(toutesLignes.map(({ m }) => m.categorie).filter(Boolean))).sort() },
+              { label: "État", valeur: fMatEtat, onChange: setFMatEtat, options: listeConfig(config, "etatsMateriel") },
+            ]} />
           <Table
             resume={(r, k) => { const m = lignes[k].m; const rep = repartitionEtats(m); const etats = ordreEtats(Object.keys(rep)); return <>{m.urgent ? "⭐ " : ""}<span className="font-medium">{m.article}</span> <span className="text-slate-400">— {etats.map(e => rep[e] + " " + e).join(" · ") || m.etat}</span></>; }}
             columns={["Date d'achat", "Article", "Catégorie", "Qté", "En marche", "Prix u.", "Coût", "État", "Âge", "Obs", "Actions"]}
@@ -6298,6 +6481,26 @@
       if (i >= 0) liste.splice(i, 1); else liste.push(article.trim());
       return liste;
     }
+    // ===== Bac / contenant en cours =====
+    // Un sac sorti du stock n'est pas forcément consommé : souvent il est transvasé dans un bac
+    // hermétique. Le STOCK compte les sacs fermés ; le BAC suit ce qui reste dans le contenant.
+    // Les deux sont indépendants — c'est le niveau du bac qui déclenche le rachat, pas le stock.
+    const NIVEAUX_BAC = [
+      { id: "",       label: "—",            court: "—",      cls: "text-slate-300",              racheter: false },
+      { id: "plein",  label: "Plein",        court: "plein",  cls: "text-emerald-600",            racheter: false },
+      { id: "entame", label: "Entamé",       court: "entamé", cls: "text-slate-600",              racheter: false },
+      { id: "bas",    label: "Presque vide", court: "bas",    cls: "text-orange-600 font-medium", racheter: true },
+      { id: "vide",   label: "Vide",         court: "vide",   cls: "text-red-600 font-medium",    racheter: true },
+    ];
+    const niveauBacDe = (id) => NIVEAUX_BAC.find((n) => n.id === (id || "")) || NIVEAUX_BAC[0];
+    function bacDe(config, article) {
+      return ((config && config.bacs) || {})[memArticleKey(article)] || null;
+    }
+    // Le bac réclame-t-il un rachat ? (presque vide ou vide)
+    function bacARacheter(config, article) {
+      const b = bacDe(config, article);
+      return !!(b && niveauBacDe(b.niveau).racheter);
+    }
     // Article masqué du stock (intitulé mal écrit, doublon…) ? Comparaison sur nom normalisé.
     function articleEstMasque(config, article) {
       return ((config && config.articlesMasques) || []).map(normLibelle).includes(normLibelle(article));
@@ -6570,8 +6773,12 @@
       return { couverture, delais, doses, produits, conclusions, nbAdmins: admins.length };
     }
 
-    function TraitementForm({ onClose, initial, onSave }) {
+    // `initial` = on MODIFIE une administration existante. `prefill` = nouvelle administration
+    // pré-remplie (bouton « → Donner » d'une fiche technique) : mêmes valeurs de départ, mais on
+    // reste en création et les automatismes (effectif du lot, volume de l'abreuvoir) jouent encore.
+    function TraitementForm({ onClose, initial, prefill, onSave }) {
       const { config, poussins, traitements, ajouterTraitement } = useData();
+      const dep = initial || prefill || null;
       const zones = zonesAdultes(config);
       const lotsJeunes = poussins.filter((p) => p.statut === "en croissance");
       const produitsDispo = produitsTraitement(config, traitements);
@@ -6579,24 +6786,24 @@
       const lieuxExterne = (config.lieuxExterne && config.lieuxExterne.length) ? config.lieuxExterne : LIEUX_EXTERNE;
       const unitesDose = (config.unitesDose && config.unitesDose.length) ? config.unitesDose : UNITES_DOSE;
 
-      const [date, setDate] = useState(initial ? initial.date : AUJOURDHUI_ISO);
-      const [cible, setCible] = useState(initial ? initial.cible : (zones.length ? "zone" : "lot"));
-      const [zone, setZone] = useState(initial ? (initial.zone || "") : (zones[0] || ""));
-      const [lot, setLot] = useState(initial ? (initial.lot || "") : (lotsJeunes.length ? refLotJeune(lotsJeunes[0]) : ""));
-      const [animaux, setAnimaux] = useState(initial && initial.animaux != null ? String(initial.animaux) : "");
-      const [voie, setVoie] = useState(initial ? (initial.voie || "eau") : "eau");
+      const [date, setDate] = useState(dep && dep.date ? dep.date : AUJOURDHUI_ISO);
+      const [cible, setCible] = useState(dep && dep.cible ? dep.cible : (zones.length ? "zone" : "lot"));
+      const [zone, setZone] = useState(dep && dep.zone ? dep.zone : (zones[0] || ""));
+      const [lot, setLot] = useState(dep && dep.lot ? dep.lot : (lotsJeunes.length ? refLotJeune(lotsJeunes[0]) : ""));
+      const [animaux, setAnimaux] = useState(dep && dep.animaux != null ? String(dep.animaux) : "");
+      const [voie, setVoie] = useState(dep ? (dep.voie || "eau") : "eau");
       // « support » = eau (L) ou aliment (kg) ; l'externe n'en a pas. `volumeEau` = ancien nom du champ.
       const [support, setSupport] = useState(
-        initial ? String(initial.support != null && initial.support !== "" ? initial.support : (initial.volumeEau != null ? initial.volumeEau : "")) : ""
+        dep ? String(dep.support != null && dep.support !== "" ? dep.support : (dep.volumeEau != null ? dep.volumeEau : "")) : ""
       );
-      const [lieu, setLieu] = useState(initial ? (initial.lieu || "") : "");
-      const [duree, setDuree] = useState(initial && initial.duree != null ? String(initial.duree) : "1");
-      const [motif, setMotif] = useState(initial ? (initial.motif || "") : "");
-      const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
+      const [lieu, setLieu] = useState(dep ? (dep.lieu || "") : "");
+      const [duree, setDuree] = useState(dep && dep.duree != null ? String(dep.duree) : "1");
+      const [motif, setMotif] = useState(dep ? (dep.motif || "") : "");
+      const [obs, setObs] = useState(dep ? (dep.obs || "") : "");
       const [produits, setProduits] = useState(
-        initial && Array.isArray(initial.produits) && initial.produits.length
-          ? initial.produits.map((p) => ({ nom: p.nom || "", dose: p.dose != null ? String(p.dose) : "", unite: p.unite || "ml" }))
-          : [{ nom: "", dose: "", unite: "ml" }]
+        dep && Array.isArray(dep.produits) && dep.produits.length
+          ? dep.produits.map((p) => ({ nom: p.nom || "", dose: p.dose != null ? String(p.dose) : "", unite: p.unite || "ml" }))
+          : [{ nom: "", dose: "", unite: vInfoDefaut(dep) }]
       );
       const [voirFiche, setVoirFiche] = useState(null);   // nom du produit dont on regarde la fiche
 
@@ -6772,7 +6979,6 @@
             <datalist id="produits-traitement-list">{produitsDispo.map((n) => <option key={n} value={n} />)}</datalist>
             <button type="button" onClick={() => setProduits((ps) => ps.concat([{ nom: "", dose: "", unite: vInfo.doseUnite }]))}
               className="text-sm text-emerald-600 hover:underline">+ Ajouter un produit</button>
-            <p className="text-xs text-slate-400">Un produit absent de la liste ? Écris-le : il sera proposé les fois suivantes. Pour l'avoir en permanence, ajoute-le dans <span className="font-medium">Réglages → Produits / traitements</span>.</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -7174,7 +7380,6 @@
                   <RowActions onDelete={() => supprimerLigne("croisements", i)} />,
                 ])}
               />}
-          <p className="text-xs text-slate-400 mt-2">Tout se modifie directement dans le tableau. Pour voir ce que donnerait un croisement (couleur, ponte…), va dans <span className="font-medium">Catalogue des races → 🧬 Croisements</span>.</p>
 
           {/* ---- Analyse : ce que disent les données saisies ---- */}
           <h2 className="text-lg font-semibold mt-8 mb-1">📊 Ce que disent tes données</h2>
@@ -7330,7 +7535,6 @@
                     </div>
                   );
                 })}
-            <p className="text-xs text-slate-400">Ici : numéro, sexage et bague. Les croisements se notent globalement dans l'onglet <span className="font-medium">🧬 Croisements</span> ci-dessus. Supprime la fiche d'un sujet abattu/vendu (le lot, lui, se gère dans l'onglet Bébé).</p>
           </>}
 
           {secI === "repro" && <>
@@ -7374,6 +7578,7 @@
       const [openTrait, setOpenTrait] = useState(false);   // modale « + Traitement »
       const [editTrait, setEditTrait] = useState(null);    // { index, rec }
       const [ficheEdit, setFicheEdit] = useState(null);    // nom du produit dont on édite la fiche technique
+      const [donner, setDonner] = useState(null);          // administration pré-remplie depuis une fiche
       const [bebeLot, setBebeLot] = useState(null);   // lot pré-sélectionné quand on ouvre l'onglet Bébé
       const today = AUJOURDHUI.toISOString().slice(0, 10);
 
@@ -7467,6 +7672,16 @@
       const traitementsTries = traitements.map((t, i) => ({ t, i })).sort((a, b) => String(b.t.date).localeCompare(String(a.t.date)));
       // Produits dont on peut tenir une fiche technique : ceux des Réglages + ceux déjà administrés
       const produitsFiches = produitsTraitement(config, traitements);
+      // « → Donner » : ouvre une nouvelle administration déjà réglée sur la voie et la durée de la
+      // fiche. La dose reste vide : elle dépend de la cible (abreuvoir, kg d'aliment, effectif),
+      // que l'utilisateur choisit juste après — le bouton « dose conseillée » la calcule alors.
+      const prefillDepuisFiche = (nom, f) => {
+        const voie = (f.doseMl && f.doseParLitres) ? "eau" : ((f.doseAlim && f.doseParKg) ? "nourriture" : "externe");
+        return {
+          voie, duree: f.duree || 1,
+          produits: [{ nom, dose: "", unite: voie === "nourriture" ? (f.uniteAlim || "g") : (voie === "externe" ? (f.uniteExt || "ml") : "ml") }],
+        };
+      };
 
       return (
         <div>
@@ -7530,7 +7745,7 @@
               </div>
             );
           })}
-          <p className="text-xs text-slate-400 mb-6">Les traitements (Fortiferm, Cocciferm, Vermiferm) et leurs quantités se notent dans le <span className="font-medium">Journal</span> (bouton « Ajouter une action »). Chaque case ci-dessus ne concerne QUE sa zone : un lot de jeunes logé avec des adultes garde sa propre case 🐥 juste à côté de celle de sa zone (cocher l'une ne coche pas l'autre).</p>
+          <p className="text-xs text-slate-400 mb-6">Chaque case ne concerne que sa zone. Les traitements ont leur onglet 💊.</p>
 
           {/* Soin du jour des BÉBÉS — une case par lot, reliée au suivi (S1-S8 / J1-J10) de l'onglet Bébé */}
           {jeunesSeuls.length > 0 && <>
@@ -7550,7 +7765,6 @@
                 </div>
               );
             })}
-            <p className="text-xs text-slate-400 mb-6">Une coche ici remplit directement le jour correspondant du lot dans l'onglet <span className="font-medium">Bébé</span> (suivi S1-S8) — et inversement. « → Bébé » ouvre le suivi détaillé (température, mortalité…). Un lot logé avec des adultes (champ « Où sont-ils logés ? » de la fiche du lot) apparaît plus haut, à côté de sa zone.</p>
           </>}
 
           </>}
@@ -7669,16 +7883,22 @@
                 f.duree ? f.duree + " j" : gris,
                 f.delaiOeufs ? <span className="text-amber-600 font-medium whitespace-nowrap">{f.delaiOeufs} j</span> : gris,
                 f.delaiViande ? <span className="text-amber-600 font-medium whitespace-nowrap">{f.delaiViande} j</span> : gris,
-                <button onClick={() => setFicheEdit(n)}
-                  className={"px-2.5 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (dose || doseA || doseE || f.indications ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50" : "border-slate-300 text-slate-500 hover:bg-slate-50")}>
-                  📄 {dose || doseA || doseE || f.indications ? "Modifier" : "Remplir"}
-                </button>,
+                <span className="inline-flex gap-1.5 whitespace-nowrap">
+                  {(dose || doseA || doseE) && (
+                    <button onClick={() => setDonner(prefillDepuisFiche(n, f))}
+                      title="Noter que je le donne maintenant — dose, voie et durée pré-remplies"
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white">→ Donner</button>
+                  )}
+                  <button onClick={() => setFicheEdit(n)}
+                    className={"px-2.5 py-1 rounded-lg text-xs font-medium border " + (dose || doseA || doseE || f.indications ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50" : "border-slate-300 text-slate-500 hover:bg-slate-50")}>
+                    📄 {dose || doseA || doseE || f.indications ? "Modifier" : "Remplir"}
+                  </button>
+                </span>,
               ];
             })}
           />
-          <p className="text-xs text-slate-400 mt-2">La liste suit tes produits (<span className="font-medium">Réglages → Produits / traitements</span>) plus ceux déjà administrés. La fiche s'ouvre aussi depuis le formulaire « + Traitement », au moment de choisir le produit.</p>
+          <p className="text-xs text-slate-400 mt-2">« → Donner » pré-remplit la saisie ; « dose conseillée » calcule la quantité.</p>
 
-          <p className="text-xs text-slate-400 mt-4">Les fréquences conseillées se règlent dans <span className="font-medium">Réglages → Fréquences des traitements</span> (par zone) et <span className="font-medium">→ Soins des jeunes</span> (par lot). Une fréquence à 0 = pas de rappel.</p>
           </>}
 
           {vue === "identif" && <Identification />}
@@ -7804,6 +8024,11 @@
           {ficheEdit && (
             <Modal title={"📄 Fiche technique — " + ficheEdit} onClose={() => setFicheEdit(null)}>
               <FicheProduitForm article={ficheEdit} onClose={() => setFicheEdit(null)} />
+            </Modal>
+          )}
+          {donner && (
+            <Modal title={"💊 Donner — " + donner.produits[0].nom} onClose={() => setDonner(null)}>
+              <TraitementForm prefill={donner} onClose={() => setDonner(null)} />
             </Modal>
           )}
         </div>
@@ -7944,7 +8169,7 @@
                 <option value="">{zoneDefaut} (par défaut)</option>
                 {zonesDispo.map((z) => <option key={z} value={z}>{z}</option>)}
               </select>
-              <p className="text-xs text-slate-400 mt-1">Choisis une zone d'adultes si les jeunes vivent déjà avec eux (ex. poussins mis avec les poules reproductrices). Leur case « soin du jour » remontera à côté de cette zone dans Gestion poulailler.</p>
+              <p className="text-xs text-slate-400 mt-1">Une zone d'adultes si les jeunes vivent déjà avec eux.</p>
             </Field>
           </div>
           <Field label="Lignée / famille (anti-consanguinité)">
@@ -7952,7 +8177,6 @@
             <datalist id="poussin-lignees-list">{ligneesConnues.map((l) => <option key={l} value={l} />)}</datalist>
             <p className="text-xs text-slate-400 mt-1">À reporter sur l'animal s'il devient reproducteur → évite les accouplements entre proches.</p>
           </Field>
-          <p className="text-xs text-slate-400">L'étape est calculée automatiquement selon l'âge (date de naissance). Les croisements ne se notent plus ici : ils ont leur carnet dans <span className="font-medium">Gestion poulailler → Identification → 🧬 Croisements</span>.</p>
           <Field label="Observation">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
@@ -8060,7 +8284,6 @@
               <input type="number" className={inputClass + " bg-slate-100 font-medium text-emerald-700"} value={vivantsCalcJour} readOnly tabIndex={-1} />
             </Field>
           </div>
-          <p className="text-xs text-slate-400 -mt-1">Vivants = effectif de la veille ({vivantsVeille}) − morts du jour. Pas de mort ? Utilise la case « ✅ Tous vivants » directement dans le tableau.</p>
           <Field label="Comportement">
             <select className={inputClass} value={comportement} onChange={(e) => setComportement(e.target.value)}>
               <option value="">— non noté —</option>
@@ -8102,7 +8325,6 @@
           <Field label="Nombre destiné à la consommation (abattoir)">
             <input type="number" min="0" max={vivants} className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} autoFocus />
           </Field>
-          <p className="text-xs text-slate-400">Le lot sera marqué « transféré consommation » et ce nombre ajouté aux « Animaux consommation ». Aucun transfert automatique vers les reproducteurs (à faire manuellement).</p>
           <FormButtons onClose={onClose} />
         </form>
       );
@@ -8213,7 +8435,6 @@
                   ];
                 })}
               />
-              <p className="text-xs text-slate-400 mt-2">Étapes : J0-10 démarrage sensible · J11-S4 croissance · S5-S8 développement · après S{nS} prêt à transférer (→Repro / →Conso / Archiver).</p>
             </div>
           )}
 
@@ -8454,7 +8675,6 @@
               <RowActions onDelete={() => supprimerLigne("lots", i)} />,
             ])}
           />
-          <p className="text-xs text-slate-400 mt-3">Un lot passe ici quand son statut devient « terminé ». Fécondés (fertilité) = dernier mirage · Nés (taux d'éclosion) = nés ÷ fécondés · Réussite = nés ÷ œufs incubés.</p>
           </>}
 
           {vue === "materiel" && <>
@@ -8506,7 +8726,6 @@
                       <span className="text-xs">{l.detail}</span>,
                     ])}
                   />}
-              <p className="text-xs text-slate-400 mt-3">Registre reconstruit automatiquement (rien à saisir en double) : naissances et pertes des lots de jeunes, achats de reproducteurs, abattages, décès de reproducteurs, traitements Fortiferm/Cocciferm/Vermiferm (zones + jeunes). « Imprimer / PDF » ouvre une page propre → choisis « Enregistrer en PDF » dans la fenêtre d'impression.</p>
             </>;
           })()}
         </div>
@@ -8711,6 +8930,7 @@
             <EditeurListe titre="Motifs de traitement" items={config.motifsTraitement || []} onChange={setListe("motifsTraitement")} />
             <EditeurListe titre="Traitement externe — où l'appliquer" items={config.lieuxExterne || []} onChange={setListe("lieuxExterne")} />
             <EditeurListe titre="Unités de dose (traitements)" items={config.unitesDose || []} onChange={setListe("unitesDose")} />
+            <EditeurListe titre="Unités de capacité (matériel)" items={config.unitesCapacite || []} onChange={setListe("unitesCapacite")} />
             <EditeurListe titre="Types d'événement — carnet de santé" items={config.typesSante || []} onChange={setListe("typesSante")} />
             <EditeurListe titre="Tailles de bagues (mm)" items={config.taillesBagues || []} onChange={setListe("taillesBagues")} />
             <EditeurListeVerrou titre="États du matériel" items={config.etatsMateriel || []} verrous={ETATS_MATERIEL_VERROU} onChange={setListe("etatsMateriel")}
@@ -8726,7 +8946,7 @@
           {/* Parc de couveuses */}
           <h2 className="text-lg font-semibold mb-3">Couveuses</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 overflow-x-auto">
-            <p className="text-xs text-slate-400 mb-3">Ajoute une couveuse et elle apparaît partout : choix à la mise en couvaison, pastilles de couleur, cartes de suivi. L'<span className="font-medium">emoji</span> est le repère visuel (il donne la couleur de la pastille). Les <span className="font-medium">capacités</span> servent d'indication au remplissage.</p>
+            <p className="text-xs text-slate-400 mb-3">Une couveuse ajoutée ici apparaît partout. L'emoji donne la couleur de sa pastille.</p>
             <table className="w-full text-sm">
               <thead className="text-slate-500 text-left"><tr>
                 <th className="px-2 py-1 font-medium">Nom</th><th className="px-2 py-1 font-medium">Repère</th>
@@ -8751,7 +8971,6 @@
               </tbody>
             </table>
             <button onClick={ajouterCouv} className="mt-2 text-sm text-emerald-600 hover:underline">+ Ajouter une couveuse</button>
-            <p className="text-xs text-slate-400 mt-2">Retirer une couveuse ne touche pas aux couvées déjà enregistrées dessus (elles gardent leur numéro et s'affichent en gris).</p>
           </div>
           </>}
 
@@ -8934,7 +9153,6 @@
           {/* Mémoire inventaire (articles) — seuils / unités / conditionnements mémorisés */}
           <h2 className="text-lg font-semibold mb-3">Mémoire inventaire (articles)</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8 overflow-x-auto">
-            <p className="text-xs text-slate-400 mb-3">Noms d'articles déjà saisis et leurs valeurs proposées automatiquement (seuil, unité, conditionnement). Modifiez ou supprimez une ligne ; les nouvelles saisies dans l'inventaire enrichissent cette liste.</p>
             {Object.keys(config.memoireArticles || {}).length === 0
               ? <p className="text-sm text-slate-400">Aucun article mémorisé pour l'instant. Saisissez une entrée de stock dans « Inventaire consommables ».</p>
               : <table className="w-full text-xs">
@@ -8999,7 +9217,7 @@
                 })}
               </tbody>
             </table>
-            <p className="text-xs text-slate-400 mt-2">Jours entre deux traitements (vide ou 0 = pas de rappel). Par défaut 30 j (1 mois) pour poules et cailles reproductrices. Les colonnes suivent la liste <span className="font-medium">Produits / traitements / vitamines</span> ci-dessus : ajoute un produit là-haut et il apparaît ici. Eau et nourriture ne génèrent pas de rappel.</p>
+            <p className="text-xs text-slate-400 mt-2">Jours entre deux traitements (0 = pas de rappel). Les colonnes suivent la liste des produits.</p>
           </div>
 
           {/* Abreuvoirs / volumes (dosage automatique) */}
@@ -9040,7 +9258,7 @@
                 <input type="number" step="0.1" min="0" className={numCls} value={(config.doseRule || {}).ml != null ? config.doseRule.ml : ""} onChange={(e) => setDoseRule("ml", e.target.value)} /> ml pour
                 <input type="number" step="0.1" min="0" className={numCls} value={(config.doseRule || {}).parLitres != null ? config.doseRule.parLitres : ""} onChange={(e) => setDoseRule("parLitres", e.target.value)} /> L d'eau
               </div>
-              <p className="text-xs text-slate-400 mt-2">Règle de repli, utilisée seulement quand la <span className="font-medium">fiche technique</span> du produit ne donne pas de dosage (Gestion poulailler → Traitements → 📄). Ne vaut que pour l'eau de boisson. Dose = litres × {(config.doseRule || {}).ml || 3} / {(config.doseRule || {}).parLitres || 5}.</p>
+              <p className="text-xs text-slate-400 mt-2">Repli quand la fiche technique du produit ne donne pas de dosage. Eau de boisson uniquement.</p>
             </div>
             <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
               <p className="text-sm font-semibold text-slate-700 mb-2">Fréquence des soins des jeunes (jours par lot)</p>
@@ -9072,7 +9290,6 @@
                 ))}
               </div>
             ))}
-            <p className="text-xs text-slate-400">En dessous de « Min » → trop jeune ; jusqu'à « Fin âge optimal » → optimal ; jusqu'à « Début déclin » → baisse possible ; au-delà → animal âgé.</p>
           </div>
 
           </>}
