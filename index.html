@@ -443,7 +443,10 @@
       unitesCapacite: UNITES_CAPACITE.slice(),            // unités de capacité d'un matériel (kg, L, œufs…) — s'enrichit toute seule
       produitsRenommes: false,                                             // drapeau : produits renommés avec leur nom exact + fiches techniques posées
       croisementsMigres: false,                                            // drapeau : anciens croisements des lots repris dans le journal des croisements
-      bacs: {},                                                            // contenants en cours : cle article -> { niveau, maj }
+      aRacheterManuel: [],                                                 // articles mis dans la liste de courses à la main
+      margeRachat: 7,                                                      // jours d'avance pour prévenir avant la fin du sac ouvert
+      dureeSac: {},                                                        // durée d'un sac imposée à la main : cle article -> jours
+      consommateurs: {},                                                   // qui mange quoi : cle article -> ["poules", "cailles", …]
       articlesUrgents: [],                                                 // noms d'articles normalisés marqués « urgent » (alerte importante)
       articlesMasques: [],                                                 // articles masqués du stock (ex. intitulé mal écrit) — réaffichables
       notifications: false,                                                // notification quotidienne (retards + événements du jour) à l'ouverture
@@ -725,7 +728,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v109 — 30/07/2026";
+    const APP_VERSION = "v114 — 30/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -5223,12 +5226,12 @@
 
     /* ---------- Inventaire consommables ---------- */
     // Pastille état stock (bas / ok)
-    // `bas` = stock sous le seuil · `bac` = contenant en cours presque vide ou vide
-    function StockBadge({ bas, bac }) {
-      if (bas || bac) return (
+    // `bas` = stock sous le seuil · `manuel` = mis dans la liste de courses à la main
+    function StockBadge({ bas, manuel }) {
+      if (bas || manuel) return (
         <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 whitespace-nowrap"
-          title={bac && !bas ? "Le bac en cours est presque vide (le stock de sacs, lui, est encore au-dessus du seuil)" : "Stock sous le seuil d'alerte"}>
-          ⚠️ à racheter{bac && !bas ? " (bac)" : ""}
+          title={manuel && !bas ? "Ajouté à la main à la liste de courses" : "Stock sous le seuil d'alerte"}>
+          {manuel && !bas ? "🛒 à racheter" : "⚠️ à racheter"}
         </span>
       );
       return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">ok</span>;
@@ -5260,7 +5263,7 @@
     }
 
     function ConsommableForm({ onClose, mouvementInit, initial, onSave }) {
-      const { ajouterConsommable, consommables, config, setConfig } = useData();
+      const { ajouterConsommable, consommables, config, setConfig, reproducteurs, poussins, abattoir } = useData();
       const CONSO_CATS_C = config.catsConso, UNITES_C = config.unites;
       const [date, setDate] = useState(initial ? initial.date : new Date().toISOString().slice(0, 10));
       const [article, setArticle] = useState(initial ? initial.article : "");
@@ -5301,6 +5304,8 @@
         const rec = {
           date, article: article.trim(), categorie, mouvement,
           quantite: Number(quantite) || 0, unite, conditionnement: conditionnement.trim(),
+          // Sur une sortie, on fige l'effectif qui consomme (sert au recalcul de la durée d'un sac)
+          ...(mouvement === "sortie" ? { effectif: effectifConsommateurs(config, article, { reproducteurs, poussins, abattoir, config }) } : {}),
           prixUnitaire: Number(prixUnitaire) || 0,
           remise: Number(remise) || 0,
           seuil: seuil === "" ? "" : (Number(seuil) || 0),
@@ -5398,7 +5403,7 @@
 
     // Sortie rapide : article déjà sélectionné, on ne saisit que la quantité (+ date / obs facultatives)
     function SortieRapideForm({ article, onClose }) {
-      const { ajouterConsommable } = useData();
+      const { ajouterConsommable, config, reproducteurs, poussins, abattoir } = useData();
       const [quantite, setQuantite] = useState("");
       const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
       const [obs, setObs] = useState("");
@@ -5407,6 +5412,9 @@
         ajouterConsommable({
           date, article: article.article, categorie: article.categorie,
           mouvement: "sortie", quantite: Number(quantite) || 0, unite: article.unite,
+          // Effectif figé au moment de la sortie : c'est lui qui permettra plus tard de
+          // recalculer la durée d'un sac si le cheptel a changé entre-temps.
+          effectif: effectifConsommateurs(config, article.article, { reproducteurs, poussins, abattoir, config }),
           prixUnitaire: 0, seuil: "", fournisseur: "", obs: obs.trim(),
         });
         onClose();
@@ -5529,15 +5537,23 @@
     }
 
     function InventaireConsommables() {
-      const { consommables, config, setConfig, majLigne, supprimerLigne, patchLigne } = useData();
+      const { consommables, config, setConfig, majLigne, supprimerLigne, patchLigne, reproducteurs, poussins, abattoir } = useData();
       const setUrgent = (article) => setConfig((c) => ({ ...c, articlesUrgents: toggleArticleUrgent(c, article) }));
       const setMasque = (article) => setConfig((c) => ({ ...c, articlesMasques: toggleArticleMasque(c, article) }));
-      const setBac = (article, niveau) => setConfig((c) => {
-        const cle = memArticleKey(article);
-        const bacs = { ...(c.bacs || {}) };
-        if (!niveau) delete bacs[cle]; else bacs[cle] = { niveau, maj: AUJOURDHUI_ISO };
-        return { ...c, bacs };
-      });
+      // Corrige l'unité d'un article : l'unité vit sur chaque mouvement, donc on les renomme tous
+      // d'un coup (sinon il faudrait rouvrir chaque ligne une par une dans l'onglet Mouvements).
+      const setUniteArticle = (article, unite) => {
+        const na = normLibelle(article);
+        consommables.forEach((c, i) => { if (normLibelle(c.article) === na) patchLigne("consommables", i, { unite }); });
+        setConfig((c) => {
+          const cle = memArticleKey(article);
+          const mem = { ...(c.memoireArticles || {}) };
+          mem[cle] = { ...(mem[cle] || { article }), article, unite };
+          return { ...c, memoireArticles: mem };
+        });
+      };
+      const setARacheter = (article) => setConfig((c) => ({ ...c, aRacheterManuel: toggleARacheter(c, article) }));
+      const [reglage, setReglage] = useState(null);   // article dont on règle consommateurs / durée
       const [vue, setVue] = useState("stock");   // onglet interne : stock | mouvements | depenses
       const [open, setOpen] = useState(null);   // null | "entrée" | "sortie"
       const [sortie, setSortie] = useState(null); // article sélectionné pour sortie rapide
@@ -5559,7 +5575,19 @@
       const masques = st.parArticle.filter((a) => articleEstMasque(config, a.article));
       // À racheter = stock sous le seuil OU bac en cours presque vide (le bac prime : c'est lui
       // qu'on regarde au quotidien, le stock ne compte que les sacs encore fermés).
-      const aRacheter = tousVisibles.filter((a) => a.bas || bacARacheter(config, a.article));
+      // Un article est « à racheter » si :
+      //  · on l'a demandé à la main, OU
+      //  · le sac ouvert arrive à sa fin (prédiction) — c'est ce qui prime quand elle existe, OU
+      //  · à défaut de prédiction, le stock est sous le seuil (ancien comportement).
+      const marge = Number(config.margeRachat) || 7;
+      const infoSac = (art) => sacEnCours(consommables, config, art, { reproducteurs, poussins, abattoir, config });
+      const doitRacheter = (a) => {
+        if (aRacheterManuel(config, a.article)) return true;
+        const s = infoSac(a.article);
+        if (s && s.reste != null) return s.reste <= marge;   // la prédiction fait autorité
+        return a.bas;
+      };
+      const aRacheter = tousVisibles.filter(doitRacheter);
       const valeurStockVisible = visibles.reduce((s, a) => s + Math.max(0, a.stock) * a.prixRef, 0);
       // Fusion d'articles : renomme tous les mouvements de « source » (mal écrit) vers « dest » (correct)
       const [fusion, setFusion] = useState(false);
@@ -5607,7 +5635,7 @@
             <StatCard label="Valeur du stock" value={eur(valeurStockVisible)} sub={masques.length ? "hors " + masques.length + " article(s) masqué(s)" : undefined} />
             <StatCard label={"Dépenses " + ANNEE_COURANTE} value={eur(st.depAnnee[String(ANNEE_COURANTE)] || 0)} color="indigo" />
             <StatCard label="Dépenses ce mois" value={eur(st.depMois[MOIS_COURANT] || 0)} color="purple" />
-            <StatCard label="À racheter" value={aRacheter.length} color="orange" sub="seuil atteint ou bac vide" />
+            <StatCard label="À racheter" value={aRacheter.length} color="orange" sub="sac bientôt fini, seuil, ou ajouté à la main" />
           </div>
 
           {/* Onglets internes */}
@@ -5627,14 +5655,19 @@
               : <div className="flex flex-wrap gap-2">
                   {aRacheter.map((a, i) => {
                     const u = articleEstUrgent(config, a.article);
-                    const parBac = bacARacheter(config, a.article);
+                    const parMain = aRacheterManuel(config, a.article);
                     return (
                       <span key={i} className={"inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border " + (u ? "bg-red-50 text-red-700 border-red-200" : "bg-slate-50 text-slate-600 border-slate-200")}>
-                        {u ? "⭐" : "⚠️"} {a.article}
+                        {u ? "⭐" : (parMain && !a.bas ? "🛒" : "⚠️")} {a.article}
                         <span className={u ? "text-red-400" : "text-slate-400"}>
-                          {parBac && !a.bas
-                            ? " · 📦 bac " + niveauBacDe((bacDe(config, a.article) || {}).niveau).court
-                            : " · " + a.stock + " " + a.unite + " / seuil " + a.seuil}
+                          {(() => {
+                            if (parMain) return " · ajouté à la main";
+                            const sc = infoSac(a.article);
+                            if (sc && sc.reste != null) return sc.reste < 0
+                              ? " · sac fini depuis " + (-sc.reste) + " j"
+                              : " · sac fini dans ~" + sc.reste + " j";
+                            return " · " + a.stock + " " + a.unite + " / seuil " + a.seuil;
+                          })()}
                         </span>
                       </span>
                     );
@@ -5651,7 +5684,7 @@
               const cle = normLibelle(label);
               const c = parCat[cle] || (parCat[cle] = { label, articles: 0, aRacheter: 0, stocks: {}, valeur: 0 });
               c.articles += 1;
-              if (a.bas || bacARacheter(config, a.article)) c.aRacheter += 1;
+              if (doitRacheter(a)) c.aRacheter += 1;
               const u = (a.unite || "").trim() || "u.";
               c.stocks[u] = (c.stocks[u] || 0) + Math.max(0, a.stock);
               c.valeur += Math.max(0, a.stock) * a.prixRef;
@@ -5703,38 +5736,68 @@
             ]} />
           <Table
             resume={(r, i) => { const a = visibles[i]; return <span className={a.bas ? "font-medium text-red-600" : "font-medium"}>{a.article}</span>; }}
-            columns={["Article", "Catégorie", "Stock actuel", "📦 Bac en cours", "Statut", "Urgent", "Action"]}
+            columns={["Article", "Catégorie", "Stock actuel", "📅 Sac en cours", "🛒", "Statut", "Urgent", "Action"]}
             rows={visibles.map((a) => {
               const u = articleEstUrgent(config, a.article);
               return [
                 <span className="font-medium">{a.article}</span>,
                 a.categorie,
                 /* Le seuil n'a plus sa colonne (trop de place) : il reste lisible en info-bulle du stock. */
-                <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}
-                  title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>
-                  {a.stock} {a.unite}
-                  {a.conditionnement ? <span className="block text-xs font-normal text-slate-400">{a.conditionnement} / {a.unite}</span> : null}
+                <span className="inline-flex flex-col gap-0.5">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className={a.bas ? "text-red-600 font-medium" : "font-medium"}
+                      title={a.seuil > 0 ? "Seuil d'alerte : " + a.seuil + " " + a.unite : "Pas de seuil d'alerte"}>{a.stock}</span>
+                    <select className="border border-slate-200 rounded-md px-1 py-0.5 text-xs bg-white text-slate-600"
+                      title="Changer l'unité de cet article (appliquée à tous ses mouvements)"
+                      value={a.unite || ""} onChange={(e) => setUniteArticle(a.article, e.target.value)}>
+                      {(a.unite && !listeConfig(config, "unites").map(normLibelle).includes(normLibelle(a.unite))) && <option value={a.unite}>{a.unite}</option>}
+                      {listeConfig(config, "unites").map((u) => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                  </span>
+                  {a.conditionnement ? <span className="text-xs font-normal text-slate-400">{a.conditionnement} / {a.unite}</span> : null}
                 </span>,
                 (() => {
-                  const b = bacDe(config, a.article);
-                  const n = niveauBacDe(b && b.niveau);
+                  const sc = infoSac(a.article);
+                  if (!sc) return <span className="text-slate-300 text-xs">—</span>;
+                  const cls = sc.reste == null ? "text-slate-500"
+                    : (sc.reste < 0 ? "text-red-600 font-medium" : (sc.reste <= marge ? "text-orange-600 font-medium" : "text-emerald-600"));
                   return (
-                    <span className="inline-flex flex-col gap-0.5">
-                      <select className={"border border-slate-300 rounded-md px-1.5 py-0.5 text-xs bg-white " + n.cls}
-                        value={(b && b.niveau) || ""} onChange={(e) => setBac(a.article, e.target.value)}>
-                        {NIVEAUX_BAC.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
-                      </select>
-                      {b && b.maj ? <span className="text-[10px] text-slate-400">maj {frDate(b.maj)}</span> : null}
+                    <span className="inline-flex flex-col whitespace-nowrap text-xs">
+                      <span className="text-slate-500">ouvert le {frDate(sc.ouvertLe)}</span>
+                      {sc.duree
+                        ? <>
+                            <span className={cls}>
+                              {sc.reste < 0 ? "fini depuis " + (-sc.reste) + " j" : "reste ~" + sc.reste + " j"}
+                            </span>
+                            <span className="text-slate-400" title={sc.apprise ? ("Durée apprise sur tes " + sc.nbSorties + " dernières sorties" + (sc.ajuste ? " — ajustée de " + sc.dureeBrute + " j au cheptel actuel" : "")) : "Durée que tu as fixée"}>
+                              1 sac ≈ {sc.duree} j{sc.apprise ? (sc.ajuste ? " ⚖️" : "") : " (fixé)"}
+                            </span>
+                          </>
+                        : <span className="text-slate-400">durée inconnue — 2ᵉ sortie nécessaire</span>}
                     </span>
                   );
                 })(),
-                <StockBadge bas={a.bas} bac={bacARacheter(config, a.article)} />,
+                (() => {
+                  const on = aRacheterManuel(config, a.article);
+                  return (
+                    <button onClick={() => setARacheter(a.article)}
+                      title={on ? "Retirer de la liste de courses" : "Ajouter à ma liste de courses"}
+                      className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (on
+                        ? "bg-orange-100 text-orange-700 border-orange-300"
+                        : "bg-white text-slate-400 border-slate-300 hover:bg-slate-50")}>
+                      🛒
+                    </button>
+                  );
+                })(),
+                <StockBadge bas={doitRacheter(a)} manuel={aRacheterManuel(config, a.article)} />,
                 <button onClick={() => setUrgent(a.article)} title={u ? "Retirer des alertes importantes" : "Mettre en alerte importante"}
                   className={"px-2 py-1 rounded-lg text-xs font-medium border whitespace-nowrap " + (u ? "bg-amber-100 text-amber-700 border-amber-300" : "bg-white text-slate-400 border-slate-300 hover:bg-slate-50")}>
                   {u ? "⭐" : "☆"}
                 </button>,
                 <span className="inline-flex gap-1.5 whitespace-nowrap">
                   <button onClick={() => setSortie(a)} className="px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 whitespace-nowrap">↘ Sortir</button>
+                  <button onClick={() => setReglage(a.article)} title="Qui consomme cet article, et durée d'un sac"
+                    className="px-2 py-1 rounded-lg text-xs font-medium border border-slate-300 text-slate-500 hover:bg-slate-50 whitespace-nowrap">⚙️</button>
                   <button onClick={() => setMasque(a.article)} title="Masquer cette ligne du stock (réaffichable en bas de page)"
                     className="px-2 py-1 rounded-lg text-xs font-medium border border-slate-300 text-slate-400 hover:bg-slate-50 whitespace-nowrap">🙈</button>
                 </span>,
@@ -5822,6 +5885,11 @@
           {open && (
             <Modal title={open === "sortie" ? "Sortie de stock" : "Entrée de stock"} onClose={() => setOpen(null)}>
               <ConsommableForm mouvementInit={open} onClose={() => setOpen(null)} />
+            </Modal>
+          )}
+          {reglage && (
+            <Modal title={"⚙️ " + reglage} onClose={() => setReglage(null)}>
+              <ReglageArticleForm article={reglage} onClose={() => setReglage(null)} />
             </Modal>
           )}
           {sortie && (
@@ -6481,25 +6549,156 @@
       if (i >= 0) liste.splice(i, 1); else liste.push(article.trim());
       return liste;
     }
-    // ===== Bac / contenant en cours =====
-    // Un sac sorti du stock n'est pas forcément consommé : souvent il est transvasé dans un bac
-    // hermétique. Le STOCK compte les sacs fermés ; le BAC suit ce qui reste dans le contenant.
-    // Les deux sont indépendants — c'est le niveau du bac qui déclenche le rachat, pas le stock.
-    const NIVEAUX_BAC = [
-      { id: "",       label: "—",            court: "—",      cls: "text-slate-300",              racheter: false },
-      { id: "plein",  label: "Plein",        court: "plein",  cls: "text-emerald-600",            racheter: false },
-      { id: "entame", label: "Entamé",       court: "entamé", cls: "text-slate-600",              racheter: false },
-      { id: "bas",    label: "Presque vide", court: "bas",    cls: "text-orange-600 font-medium", racheter: true },
-      { id: "vide",   label: "Vide",         court: "vide",   cls: "text-red-600 font-medium",    racheter: true },
+    // ===== Qui consomme quoi =====
+    // Rattacher un article à ses mangeurs permet deux choses : compter les bouches, et surtout
+    // RECALCULER la durée d'un sac quand le cheptel change — sans attendre la prochaine sortie.
+    const GROUPES_CONSO = [
+      { id: "poules",   label: "🐔 Poules & coqs" },
+      { id: "cailles",  label: "🐦 Cailles" },
+      { id: "jeunes",   label: "🐥 Poussins & cailleteaux" },
+      { id: "engrais",  label: "🍗 Animaux consommation" },
     ];
-    const niveauBacDe = (id) => NIVEAUX_BAC.find((n) => n.id === (id || "")) || NIVEAUX_BAC[0];
-    function bacDe(config, article) {
-      return ((config && config.bacs) || {})[memArticleKey(article)] || null;
+    // Effectif vivant d'un groupe, à l'instant T, depuis les données déjà saisies
+    function effectifGroupe(id, d) {
+      const e = effectifsReproducteurs(d.reproducteurs, d.config);
+      if (id === "poules")  return (Number(e.poules) || 0) + (Number(e.coqs) || 0);
+      if (id === "cailles") return (Number(e.caillesF) || 0) + (Number(e.caillesM) || 0);
+      if (id === "jeunes")  return (d.poussins || []).filter((p) => p.statut === "en croissance").reduce((s, p) => s + vivantsLot(p), 0);
+      if (id === "engrais") return (d.abattoir || []).filter((a) => a.statut !== "abattu" && a.statut !== "décédé").reduce((s, a) => s + (Number(a.nombre) || 0), 0);
+      return 0;
     }
-    // Le bac réclame-t-il un rachat ? (presque vide ou vide)
-    function bacARacheter(config, article) {
-      const b = bacDe(config, article);
-      return !!(b && niveauBacDe(b.niveau).racheter);
+    const consommateursDe = (config, article) => ((config && config.consommateurs) || {})[memArticleKey(article)] || [];
+    // Nombre total de bouches sur un article. 0 si aucun consommateur n'est indiqué.
+    function effectifConsommateurs(config, article, d) {
+      return consommateursDe(config, article).reduce((s, g) => s + effectifGroupe(g, d), 0);
+    }
+
+    // ===== Sac en cours : combien de temps dure un sac, et quand faut-il vraiment racheter ? =====
+    // L'utilisateur ne pèse pas ce qu'il donne. La seule mesure fiable est le TEMPS ENTRE DEUX
+    // SORTIES DE SAC : si un sac dure 3 semaines, sortir un sac du stock ne veut pas dire qu'il
+    // faut racheter tout de suite — il reste 3 semaines de mangeoire. L'app apprend donc la durée
+    // d'un sac depuis l'historique et n'alerte qu'à l'approche de la fin du sac ouvert.
+    // Bonus : la durée se raccourcit toute seule quand le cheptel grandit, sans rien régler.
+    const SORTIES_RETENUES = 6;   // on n'apprend que sur les dernières sorties → s'adapte au cheptel
+    // `d` (facultatif) = { reproducteurs, poussins, abattoir, config } → permet d'ajuster la durée
+    // à l'effectif ACTUEL quand l'article a des consommateurs déclarés.
+    function sacEnCours(consommables, config, article, d) {
+      const na = normLibelle(article);
+      const sorties = (consommables || [])
+        .filter((c) => normLibelle(c.article) === na && c.mouvement === "sortie" && c.date)
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+        .slice(-SORTIES_RETENUES);
+      if (!sorties.length) return null;
+      const derniere = sorties[sorties.length - 1];
+      const qDerniere = Math.max(1, Number(derniere.quantite) || 1);
+
+      // Durée d'un sac : soit imposée à la main, soit apprise sur l'historique
+      const impose = Number(((config && config.dureeSac) || {})[memArticleKey(article)]) || 0;
+      let duree = impose, apprise = false;
+      if (!duree && sorties.length >= 2) {
+        const jours = joursEntre(sorties[0].date, derniere.date);
+        // Sacs réellement consommés sur la période = tous sauf celui encore en cours
+        const sacs = sorties.slice(0, -1).reduce((n, c) => n + Math.max(1, Number(c.quantite) || 1), 0);
+        if (jours > 0 && sacs > 0) { duree = jours / sacs; apprise = true; }
+      }
+      if (!duree) return { ouvertLe: derniere.date, duree: null, finPrevue: null, reste: null, apprise: false, nbSorties: sorties.length, ajuste: false };
+
+      // Ajustement au cheptel : on convertit la durée apprise en « jours × animal par sac », puis on
+      // la ramène à l'effectif d'aujourd'hui. Si le troupeau double, le sac dure deux fois moins.
+      // `effectif` est figé sur chaque sortie au moment de la saisie ; à défaut on prend l'actuel.
+      let ajuste = false, dureeAff = duree;
+      if (d && !impose && apprise) {
+        const actuel = effectifConsommateurs(config, article, d);
+        const refs = sorties.slice(0, -1).map((c) => Number(c.effectif) || 0).filter((n) => n > 0);
+        const ref = refs.length ? refs.reduce((a2, b2) => a2 + b2, 0) / refs.length : actuel;
+        if (actuel > 0 && ref > 0 && Math.abs(actuel - ref) >= 1) { dureeAff = duree * ref / actuel; ajuste = true; }
+      }
+      const finPrevue = dateDecalee(derniere.date, Math.round(dureeAff * qDerniere));
+      return {
+        ouvertLe: derniere.date, duree: Math.round(dureeAff), dureeBrute: Math.round(duree), finPrevue,
+        reste: -joursDepuis(finPrevue),        // négatif = déjà dépassé
+        apprise, ajuste, nbSorties: sorties.length,
+      };
+    }
+    // Nombre de jours entre deux dates ISO (positif si b est après a)
+    function joursEntre(a, b) {
+      const x = Date.parse(String(a).slice(0, 10)), y = Date.parse(String(b).slice(0, 10));
+      if (isNaN(x) || isNaN(y)) return 0;
+      return Math.round((y - x) / 86400000);
+    }
+
+    // Réglage d'un article : qui le consomme, et faut-il imposer la durée d'un sac ?
+    function ReglageArticleForm({ article, onClose }) {
+      const { config, setConfig, consommables, reproducteurs, poussins, abattoir } = useData();
+      const cle = memArticleKey(article);
+      const [groupes, setGroupes] = useState(consommateursDe(config, article));
+      const dureeAuto = sacEnCours(consommables, { ...config, dureeSac: {} }, article, { reproducteurs, poussins, abattoir, config });
+      const [duree, setDuree] = useState(() => { const v = (config.dureeSac || {})[cle]; return v ? String(v) : ""; });
+      const toggle = (g) => setGroupes((l) => (l.includes(g) ? l.filter((x) => x !== g) : l.concat([g])));
+      const effectif = groupes.reduce((s, g) => s + effectifGroupe(g, { reproducteurs, poussins, abattoir, config }), 0);
+      function submit(e) {
+        e.preventDefault();
+        setConfig((c) => {
+          const cons = { ...(c.consommateurs || {}) };
+          if (groupes.length) cons[cle] = groupes; else delete cons[cle];
+          const ds = { ...(c.dureeSac || {}) };
+          const n = Number(duree) || 0;
+          if (n > 0) ds[cle] = n; else delete ds[cle];
+          return { ...c, consommateurs: cons, dureeSac: ds };
+        });
+        onClose();
+      }
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-2">Qui consomme cet article ?</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {GROUPES_CONSO.map((g) => {
+                const on = groupes.includes(g.id);
+                const n = effectifGroupe(g.id, { reproducteurs, poussins, abattoir, config });
+                return (
+                  <label key={g.id} className={"flex items-center justify-between gap-2 text-sm px-3 py-2 rounded-lg border cursor-pointer " + (on ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "border-slate-200 hover:bg-slate-50")}>
+                    <span className="flex items-center gap-2">
+                      <input type="checkbox" checked={on} onChange={() => toggle(g.id)} className="w-4 h-4" />
+                      {g.label}
+                    </span>
+                    <span className="text-xs text-slate-400">{n}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400 mt-2">
+              {effectif > 0
+                ? <>Total : <span className="font-medium text-slate-600">{effectif} animaux</span>. Si ce nombre change, la durée d'un sac est recalculée automatiquement.</>
+                : "Sans consommateur indiqué, la durée reste celle apprise sur l'historique, sans ajustement au cheptel."}
+            </p>
+          </div>
+          <Field label="Durée d'un sac (jours)">
+            <input type="number" min="0" className={inputClass} value={duree} onChange={(e) => setDuree(e.target.value)}
+              placeholder={dureeAuto && dureeAuto.duree ? "auto : " + dureeAuto.duree + " j" : "auto"} />
+            <p className="text-xs text-slate-400 mt-1">
+              Laisse vide pour laisser l'app apprendre depuis l'écart entre tes sorties de stock
+              {dureeAuto && dureeAuto.duree ? " (actuellement ~" + dureeAuto.duree + " j)" : ""}. Une valeur ici fige la durée et désactive l'ajustement au cheptel.
+            </p>
+          </Field>
+          <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
+    // ===== « À racheter » posé à la main =====
+    // Le stock compte les sacs fermés ; il ne sait pas ce qu'il reste dans le bac où l'on transvase.
+    // Plutôt que de modéliser le contenant, on laisse dire simplement « celui-là, il m'en faut » —
+    // l'article reste dans la liste de courses jusqu'à ce qu'on le décoche.
+    function aRacheterManuel(config, article) {
+      return ((config && config.aRacheterManuel) || []).map(normLibelle).includes(normLibelle(article));
+    }
+    function toggleARacheter(config, article) {
+      const liste = ((config && config.aRacheterManuel) || []).slice();
+      const n = normLibelle(article);
+      const i = liste.findIndex((x) => normLibelle(x) === n);
+      if (i >= 0) liste.splice(i, 1); else liste.push(String(article).trim());
+      return liste;
     }
     // Article masqué du stock (intitulé mal écrit, doublon…) ? Comparaison sur nom normalisé.
     function articleEstMasque(config, article) {
@@ -7622,6 +7821,15 @@
       const toggleBebe = (i, p, key) => {
         const n = jourBebe(p); if (n == null) return;
         const d = (p.jours || {})[n] || {};
+        // « Tous vivants » : aucun mort ce jour → on reporte l'effectif de la veille, exactement
+        // comme la case du suivi S1-S8 (même donnée, cocher ici = cocher là-bas).
+        if (key === "tousVivants") {
+          const maj = d.tousVivants
+            ? { ...d, tousVivants: false }
+            : { ...d, tousVivants: true, morts: 0, vivants: vivantsAuJour(p, n - 1) };
+          patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: maj } });
+          return;
+        }
         patchLigne("poussins", i, { jours: { ...(p.jours || {}), [n]: { ...d, [key]: !d[key] } } });
       };
       const ouvrirBebe = (i) => { setBebeLot(i); setVue("bebe"); };   // accès direct au lot dans l'onglet Bébé
@@ -7651,11 +7859,16 @@
             {n == null
               ? <p className="text-xs text-slate-400">Hors fenêtre de suivi.</p>
               : <div className="flex flex-wrap gap-2">
-                  {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"]].map(([k, lbl]) => {
+                  {[["eau", "💧 Eau"], ["nourriture", "🌾 Nourriture"], ["nettoyage", "🧹 Nettoyage"], ["tousVivants", "✅ Tous vivants"]].map(([k, lbl]) => {
                     const on = bebeFait(p, k);
+                    // « Tous vivants » se distingue : c'est un constat, pas un soin
+                    const vivants = k === "tousVivants";
                     return (
                       <button key={k} onClick={() => toggleBebe(i, p, k)}
-                        className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on ? "bg-emerald-100 text-emerald-700 border-emerald-300" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
+                        title={vivants ? "Aucun mort aujourd'hui — reporte l'effectif de la veille" : undefined}
+                        className={"px-2.5 py-1 rounded-full text-xs font-medium border " + (on
+                          ? (vivants ? "bg-sky-100 text-sky-700 border-sky-300" : "bg-emerald-100 text-emerald-700 border-emerald-300")
+                          : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")}>
                         {on ? "✓ " : ""}{lbl}
                       </button>
                     );
@@ -8931,6 +9144,14 @@
             <EditeurListe titre="Traitement externe — où l'appliquer" items={config.lieuxExterne || []} onChange={setListe("lieuxExterne")} />
             <EditeurListe titre="Unités de dose (traitements)" items={config.unitesDose || []} onChange={setListe("unitesDose")} />
             <EditeurListe titre="Unités de capacité (matériel)" items={config.unitesCapacite || []} onChange={setListe("unitesCapacite")} />
+            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
+              <p className="text-sm font-semibold text-slate-700 mb-2">Prévenir avant la fin d'un sac</p>
+              <label className="text-xs text-slate-500 flex items-center gap-2">
+                <input type="number" min="0" className={numCls} value={config.margeRachat != null ? config.margeRachat : 7}
+                  onChange={(e) => setConfig((c) => ({ ...c, margeRachat: Number(e.target.value) || 0 }))} /> jours d'avance
+              </label>
+              <p className="text-xs text-slate-400 mt-2">L'app apprend la durée d'un sac depuis l'écart entre tes sorties de stock, et ne le met « à racheter » qu'à l'approche de la fin — pas dès l'ouverture.</p>
+            </div>
             <EditeurListe titre="Types d'événement — carnet de santé" items={config.typesSante || []} onChange={setListe("typesSante")} />
             <EditeurListe titre="Tailles de bagues (mm)" items={config.taillesBagues || []} onChange={setListe("taillesBagues")} />
             <EditeurListeVerrou titre="États du matériel" items={config.etatsMateriel || []} verrous={ETATS_MATERIEL_VERROU} onChange={setListe("etatsMateriel")}
