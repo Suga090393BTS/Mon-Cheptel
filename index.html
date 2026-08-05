@@ -728,7 +728,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v116 — 30/07/2026";
+    const APP_VERSION = "v118 — 30/07/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -1094,6 +1094,7 @@
       sujets:        "cheptel_sujets_v1",   // identification individuelle (bagues, sexage, croisement)
       croisements:   "cheptel_croisements_v1",  // journal libre des croisements (Identification → Croisements)
       traitements:   "cheptel_traitements_v1",  // administrations de traitements (Gestion poulailler → Traitements)
+      evenements:    "cheptel_evenements_v1",   // événements saisis à la main dans le calendrier
       config:        "cheptel_config_v1",
     };
     const sujetsSeed = [];
@@ -1105,6 +1106,9 @@
     //   duree (jours), motif, produits: [{ nom, dose, unite }], obs }
     // (Les lignes d'avant la gestion des voies n'ont que `volumeEau` : relues comme de l'eau.)
     const traitementsSeed = [];
+    // Événements du calendrier saisis à la main :
+    // { date, titre, icone, couleur, obs, recurrence: { tous: N, unite: "jour"|"semaine"|"mois"|"an", jusqua } }
+    const evenementsSeed = [];
 
     // Export : télécharge un fichier JSON contenant toutes les collections
     function exporterDonnees(store) {
@@ -1317,6 +1321,7 @@
       const [sujets, ajouterSujet, setSujets] = useCollection(STORE_KEYS.sujets, sujetsSeed);
       const [croisements, ajouterCroisement, setCroisements] = useCollection(STORE_KEYS.croisements, croisementsSeed);
       const [traitements, ajouterTraitement, setTraitements] = useCollection(STORE_KEYS.traitements, traitementsSeed);
+      const [evenements, ajouterEvenement, setEvenements] = useCollection(STORE_KEYS.evenements, evenementsSeed);
 
       // Base de données / réglages : objet config persistant, fusionné avec les défauts
       const [config, setConfig] = useState(() => {
@@ -1332,7 +1337,7 @@
         collectes: setCollectes, consommables: setConsommables, materiel: setMateriel,
         poulaillers: setPoulaillers, poussins: setPoussins, lotsStock: setLotsStock,
         breederPurchases: setBreederPurchases, sujets: setSujets, croisements: setCroisements,
-        traitements: setTraitements,
+        traitements: setTraitements, evenements: setEvenements,
       };
 
       const store = {
@@ -1353,6 +1358,7 @@
         sujets, ajouterSujet,
         croisements, ajouterCroisement,
         traitements, ajouterTraitement,
+        evenements, ajouterEvenement,
         config, setConfig, resetConfig: () => setConfig(configDefaut),
         majLigne: (cle, index, item) => setters[cle]((prev) => prev.map((x, i) => (i === index ? item : x))),
         patchLigne: (cle, index, patch) => setters[cle]((prev) => prev.map((x, i) => (i === index ? { ...x, ...patch } : x))),
@@ -1456,7 +1462,7 @@
       useEffect(() => {
         if (premierRendu.current) { premierRendu.current = false; return; }  // ne pas re-pousser ce qu'on vient de charger
         pushCloudDiffere();
-      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, croisements, traitements, config]);
+      }, [lots, suivis, mirages, eclosions, races, reproducteurs, abattoir, collectes, consommables, materiel, poulaillers, poussins, lotsStock, breederPurchases, sujets, croisements, traitements, evenements, config]);
 
       return <DataContext.Provider value={store}>{children}</DataContext.Provider>;
     }
@@ -2178,14 +2184,14 @@
        PAGES
        ============================================================ */
     function Dashboard() {
-      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases, races, traitements } = useData();
+      const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases, races, traitements, evenements } = useData();
       const allerA = useContext(NavContext);
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
       const today = AUJOURDHUI.toISOString().slice(0, 10);
 
       // --- Aperçu calendrier : événements d'aujourd'hui + 7 prochains jours (mêmes données que la page Calendrier) ---
-      const evCal = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config);
+      const evCal = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements, evenements }, config);
       const semaine = [];
       for (let k = 0; k <= 7; k++) {
         const d = dateDecalee(today, k);
@@ -4489,7 +4495,11 @@
       const [statut, setStatut] = useState(initial ? initial.statut : "actif");
       const [dateFin, setDateFin] = useState(initial ? (initial.dateFin || "") : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
-      const finNecessaire = statut === "décédé" || statut === "retiré reproduction";
+      // La date de fin s'affiche pour TOUT statut autre qu'« actif ». Avant, elle était liée aux
+      // deux libellés exacts « décédé » / « retiré reproduction » : depuis que les statuts sont
+      // modifiables (v101), un statut ajouté par l'utilisateur (« mort », « vendu »…) n'ouvrait
+      // jamais le champ, et la date devenait impossible à saisir.
+      const finNecessaire = normLibelle(statut) !== "actif";
 
       // Races proposées selon l'espèce : poule & coq → races de poules ; cailles → races de cailles
       const especeRace = espece.indexOf("caille") === 0 ? "caille" : "poule";
@@ -4565,7 +4575,7 @@
               </select>
             </Field>
             {finNecessaire && (
-              <Field label="Date de décès / retrait">
+              <Field label="Date de décès / fin">
                 <input type="date" className={inputClass} value={dateFin} onChange={(e) => setDateFin(e.target.value)} />
               </Field>
             )}
@@ -9614,7 +9624,7 @@
     }
     // À la première ouverture de la journée : notifie retards + soins + événements du jour (1 seule notification).
     function NotificationsDaemon() {
-      const { lots, poulaillers, poussins, reproducteurs, abattoir, config, traitements } = useData();
+      const { lots, poulaillers, poussins, reproducteurs, abattoir, config, traitements, evenements } = useData();
       useEffect(() => {
         if (!config.notifications) return;
         if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
@@ -9626,7 +9636,7 @@
           if (r.code === "retard") lignes.push("🔴 " + r.label + " — " + r.zone);
           else if (r.code === "aujourdhui") lignes.push("🟠 " + r.label + " — " + r.zone);
         });
-        (evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config)[AUJOURDHUI_ISO] || [])
+        (evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements, evenements }, config)[AUJOURDHUI_ISO] || [])
           .forEach((e) => lignes.push(e.icon + " " + e.label));
         if (!lignes.length) return;
         if (envoyerNotification("🐔 Cheptel — aujourd'hui", lignes.slice(0, 8).join("\n") + (lignes.length > 8 ? "\n…" : "")))
@@ -9637,9 +9647,53 @@
 
     // Construit tous les événements datés de l'élevage → { "YYYY-MM-DD": [ {icon,label,color,page} ] }.
     // Partagé entre la page Calendrier et l'aperçu « Cette semaine » du tableau de bord.
-    function evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config) {
+    // Unités de récurrence d'un événement saisi à la main
+    const UNITES_RECURRENCE = [
+      { id: "jour",    label: "jour(s)" },
+      { id: "semaine", label: "semaine(s)" },
+      { id: "mois",    label: "mois" },
+      { id: "an",      label: "an(s)" },
+    ];
+    // Décale une date ISO de n unités (gère les mois/années, qui ne sont pas des multiples de jours)
+    function decalerUnite(iso, n, unite) {
+      if (unite === "jour") return dateDecalee(iso, n);
+      if (unite === "semaine") return dateDecalee(iso, n * 7);
+      const d = new Date(String(iso).slice(0, 10));
+      if (unite === "mois") d.setMonth(d.getMonth() + n);
+      else d.setFullYear(d.getFullYear() + n);
+      return d.toISOString().slice(0, 10);
+    }
+    // Toutes les dates d'un événement dans une fenêtre donnée (bornée : un événement récurrent
+    // sans date de fin ne doit pas générer une liste infinie).
+    const MAX_OCCURRENCES = 400;
+    function occurrencesEvenement(ev, debut, fin) {
+      const out = [];
+      if (!ev.date) return out;
+      const r = ev.recurrence || {};
+      const tous = Math.max(0, Number(r.tous) || 0);
+      if (!tous) return ev.date <= fin && ev.date >= debut ? [ev.date] : (ev.date >= debut && ev.date <= fin ? [ev.date] : []);
+      let d = ev.date, n = 0;
+      const stop = (r.jusqua && r.jusqua < fin) ? r.jusqua : fin;
+      while (d <= stop && n < MAX_OCCURRENCES) {
+        if (d >= debut) out.push(d);
+        d = decalerUnite(d, tous, r.unite || "semaine");
+        n++;
+      }
+      return out;
+    }
+
+    function evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements, evenements }, config) {
       const events = {};
       const add = (date, ev) => { if (!date) return; (events[date] = events[date] || []).push(ev); };
+      // Événements saisis à la main (ponctuels ou récurrents) — fenêtre : 1 an en arrière, 3 ans devant
+      const debutF = dateDecalee(AUJOURDHUI_ISO, -365), finF = dateDecalee(AUJOURDHUI_ISO, 365 * 3);
+      (evenements || []).forEach((e, i) => {
+        occurrencesEvenement(e, debutF, finF).forEach((d) => add(d, {
+          icon: e.icone || "📌", label: e.titre || "Événement", color: e.couleur || "slate",
+          page: "calendrier", perso: true, index: i, obs: e.obs || "",
+          recurrent: !!(e.recurrence && Number(e.recurrence.tous) > 0),
+        }));
+      });
       // Couvaisons : couleur par ESPÈCE (poule = ambre, caille = indigo) → repère la couveuse d'un coup d'œil.
       lots.forEach((l) => {
         if (l.statut === "terminé" || !l.dateDebut) return;
@@ -9683,16 +9737,97 @@
     // Calendrier mensuel : couvaisons (mise en couveuse + éclosion prévue + mirages),
     // début de récolte des œufs pour la couvée suivante, et rappels (nettoyage / traitements / manuels).
     // Chaque événement a une `page` cible → cliquable pour s'y rendre.
+    // Événement du calendrier saisi à la main, ponctuel ou récurrent
+    function EvenementForm({ onClose, initial, onSave, dateInit }) {
+      const { ajouterEvenement } = useData();
+      const [date, setDate] = useState(initial ? initial.date : (dateInit || AUJOURDHUI_ISO));
+      const [titre, setTitre] = useState(initial ? (initial.titre || "") : "");
+      const [icone, setIcone] = useState(initial ? (initial.icone || "📌") : "📌");
+      const [couleur, setCouleur] = useState(initial ? (initial.couleur || "slate") : "slate");
+      const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
+      const r = (initial && initial.recurrence) || {};
+      const [repete, setRepete] = useState(!!(Number(r.tous) > 0));
+      const [tous, setTous] = useState(r.tous ? String(r.tous) : "1");
+      const [unite, setUnite] = useState(r.unite || "semaine");
+      const [jusqua, setJusqua] = useState(r.jusqua || "");
+      const ICONES = ["📌", "🔔", "🩺", "🧹", "🛒", "🥚", "🐣", "🐔", "🔧", "💰", "📞", "🎯"];
+      const COULEURS = [["slate", "gris"], ["emerald", "vert"], ["amber", "ambre"], ["orange", "orange"], ["red", "rouge"], ["indigo", "indigo"], ["purple", "violet"]];
+      function submit(e) {
+        e.preventDefault();
+        if (!titre.trim()) return;
+        const rec = {
+          ...(initial || {}), date, titre: titre.trim(), icone, couleur, obs: obs.trim(),
+          recurrence: repete ? { tous: Math.max(1, Number(tous) || 1), unite, jusqua } : null,
+        };
+        (onSave || ajouterEvenement)(rec);
+        onClose();
+      }
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <Field label="Quoi ?">
+            <input className={inputClass} value={titre} onChange={(e) => setTitre(e.target.value)} placeholder="ex. Vaccin, commande d'aliment, visite véto" autoFocus required />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Date">
+              <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
+            </Field>
+            <Field label="Couleur">
+              <select className={inputClass} value={couleur} onChange={(e) => setCouleur(e.target.value)}>
+                {COULEURS.map(([id, lbl]) => <option key={id} value={id}>{lbl}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-600 mb-1">Icône</p>
+            <div className="flex flex-wrap gap-1.5">
+              {ICONES.map((i) => (
+                <button key={i} type="button" onClick={() => setIcone(i)}
+                  className={"w-9 h-9 rounded-lg border text-lg " + (icone === i ? "bg-emerald-50 border-emerald-400" : "border-slate-200 hover:bg-slate-50")}>{i}</button>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={repete} onChange={(e) => setRepete(e.target.checked)} className="w-4 h-4" />
+              <span className="font-medium text-slate-700">🔁 Ça se répète</span>
+            </label>
+            {repete && (
+              <div className="grid grid-cols-2 gap-3 mt-3">
+                <Field label="Tous les">
+                  <div className="flex gap-2">
+                    <input type="number" min="1" className={inputClass + " w-20"} value={tous} onChange={(e) => setTous(e.target.value)} />
+                    <select className={inputClass} value={unite} onChange={(e) => setUnite(e.target.value)}>
+                      {UNITES_RECURRENCE.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+                    </select>
+                  </div>
+                </Field>
+                <Field label="Jusqu'au (facultatif)">
+                  <input type="date" className={inputClass} value={jusqua} onChange={(e) => setJusqua(e.target.value)} />
+                  <p className="text-xs text-slate-400 mt-1">Vide = sans fin.</p>
+                </Field>
+              </div>
+            )}
+          </div>
+          <Field label="Note (facultatif)">
+            <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
+          </Field>
+          <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
     function Calendrier() {
       const allerA = useContext(NavContext);
-      const { lots, poulaillers, poussins, reproducteurs, abattoir, config, traitements } = useData();
+      const { lots, poulaillers, poussins, reproducteurs, abattoir, config, traitements, evenements, majLigne, supprimerLigne } = useData();
       const now = new Date();
       const [vue, setVue] = useState({ y: now.getFullYear(), m: now.getMonth() });
       const [jourSel, setJourSel] = useState(AUJOURDHUI_ISO);
+      const [openEv, setOpenEv] = useState(null);    // { date } → nouvel événement
+      const [editEv, setEditEv] = useState(null);    // { index, rec } → modification
       const pad = (n) => String(n).padStart(2, "0");
       const isoDate = (y, m, d) => y + "-" + pad(m + 1) + "-" + pad(d);
 
-      const events = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements }, config);
+      const events = evenementsCalendrier({ lots, poulaillers, poussins, reproducteurs, abattoir, traitements, evenements }, config);
 
       const dot = { indigo: "bg-indigo-500", emerald: "bg-emerald-500", amber: "bg-amber-500", orange: "bg-orange-500", red: "bg-red-500", purple: "bg-purple-500", slate: "bg-slate-500" };
       const chip = { indigo: "bg-indigo-100 text-indigo-700", emerald: "bg-emerald-100 text-emerald-700", amber: "bg-amber-100 text-amber-700", orange: "bg-orange-100 text-orange-700", red: "bg-red-100 text-red-700", purple: "bg-purple-100 text-purple-700", slate: "bg-slate-200 text-slate-700" };
@@ -9714,7 +9849,8 @@
 
       return (
         <div>
-          <PageHeader title="Calendrier" subtitle="Couvaisons, éclosions prévues et rappels — vue mensuelle." />
+          <PageHeader title="Calendrier" subtitle="Couvaisons, éclosions prévues et rappels — vue mensuelle."
+            action={<AddButton onClick={() => setOpenEv({ date: jourSel })} label="Événement" />} />
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
             <div className="flex items-center justify-between mb-3">
               <button onClick={prevMois} className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50" aria-label="Mois précédent">◀</button>
@@ -9753,12 +9889,19 @@
             {evJourSel.length === 0
               ? <p className="text-sm text-slate-400">Rien de prévu ce jour.</p>
               : <ul className="space-y-1.5">{evJourSel.map((e, k) => (
-                  <li key={k}>
-                    <button onClick={() => e.page && allerA(e.page)} className="flex items-center gap-2 text-sm w-full text-left hover:opacity-80">
+                  <li key={k} className="flex items-center gap-2">
+                    <button onClick={() => (e.perso ? setEditEv({ index: e.index, rec: evenements[e.index] }) : (e.page && allerA(e.page)))}
+                      className="flex items-center gap-2 text-sm flex-1 min-w-0 text-left hover:opacity-80">
                       <span>{e.icon}</span>
                       <span className={"px-2 py-0.5 rounded-full text-xs font-medium " + (chip[e.color] || "bg-slate-100 text-slate-600")}>{e.label}</span>
-                      {e.page && <span className="text-slate-300 text-xs">›</span>}
+                      {e.recurrent && <span className="text-slate-400 text-xs" title="Événement récurrent">🔁</span>}
+                      {e.obs && <span className="text-slate-400 text-xs truncate">· {e.obs}</span>}
+                      {(e.page || e.perso) && <span className="text-slate-300 text-xs">›</span>}
                     </button>
+                    {e.perso && (
+                      <button onClick={() => { if (window.confirm("Supprimer « " + e.label + " » ?" + (e.recurrent ? " (toutes ses répétitions)" : ""))) supprimerLigne("evenements", e.index); }}
+                        className="px-1.5 py-0.5 rounded hover:bg-red-50 text-red-500 text-xs shrink-0" title="Supprimer">🗑</button>
+                    )}
                   </li>
                 ))}</ul>}
           </div>
@@ -9779,6 +9922,17 @@
                   ))}
                 </ul>}
           </div>
+
+          {openEv && (
+            <Modal title="📌 Nouvel événement" onClose={() => setOpenEv(null)}>
+              <EvenementForm dateInit={openEv.date} onClose={() => setOpenEv(null)} />
+            </Modal>
+          )}
+          {editEv && editEv.rec && (
+            <Modal title="📌 Modifier l'événement" onClose={() => setEditEv(null)}>
+              <EvenementForm initial={editEv.rec} onSave={(rec) => majLigne("evenements", editEv.index, rec)} onClose={() => setEditEv(null)} />
+            </Modal>
+          )}
 
           <div className="text-xs text-slate-400 mt-3 space-y-1">
             <p><span className="inline-block w-2 h-2 rounded-full bg-amber-500 align-middle mr-1"></span> Couvaison <span className="font-medium">poules</span> · <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 align-middle mx-1"></span> Couvaison <span className="font-medium">cailles</span> — icône = type : 🥚 mise · 🐣 éclosion · 🔦 mirage · 🥚 récolte couvée suivante.</p>
