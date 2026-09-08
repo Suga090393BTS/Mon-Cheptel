@@ -746,7 +746,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v118 — 30/07/2026";
+    const APP_VERSION = "v121 — 08/09/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -2201,9 +2201,11 @@
     /* ============================================================
        PAGES
        ============================================================ */
-    function Dashboard() {
+    // Tous les calculs du tableau de bord ET du « Résumé du cheptel » de l'Historique.
+    // Un seul endroit de calcul, deux affichages : le tableau de bord ne garde que
+    // « Actions du jour » et « Cette semaine » ; tout le reste part dans l'Historique.
+    function useTableauBord() {
       const { lots, suivis, consommables, materiel, poulaillers, config, collectes, poussins, reproducteurs, abattoir, lotsStock, breederPurchases, races, traitements, evenements } = useData();
-      const allerA = useContext(NavContext);
       const sc = statsConsommables(consommables);
       const sm = statsMateriel(materiel);
       const today = AUJOURDHUI.toISOString().slice(0, 10);
@@ -2374,10 +2376,25 @@
         }
       });
       aVenir.sort((a, b) => a.localeCompare(b));
+      return {
+        today, semaine, nbEvSemaine, enRetard, aFaire, aVenir,
+        nbAlertes, stocksUrgents, materielTraiter, alertesRepro, ecartCouvaison, alertesCouv, baissePonte, alertesLignee,
+        so, batchesD, sc, sm, chept, pontePoule7, ponteCaille7,
+        totalDepAn, depConsoAn, depMatAn, depReproAn, oeufsAn, poussinsNesAn, coutParOeuf, coutParPoussin, prixOeuf,
+        reproActifs, reproMalades, reproDecedes, reproRetraites, consoTotal,
+        jeunesActifs, jeunesPoussins, jeunesCailleteaux, vivants, morts, alJeune, tachesJeunes,
+        lots, reproducteurs, races, config, consommables, materiel, breederPurchases,
+      };
+    }
+
+    function Dashboard() {
+      const t = useTableauBord();
+      const allerA = useContext(NavContext);
+      const { today, semaine, nbEvSemaine, enRetard, aFaire } = t;
 
       return (
         <div>
-          <PageHeader title="Tableau de bord" subtitle={"Aujourd'hui : " + frDate(today) + " — l'essentiel est ouvert, le reste se déplie. Un ⚠️ sur un volet replié signale une anomalie."}
+          <PageHeader title="Tableau de bord" subtitle={"Aujourd'hui : " + frDate(today) + " — ce qu'il y a à faire aujourd'hui et cette semaine. Le reste est dans le résumé (Historique)."}
             action={<button onClick={() => allerA("calendrier")} className="inline-flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm whitespace-nowrap">📅 Calendrier</button>} />
 
           {/* ===== VISIBLES D'EMBLÉE ===== */}
@@ -2413,6 +2430,30 @@
             <button onClick={() => allerA("calendrier")} className="mt-3 text-sm font-medium text-emerald-600 hover:underline">Ouvrir le calendrier complet →</button>
           </Section>
 
+          {/* Tout le reste (œufs, alertes, animaux, stocks, coûts, statistiques) est regroupé
+              dans l'Historique : un seul écran de synthèse, ouvert quand on en a besoin. */}
+          <button onClick={() => allerA("historique")}
+            className="w-full bg-white rounded-xl shadow-sm border border-slate-100 px-5 py-4 text-left font-semibold text-slate-800 hover:bg-slate-50 flex items-center justify-between gap-2">
+            <span>📊 Résumé du cheptel <span className="font-normal text-slate-400 text-sm">— œufs, alertes, animaux, stocks, coûts, stats</span></span>
+            <span className="text-slate-400 text-sm shrink-0">Historique ›</span>
+          </button>
+        </div>
+      );
+    }
+
+    // « Résumé du cheptel » — tout ce qui a quitté le tableau de bord (échange 121) :
+    // affiché dans l'Historique, calculé au même endroit que les actions du jour.
+    function ResumeCheptel() {
+      const {
+        nbAlertes, stocksUrgents, materielTraiter, alertesRepro, ecartCouvaison, alertesCouv, baissePonte, alertesLignee,
+        aVenir, so, batchesD, sc, sm, chept, pontePoule7, ponteCaille7,
+        totalDepAn, depConsoAn, depMatAn, depReproAn, oeufsAn, poussinsNesAn, coutParOeuf, coutParPoussin, prixOeuf,
+        reproActifs, reproMalades, reproDecedes, reproRetraites, consoTotal,
+        jeunesActifs, jeunesPoussins, jeunesCailleteaux, vivants, morts, alJeune, tachesJeunes,
+        lots, reproducteurs, races, config, consommables, materiel, breederPurchases,
+      } = useTableauBord();
+      return (
+        <div>
           {/* Œufs (suivi quotidien important) */}
           <Section titre="🥚 Œufs" defaut={true} alerte={baissePonte.length}>
             {/* Taux de ponte sur 7 jours = œufs récoltés / pondeuses / jour */}
@@ -3152,10 +3193,15 @@
     }
 
     // Badge d'âge des œufs stockés (idéal ≤7 j, max 14 j)
-    function AgeOeufs({ date }) {
-      const a = Math.max(0, Math.floor((AUJOURDHUI - new Date(date)) / 86400000));
-      const cls = a > 14 ? "bg-red-100 text-red-700" : (a > 7 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700");
-      return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>{a > 14 ? "⚠️ " : ""}{a} j</span>;
+    // Âge d'un œuf. `fin` = date à laquelle le compteur S'ARRÊTE (mise en couveuse du lot) :
+    // une fois les œufs en couveuse, ils ne « vieillissent » plus en stock — sans ça un lot
+    // incubé depuis 4 semaines affichait 49 j alors qu'il est parti à 21 j.
+    function AgeOeufs({ date, fin }) {
+      const ref = fin ? new Date(String(fin).slice(0, 10)) : AUJOURDHUI;
+      const a = Math.max(0, Math.floor((ref - new Date(date)) / 86400000));
+      const cls = fin ? "bg-slate-100 text-slate-600" : (a > 14 ? "bg-red-100 text-red-700" : (a > 7 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"));
+      return <span title={fin ? "Compteur arrêté le " + frDate(fin) + " (mise en couveuse)" : undefined}
+        className={`px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>{fin ? "🔒 " : (a > 14 ? "⚠️ " : "")}{a} j</span>;
     }
 
     function Lots() {
@@ -3196,15 +3242,30 @@
       const [editCol, setEditCol] = useState(null);
       const [openCouv, setOpenCouv] = useState(null); // lot de stock à mettre en couveuse
       const [ongletL, setOngletL] = useState("recoltes");   // onglet interne : recoltes | couveuse
+      const [voirLotsTermines, setVoirLotsTermines] = useState(false);   // lots de stock déjà mis en couveuse / archivés
+      // Recherche & filtres de « Toutes les récoltes »
+      const [qRec, setQRec] = useState("");
+      const [fDest, setFDest] = useState("");
+      const [fLot, setFLot] = useState("");
+      const [fEsp, setFEsp] = useState("");
 
       // Couvées affichées dans « Lots en couveuse » : les terminées sont masquées par défaut.
       const nbTermines = lots.filter((l) => l.statut === "terminé").length;
       const lotsAff = lots.map((l, i) => ({ l, i })).filter(({ l }) => voirTermines || l.statut !== "terminé");
 
       const so = statsOeufs(collectes, lotsStock, lots, config);
-      const batchesAgg = lotsStock.map((b, i) => ({ ...agregLotStock(b, collectes), _idx: i }));
+      // Lots de stock du PLUS RÉCENT au plus ancien (la 3e couvaison passe devant la 1re).
+      const cleTriLot = (b) => String(b.dateCouvaison || b.derniere || b.premiere || "0000-00-00") + "|" + String(b.id || "");
+      const batchesAgg = lotsStock.map((b, i) => ({ ...agregLotStock(b, collectes), _idx: i }))
+        .sort((a, b) => cleTriLot(b).localeCompare(cleTriLot(a)));
       const batchesActifs = batchesAgg.filter((b) => b.statut === "en stock");
-      const ageJ = (d) => (d ? Math.max(0, Math.floor((AUJOURDHUI - new Date(d)) / 86400000)) : null);
+      // Un lot parti en couveuse (ou archivé) est « terminé » : masqué par défaut, jamais supprimé.
+      const batchesTermines = batchesAgg.filter((b) => b.statut !== "en stock");
+      const batchesAff = voirLotsTermines ? batchesAgg : batchesActifs;
+      // Date d'arrêt du compteur d'âge des œufs d'un lot : sa mise en couveuse.
+      const finAgeLot = (b) => (b && b.statut === "mis en couveuse" && b.dateCouvaison) ? b.dateCouvaison : null;
+      const lotStockParId = {}; batchesAgg.forEach((b) => { lotStockParId[b.id] = b; });
+      const ageJ = (d, fin) => (d ? Math.max(0, Math.floor(((fin ? new Date(String(fin).slice(0, 10)) : AUJOURDHUI) - new Date(d)) / 86400000)) : null);
       // Séries par date (depuis les événements normalisés) pour les graphiques
       const parDate = {};
       so.ev.forEach((e) => {
@@ -3220,6 +3281,20 @@
       const vue = (c) => c.destination
         ? { nombre: Number(c.nombre) || 0, dest: c.destination, lot: c.lotStock || c.lot || "", stock: c.destination === "stock" }
         : { nombre: Number(c.recoltes) || 0, dest: null, conso: Number(c.consommation) || 0, stk: Number(c.stockes) || 0, lot: c.lotFutur || "", stock: (Number(c.stockes) || 0) > 0 };
+
+      // Recherche & filtres de « Toutes les récoltes » : les listes déroulantes ne proposent que
+      // les valeurs réellement présentes dans les récoltes (pas de choix qui ne donne rien).
+      const uniq = (arr) => Array.from(new Set(arr.filter(Boolean))).sort();
+      const destinationsDispo = uniq(colTriees.map(({ c }) => vue(c).dest));
+      const lotsDispo = uniq(colTriees.map(({ c }) => vue(c).lot));
+      const especesDispo = uniq(colTriees.map(({ c }) => c.espece));
+      const colFiltrees = colTriees.filter(({ c }) => {
+        const v = vue(c);
+        if (fDest && (v.dest || "") !== fDest) return false;
+        if (fLot && (v.lot || "") !== fLot) return false;
+        if (fEsp && (c.espece || "") !== fEsp) return false;
+        return correspondRecherche([c.date, frDate(c.date), c.espece, v.dest, v.lot, c.obs, String(v.nombre)], qRec);
+      });
 
       return (
         <div>
@@ -3314,12 +3389,21 @@
             <OeufsBloc titre="Consommés (total)" poule={so.consoPoule} caille={so.consoCaille} couleur="orange" />
           </div>
 
-          {/* Lots de stock (agrégés) */}
-          <h3 className="text-sm font-semibold text-slate-600 mb-2">Lots de stock</h3>
-          {batchesAgg.length === 0
-            ? <p className="text-sm text-slate-400 mb-4">Aucun lot de stock. Ajoute une récolte avec destination « stock ».</p>
+          {/* Lots de stock (agrégés) — du plus récent au plus ancien ; les couvaisons terminées
+              (lot déjà mis en couveuse ou archivé) sont MASQUÉES, jamais supprimées. */}
+          <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+            <h3 className="text-sm font-semibold text-slate-600">Lots de stock <span className="font-normal text-slate-400">({batchesAff.length} affiché{batchesAff.length > 1 ? "s" : ""})</span></h3>
+            {batchesTermines.length > 0 && (
+              <button onClick={() => setVoirLotsTermines((v) => !v)}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+                {voirLotsTermines ? "Masquer" : "Afficher"} les {batchesTermines.length} terminé{batchesTermines.length > 1 ? "s" : ""}
+              </button>
+            )}
+          </div>
+          {batchesAff.length === 0
+            ? <p className="text-sm text-slate-400 mb-4">{batchesTermines.length > 0 ? "Aucun lot en stock — les " + batchesTermines.length + " lot(s) terminé(s) sont masqués (bouton ci-dessus)." : "Aucun lot de stock. Ajoute une récolte avec destination « stock »."}</p>
             : <div className="space-y-3 mb-4">
-                {batchesAgg.map((b) => (
+                {batchesAff.map((b) => (
                   <div key={b.id} className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
                     <div className="flex items-start justify-between gap-2 flex-wrap">
                       <div>
@@ -3331,7 +3415,7 @@
                         <div className="text-sm text-slate-600 mt-1"><span className="font-medium text-emerald-600">{b.total} œufs</span> · {b.collectes.length} récolte(s)</div>
                         <div className="text-xs text-slate-400">
                           Récolte : {b.premiere ? frDate(b.premiere) : "—"} → {b.derniere ? frDate(b.derniere) : "—"}
-                          {b.premiere != null && <> · plus vieux {ageJ(b.premiere)} j · plus jeune {ageJ(b.derniere)} j</>}
+                          {b.premiere != null && <> · plus vieux {ageJ(b.premiere, finAgeLot(b))} j · plus jeune {ageJ(b.derniere, finAgeLot(b))} j{finAgeLot(b) ? " 🔒 (compteur arrêté le " + frDate(finAgeLot(b)) + ")" : ""}</>}
                           {b.statut === "mis en couveuse" && b.lotCouvaison && <> · → lot couveuse <span className="font-medium">{b.lotCouvaison}</span></>}
                         </div>
                       </div>
@@ -3354,7 +3438,7 @@
                             <tr key={k} className="border-t border-slate-100">
                               <td className="px-2 py-1">{frDate(c.date)}</td>
                               <td className="px-2 py-1">{c.nombre}</td>
-                              <td className="px-2 py-1"><AgeOeufs date={c.date} /></td>
+                              <td className="px-2 py-1"><AgeOeufs date={c.date} fin={finAgeLot(b)} /></td>
                               <td className="px-2 py-1 text-slate-500">{c.obs || "—"}</td>
                             </tr>
                           ))}
@@ -3366,12 +3450,23 @@
                 ))}
               </div>}
 
-          {/* Détail des récoltes (lignes individuelles, éditables) */}
+          {/* Détail des récoltes (lignes individuelles, éditables) + recherche & filtres */}
           <h3 className="text-sm font-semibold text-slate-600 mb-2 mt-6">Toutes les récoltes</h3>
+          <BarreRecherche
+            valeur={qRec} onChange={setQRec}
+            placeholder="Rechercher une récolte (date, lot, observation…)"
+            filtres={[
+              { label: "Destination", valeur: fDest, onChange: setFDest, options: destinationsDispo },
+              { label: "Lot", valeur: fLot, onChange: setFLot, options: lotsDispo },
+              { label: "Espèce", valeur: fEsp, onChange: setFEsp, options: especesDispo },
+            ]}
+            nb={colFiltrees.length} total={colTriees.length}
+            onReset={() => { setQRec(""); setFDest(""); setFLot(""); setFEsp(""); }}
+          />
           <Table
-            resume={(r, k) => { const c = colTriees[k].c; const v = vue(c); const dl = v.dest === "consommation" ? " · conso" : v.dest === "stock" ? " · stock" : ""; return <>Récolte du {frDate(c.date)} — {c.espece === "caille" ? "Cailles" : "Poules"} — {v.nombre} œufs<span className="text-slate-400">{dl}</span></>; }}
+            resume={(r, k) => { const c = colFiltrees[k].c; const v = vue(c); const dl = v.dest === "consommation" ? " · conso" : v.dest === "stock" ? " · stock" : ""; return <>Récolte du {frDate(c.date)} — {c.espece === "caille" ? "Cailles" : "Poules"} — {v.nombre} œufs<span className="text-slate-400">{dl}</span></>; }}
             columns={["Date", "Espèce", "Nombre", "Destination", "Lot stock", "Âge", "Obs", ""]}
-            rows={colTriees.map(({ c, i }) => {
+            rows={colFiltrees.map(({ c, i }) => {
               const v = vue(c);
               return [
                 frDate(c.date),
@@ -3379,7 +3474,7 @@
                 <span className="font-medium">{v.nombre}</span>,
                 v.dest ? <DestBadge destination={v.dest} /> : <span className="text-xs text-slate-500">conso {v.conso} · stock {v.stk}</span>,
                 v.lot || "—",
-                v.stock ? <AgeOeufs date={c.date} /> : "—",
+                v.stock ? <AgeOeufs date={c.date} fin={finAgeLot(lotStockParId[v.lot])} /> : "—",
                 <ObsCell texte={c.obs} titre="Observation — récolte" onSave={(v2) => patchLigne("collectes", i, { obs: v2 })} />,
                 <RowActions onEdit={() => setEditCol({ index: i, rec: c })} onDelete={() => supprimerLigne("collectes", i)} />,
               ];
@@ -8509,6 +8604,20 @@
       };
     }
 
+    // Nombre de semaines à afficher dans le suivi d'un lot de jeunes : au moins celui des
+    // Réglages (S1-S8), mais ÉTENDU si le lot est plus vieux ou si des jours au-delà ont déjà
+    // été cochés. Sans ça, un soin coché dans « Gestion poulailler » pour un lot de 10 semaines
+    // s'écrivait dans un jour (J71) qu'aucune semaine affichée ne montrait.
+    function nbSemainesSuivi(p, nS) {
+      const a = ageJeune(p && p.date);
+      let max = Number(nS) || 8;
+      if (a.jours != null && !a.futur) max = Math.max(max, Math.floor(a.jours / 7) + 1);
+      Object.keys((p && p.jours) || {}).forEach((n) => {
+        const j = Number(n); if (j > 0) max = Math.max(max, Math.floor((j - 1) / 7) + 1);
+      });
+      return max;
+    }
+
     // Formulaire détail d'un jour de suivi (J1–J10)
     function SuiviJourForm({ lotIndex, p, jour, onClose }) {
       const { patchLigne, config } = useData();
@@ -8635,7 +8744,7 @@
         const p = idxS != null ? poussins[idxS] : null;
         if (!p) return;
         const a = ageJeune(p.date);
-        const sem = (a.jours == null || a.futur) ? 1 : Math.min(nS, Math.max(1, a.sem));
+        const sem = (a.jours == null || a.futur) ? 1 : Math.min(nbSemainesSuivi(p, nS), Math.max(1, a.sem));
         setSemOuvertes({ [sem]: true });
       }, [idxS]);
       // Un lot sans numéro de naissance est identifié par son type + sa date (ex. « poussin né le 18/07/2026 »)
@@ -8734,10 +8843,11 @@
               </Field>
               {idxS == null ? <p className="text-sm text-slate-400 mt-3">Aucun lot en suivi.</p> : (() => {
                 const p = poussins[idxS]; if (!p) return null;
+                const nbSem = nbSemainesSuivi(p, nS);   // étendu si le lot dépasse la fenêtre réglée
                 return (
                   <div className="mt-3">
                     <p className="text-sm text-slate-600 mb-2">{p.id ? p.id + " · " : ""}{labelJeune(p.espece)} · {ageJeune(p.date).label}</p>
-                    <p className="text-xs text-slate-400 mb-2">Suivi quotidien sur {nS} semaines (les 10 premiers jours, décisifs, sont colorés). Clique une semaine pour la déplier, puis un jour pour ses détails · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · <span className="font-medium">✅ Tous vivants = aucun mort ce jour → reporte l'effectif de la veille</span> · un mort ? ✏️ → « Morts ce jour », les vivants se recalculent seuls.</p>
+                    <p className="text-xs text-slate-400 mb-2">Suivi quotidien sur {nbSem} semaines{nbSem > nS ? " (au-delà des " + nS + " réglées : le lot est plus vieux, ses semaines restent affichées)" : ""} (les 10 premiers jours, décisifs, sont colorés). Clique une semaine pour la déplier, puis un jour pour ses détails · 💧 eau · 🌾 nourriture · 🧹 nettoyage cochables · <span className="font-medium">✅ Tous vivants = aucun mort ce jour → reporte l'effectif de la veille</span> · un mort ? ✏️ → « Morts ce jour », les vivants se recalculent seuls.</p>
                     {/* Légende de criticité des 10 premiers jours */}
                     <div className="flex flex-wrap gap-2 mb-3 text-xs">
                       <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">J1-J3 très critique</span>
@@ -8747,7 +8857,7 @@
                       <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-medium">ensuite normal</span>
                     </div>
                     <div className="space-y-2">
-                      {Array.from({ length: nS }, (_, k) => k + 1).map((sem) => {
+                      {Array.from({ length: nbSem }, (_, k) => k + 1).map((sem) => {
                         const ouverte = !!semOuvertes[sem];
                         const jours = Array.from({ length: 7 }, (_, j) => (sem - 1) * 7 + j + 1);
                         const nbFait = jours.reduce((s, n) => { const d = (p.jours || {})[n] || {}; return s + ((d.eau || d.nourriture || d.nettoyage) ? 1 : 0); }, 0);
@@ -8889,7 +8999,7 @@
 
       // --- Résumé automatique de la période (sans IA : calculé depuis les données) ---
       const [jours, setJours] = useState(30);
-      const [vue, setVue] = useState("lots");   // onglet interne : lots | materiel | registre
+      const [vue, setVue] = useState("resume");   // onglet interne : resume | lots | materiel | registre
       const [anRegistre, setAnRegistre] = useState("");   // filtre d'année du registre ("" = année la plus récente, "tout")
       const depuis = new Date(AUJOURDHUI); depuis.setDate(depuis.getDate() - Number(jours));
       const dansPeriode = (d) => d && new Date(d) >= depuis && new Date(d) <= AUJOURDHUI;
@@ -8906,7 +9016,14 @@
         c => (Number(c.quantite) || 0) * (Number(c.prixUnitaire) || 0));
 
       const lignesResume = [];
-      lignesResume.push("🥚 Œufs récoltés : " + somme(colP, c => c.recoltes) + " · consommés : " + somme(colP, c => c.consommation) + " · stockés : " + somme(colP, c => c.stockes));
+      // Les récoltes du modèle actuel portent une `destination` + `nombre` ; les anciennes des
+      // colonnes recoltes/consommation/stockes. Le résumé doit compter les DEUX (sinon il affiche 0).
+      const oeufsVers = (c, dest) => c.destination
+        ? (c.destination === dest ? (Number(c.nombre) || 0) : 0)
+        : (dest === "consommation" ? (Number(c.consommation) || 0) : (dest === "stock" ? (Number(c.stockes) || 0) : 0));
+      lignesResume.push("🥚 Œufs récoltés : " + somme(colP, (c) => nbRecolte(c))
+        + " · consommés : " + somme(colP, (c) => oeufsVers(c, "consommation"))
+        + " · stockés : " + somme(colP, (c) => oeufsVers(c, "stock")));
       lignesResume.push("🌡️ Lots mis en couveuse : " + lotsP.length + (eclP.length ? " · éclosions : " + eclP.length + " (" + nes + " nés, " + nonEclos + " non éclos)" : " · aucune éclosion"));
       const actesTxt = Object.keys(parAction).length ? Object.keys(parAction).map(a => a + " ×" + parAction[a]).join(", ") : "aucune action enregistrée";
       lignesResume.push("🏠 Poulailler : " + actesTxt);
@@ -8914,7 +9031,7 @@
 
       return (
         <div>
-          <PageHeader title="Historique / archives" subtitle="Résumé de période, lots terminés et matériel remplacé" />
+          <PageHeader title="Historique / résumé" subtitle="Le résumé du cheptel (œufs, alertes, animaux, stocks, coûts, stats) + les archives : lots terminés, matériel remplacé, registre." />
 
           {/* Résumé automatique */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5 mb-8">
@@ -8936,7 +9053,7 @@
 
           {/* Onglets internes */}
           <div className="flex gap-1.5 mb-6 flex-wrap border-b border-slate-200">
-            {[["lots", "🐣 Lots terminés"], ["materiel", "🔧 Matériel remplacé"], ["registre", "📋 Registre d'élevage"]].map(([id, lbl]) => (
+            {[["resume", "📊 Résumé du cheptel"], ["lots", "🐣 Lots terminés"], ["materiel", "🔧 Matériel remplacé"], ["registre", "📋 Registre d'élevage"]].map(([id, lbl]) => (
               <button key={id} onClick={() => setVue(id)}
                 className={"px-3 py-2 text-sm font-medium -mb-px border-b-2 whitespace-nowrap " + (vue === id ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>{lbl}</button>
             ))}
@@ -8944,6 +9061,9 @@
 
           {/* (L'onglet « Récoltes » — copie lecture seule — a été retiré : toutes les récoltes,
               triées du plus récent au plus ancien, se consultent dans « Récolte des œufs ».) */}
+
+          {/* Résumé du cheptel — tout ce qui a quitté le tableau de bord (échange 121) */}
+          {vue === "resume" && <ResumeCheptel />}
 
           {vue === "lots" && <>
           <h2 className="text-lg font-semibold mb-3">Lots terminés <span className="text-slate-400 font-normal text-sm">— résultats de couvée</span></h2>
