@@ -48,17 +48,28 @@
     html.nuit .bg-indigo-100 { background-color:#262b50 !important; }
   </style>
   <script>
-    // PLUS de service worker : il causait des bugs de cache / mises à jour invisibles sur iPhone.
-    // L'app se charge désormais TOUJOURS en direct depuis le réseau (comme un site normal) → les
-    // mises à jour s'affichent immédiatement. On désinstalle tout SW existant + on vide ses caches.
+    // Service worker SANS CACHE (cf. sw.js). Il n'est là que pour une raison : Chromium
+    // (Chrome, Brave, Edge) ne propose la vraie INSTALLATION d'application que si le site
+    // déclare un service worker avec un gestionnaire « fetch ». Sans lui on ne peut créer
+    // qu'un raccourci. Il ne met rien en cache → aucun retour du bug « mise à jour invisible ».
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.getRegistrations()
-        .then(function (rs) { rs.forEach(function (r) { r.unregister(); }); })
-        .catch(function () {});
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("sw.js").catch(function () {});
+      });
     }
-    if (window.caches && caches.keys) {
-      caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }).catch(function () {});
-    }
+
+    // On mémorise l'événement d'installation pour proposer le bouton « Installer l'app »
+    // directement dans les Réglages (plus besoin de chercher dans les menus du navigateur).
+    window.__promptInstall = null;
+    window.addEventListener("beforeinstallprompt", function (e) {
+      e.preventDefault();
+      window.__promptInstall = e;
+      window.dispatchEvent(new Event("cheptel:installable"));
+    });
+    window.addEventListener("appinstalled", function () {
+      window.__promptInstall = null;
+      window.dispatchEvent(new Event("cheptel:installable"));
+    });
   </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -9053,6 +9064,54 @@
       );
     }
 
+    // Bloc « Installer l'application » — évite d'aller chercher l'option dans les menus du
+    // navigateur (introuvable dans Brave). Le bouton n'apparaît que si le navigateur a émis
+    // « beforeinstallprompt » (capté en haut de page dans window.__promptInstall).
+    function BlocInstallation() {
+      const [dispo, setDispo] = useState(!!window.__promptInstall);
+      const [installee, setInstallee] = useState(
+        window.matchMedia && window.matchMedia("(display-mode: standalone)").matches
+      );
+      useEffect(() => {
+        const maj = () => { setDispo(!!window.__promptInstall); setInstallee(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches); };
+        window.addEventListener("cheptel:installable", maj);
+        return () => window.removeEventListener("cheptel:installable", maj);
+      }, []);
+
+      const installer = async () => {
+        const e = window.__promptInstall;
+        if (!e) return;
+        e.prompt();
+        try { await e.userChoice; } catch (err) {}
+        window.__promptInstall = null;
+        setDispo(false);
+      };
+
+      return (
+        <>
+          <h2 className="text-lg font-semibold mb-3">Installer l'application</h2>
+          <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8">
+            {installee ? (
+              <p className="text-sm text-emerald-700">✅ L'application est déjà installée sur cet appareil.</p>
+            ) : dispo ? (
+              <>
+                <button onClick={installer}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">
+                  📲 Installer Cheptel sur cet appareil
+                </button>
+                <p className="text-xs text-slate-400 mt-2">Ouvre la fenêtre d'installation du navigateur.</p>
+              </>
+            ) : (
+              <p className="text-sm text-slate-500">
+                Installation indisponible ici. Elle nécessite l'adresse en ligne (https) dans Chrome, Brave ou Edge —
+                sur iPhone, passer par Safari → Partager → « Sur l'écran d'accueil ».
+              </p>
+            )}
+          </div>
+        </>
+      );
+    }
+
     function Reglages() {
       const { config, setConfig, resetConfig } = useData();
       // Parc de couveuses : modification d'une case, ajout, retrait
@@ -9250,6 +9309,7 @@
           </>}
 
           {cat === "general" && <>
+          <BlocInstallation />
           {/* Titres des onglets (personnalisables) */}
           <h2 className="text-lg font-semibold mb-3">Onglets du menu</h2>
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 mb-8">
