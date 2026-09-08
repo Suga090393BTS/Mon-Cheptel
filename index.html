@@ -52,9 +52,16 @@
     // (Chrome, Brave, Edge) ne propose la vraie INSTALLATION d'application que si le site
     // déclare un service worker avec un gestionnaire « fetch ». Sans lui on ne peut créer
     // qu'un raccourci. Il ne met rien en cache → aucun retour du bug « mise à jour invisible ».
+    // Enregistrement IMMÉDIAT (pas sur "load") : Chromium évalue l'installabilité pendant le
+    // chargement, plus le service worker est actif tôt, plus vite le bouton d'installation
+    // apparaît. On mémorise l'état pour le diagnostic affiché dans Réglages › Général.
+    window.__swEtat = "serviceWorker" in navigator ? "en cours…" : "non géré par ce navigateur";
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", function () {
-        navigator.serviceWorker.register("sw.js").catch(function () {});
+      navigator.serviceWorker.register("sw.js").then(function (r) {
+        window.__swEtat = "enregistré";
+        return navigator.serviceWorker.ready.then(function () { window.__swEtat = "actif"; });
+      }).catch(function (e) {
+        window.__swEtat = "ÉCHEC — " + (e && e.message ? e.message : e);
       });
     }
 
@@ -9072,10 +9079,15 @@
       const [installee, setInstallee] = useState(
         window.matchMedia && window.matchMedia("(display-mode: standalone)").matches
       );
+      const [diag, setDiag] = useState({ https: window.isSecureContext, origine: location.origin, manifeste: "…", sw: window.__swEtat || "…" });
       useEffect(() => {
         const maj = () => { setDispo(!!window.__promptInstall); setInstallee(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches); };
         window.addEventListener("cheptel:installable", maj);
-        return () => window.removeEventListener("cheptel:installable", maj);
+        // Diagnostic : on relit l'état du service worker et on vérifie que le manifeste répond.
+        fetch("manifest.json").then((r) => r.ok ? "ok" : "erreur " + r.status).catch(() => "introuvable")
+          .then((m) => setDiag((d) => ({ ...d, manifeste: m })));
+        const t = setInterval(() => setDiag((d) => ({ ...d, sw: window.__swEtat || "…" })), 1000);
+        return () => { window.removeEventListener("cheptel:installable", maj); clearInterval(t); };
       }, []);
 
       const installer = async () => {
@@ -9102,10 +9114,22 @@
                 <p className="text-xs text-slate-400 mt-2">Ouvre la fenêtre d'installation du navigateur.</p>
               </>
             ) : (
-              <p className="text-sm text-slate-500">
-                Installation indisponible ici. Elle nécessite l'adresse en ligne (https) dans Chrome, Brave ou Edge —
-                sur iPhone, passer par Safari → Partager → « Sur l'écran d'accueil ».
-              </p>
+              <>
+                <p className="text-sm text-slate-500 mb-3">
+                  Le navigateur n'a pas encore proposé l'installation. État des conditions :
+                </p>
+                <ul className="text-sm space-y-1 mb-3">
+                  <li>{diag.https ? "✅" : "❌"} Adresse sécurisée <span className="text-slate-400">({diag.origine})</span></li>
+                  <li>{diag.manifeste === "ok" ? "✅" : "❌"} Fichier manifest.json <span className="text-slate-400">({diag.manifeste})</span></li>
+                  <li>{diag.sw === "actif" ? "✅" : "❌"} Service worker <span className="text-slate-400">({diag.sw})</span></li>
+                  <li>❌ Proposition d'installation reçue du navigateur</li>
+                </ul>
+                <p className="text-xs text-slate-400">
+                  Si les trois premières lignes sont vertes, recharge la page une fois (⌘R) : le navigateur
+                  ne teste l'installabilité qu'au chargement, et le service worker n'était pas encore actif
+                  à la première visite. Sur iPhone, l'installation passe par Safari → Partager → « Sur l'écran d'accueil ».
+                </p>
+              </>
             )}
           </div>
         </>
