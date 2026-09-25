@@ -824,7 +824,7 @@
     const ANNEE_COURANTE = AUJOURDHUI.getFullYear();
     // Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
     // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-    const APP_VERSION = "v123 — 18/09/2026";
+    const APP_VERSION = "v124 — 25/09/2026";
     const MOIS_COURANT = AUJOURDHUI.toISOString().slice(0, 7);   // "AAAA-MM"
     const annee = (iso) => (iso || "").slice(0, 4);
     const moisDe = (iso) => (iso || "").slice(0, 7);
@@ -2150,7 +2150,7 @@
         Object.keys(p.traitements || {}).forEach((k) => push(p.traitements[k], "Traitement", lblTrait(k), espJ(p), "", "Lot " + (p.id || "—") + " (jeunes)"));
       });
       (breederPurchases || []).forEach((b) => push(b.date, "Entrée", "Achat", b.espece, b.nombre, (b.type || "achat") + (b.fournisseur ? " — " + b.fournisseur : "")));
-      (abattoir || []).forEach((a) => { if (a.abattageReel) push(a.abattageReel, "Sortie", "Abattage", a.espece, a.nombre, "Lot " + (a.lot || "—")); });
+      (abattoir || []).forEach((a) => abattagesLot(a).forEach((x) => { if (x.date) push(x.date, "Sortie", "Abattage", a.espece, x.nombre, "Lot " + (a.lot || "—")); }));
       (reproducteurs || []).forEach((r) => { if (r.statut === "décédé" && r.dateFin) push(r.dateFin, "Mortalité", "Décès reproducteur", r.espece, r.nombre || 1, r.nom || ""); });
       (poulaillers || []).forEach((pl) => {
         TRAITEMENTS.filter((k) => ligneFaitAction(pl, k)).forEach((k) => {
@@ -5167,56 +5167,91 @@
       );
     }
 
-    /* ---------- Animaux destinés à l'abattoir ---------- */
-    function AbattoirForm({ onClose, initial, onSave }) {
-      const { races, ajouterAbattoir, config } = useData();
+    /* ---------- Abattoir (animaux destinés à la consommation) ----------
+       Un lot = { lot, espece, race, naissance, nombre, statut, obs, pesees, abattages }.
+       Chaque séance d'abattage est une entrée de `abattages` : on abat par petits groupes. */
+    const MOTIFS_SORTIE_CONGEL = [
+      { id: "mangé", icon: "🍽️" },
+      { id: "chien", icon: "🐕" },
+      { id: "donné", icon: "🎁" },
+    ];
+    // Séances d'abattage d'un lot. Les lignes saisies avant ce modèle (une seule date
+    // `abattageReel` + `nbCongele` sur le lot) sont relues comme une séance unique ; la première
+    // écriture (nouvel abattage, sortie du congélateur) les convertit.
+    function abattagesLot(a) {
+      if (Array.isArray(a.abattages)) return a.abattages;
+      const cong = Number(a.nbCongele) || 0;
+      if (!a.abattageReel && !cong && a.statut !== "abattu") return [];
+      return [{
+        id: "ancien", date: a.abattageReel || "",
+        nombre: a.statut === "abattu" ? (Number(a.nombre) || cong) : cong,
+        congele: cong, dateCongel: a.abattageReel || "",
+        poidsVif: a.poidsVif || "", poidsCarcasse: a.poidsCarcasse || "", sorties: [],
+      }];
+    }
+    const abattusLot = (a) => abattagesLot(a).reduce((s, x) => s + (Number(x.nombre) || 0), 0);
+    const restantsLot = (a) => (a.statut === "décédé" ? 0 : Math.max(0, (Number(a.nombre) || 0) - abattusLot(a)));
+    const auCongelSeance = (x) => Math.max(0, (Number(x.congele) || 0) - (x.sorties || []).length);
+    // Statut affiché : « abattu » dès que tout le lot est passé à l'abattoir, sinon le statut saisi.
+    const statutLotAbattoir = (a) => (a.statut !== "décédé" && abattusLot(a) > 0 && restantsLot(a) === 0 ? "abattu" : a.statut);
+    // Poids vif d'une séance : saisi, sinon ESTIMÉ par la dernière pesée du lot (≤ 14 j avant).
+    function poidsVifSeance(a, x) {
+      if (Number(x.poidsVif) > 0) return { poids: Number(x.poidsVif), estime: false };
+      const p = (a.pesees || []).filter((q) => q.date && x.date && q.date <= x.date && (new Date(x.date) - new Date(q.date)) / 86400000 <= 14)
+        .sort((u, v) => u.date.localeCompare(v.date)).pop();
+      return p ? { poids: Number(p.poids), estime: true } : null;
+    }
+    function rendementSeance(a, x) {
+      const pv = poidsVifSeance(a, x);
+      if (!pv || !(Number(x.poidsCarcasse) > 0)) return null;
+      return { pct: Math.round((Number(x.poidsCarcasse) / pv.poids) * 100), estime: pv.estime };
+    }
+
+    // Création / modification d'un lot (plus de dates ni de poids ici : ils vivent dans les séances)
+    function AbattoirForm({ onClose, initial, onSave, especeInit }) {
+      const { races, ajouterAbattoir, config, poussins } = useData();
       const [lot, setLot] = useState(initial ? (initial.lot || "") : "");
-      const [espece, setEspece] = useState(initial ? initial.espece : "poule");
+      const [espece, setEspece] = useState(initial ? initial.espece : (especeInit || "poule"));
       const [race, setRace] = useState(initial ? (initial.race || "") : "");
       const [naissance, setNaissance] = useState(initial ? (initial.naissance || "") : "");
       const [nombre, setNombre] = useState(initial ? String(initial.nombre) : "");
       const [statut, setStatut] = useState(initial ? initial.statut : "en croissance");
-      const [abattagePrevu, setAbattagePrevu] = useState(initial ? (initial.abattagePrevu || "") : "");
-      const [abattageReel, setAbattageReel] = useState(initial ? (initial.abattageReel || "") : "");
-      const [poidsVif, setPoidsVif] = useState(initial && initial.poidsVif ? String(initial.poidsVif) : "");
-      const [poidsCarcasse, setPoidsCarcasse] = useState(initial && initial.poidsCarcasse ? String(initial.poidsCarcasse) : "");
-      const [nbCongele, setNbCongele] = useState(initial && initial.nbCongele != null && initial.nbCongele !== "" ? String(initial.nbCongele) : "");
       const [obs, setObs] = useState(initial ? (initial.obs || "") : "");
-      const suggere = abattageSuggere({ naissance, espece }, config);
-      const rendement = (Number(poidsVif) > 0 && Number(poidsCarcasse) > 0) ? Math.round((Number(poidsCarcasse) / Number(poidsVif)) * 100) : null;
-
+      const lotsNaissance = poussins.filter((p) => (p.espece === "caille" ? "caille" : "poule") === espece)
+        .slice().sort((x, y) => (y.date || "").localeCompare(x.date || ""));
+      const choisirNaissance = (k) => {
+        const p = lotsNaissance[Number(k)];
+        if (!p) return;
+        setLot(p.id || ""); setNaissance(p.date || ""); setNombre(String(vivantsLot(p)));
+      };
       function submit(e) {
         e.preventDefault();
-        const rec = {
-          ...(initial || {}),   // préserve les pesées et champs annexes en édition
-          lot: lot.trim(), espece, race, naissance, nombre: Number(nombre) || 0,
-          statut, abattagePrevu, abattageReel,
-          poidsVif: Number(poidsVif) || "", poidsCarcasse: Number(poidsCarcasse) || "",
-          nbCongele: nbCongele === "" ? "" : Math.max(0, Number(nbCongele) || 0),
-          obs: obs.trim(),
-        };
+        const rec = { ...(initial || {}), lot: lot.trim(), espece, race, naissance, nombre: Number(nombre) || 0, statut, obs: obs.trim() };
+        if (!initial) rec.abattages = [];
         (onSave || ajouterAbattoir)(rec);
         onClose();
       }
       return (
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Numéro de lot">
-              <input className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)} placeholder="ex. 26P01" />
-            </Field>
             <Field label="Espèce">
               <select className={inputClass} value={espece} onChange={(e) => setEspece(e.target.value)}>
                 <option value="poule">Poule</option>
                 <option value="caille">Caille</option>
               </select>
             </Field>
+            {!initial && lotsNaissance.length > 0 ? (
+              <Field label="Reprendre un lot de naissance">
+                <select className={inputClass} value="" onChange={(e) => choisirNaissance(e.target.value)}>
+                  <option value="">—</option>
+                  {lotsNaissance.map((p, k) => <option key={k} value={k}>{libelleLotJeune(p)} ({vivantsLot(p)})</option>)}
+                </select>
+              </Field>
+            ) : <div />}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Race (si connue)">
-              <select className={inputClass} value={race} onChange={(e) => setRace(e.target.value)}>
-                <option value="">—</option>
-                {races.map((r, i) => <option key={i} value={r.race}>{r.race}</option>)}
-              </select>
+            <Field label="Numéro de lot">
+              <input className={inputClass} value={lot} onChange={(e) => setLot(e.target.value)} placeholder="ex. 26P01" />
             </Field>
             <Field label="Date de naissance">
               <input type="date" className={inputClass} value={naissance} onChange={(e) => setNaissance(e.target.value)} />
@@ -5226,41 +5261,105 @@
             <Field label="Nombre d'animaux">
               <input type="number" min="0" className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} />
             </Field>
-            <Field label="Statut">
-              <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
-                {listeConfig(config, "statutsAbattoir").map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            <Field label="Race (si connue)">
+              <select className={inputClass} value={race} onChange={(e) => setRace(e.target.value)}>
+                <option value="">—</option>
+                {races.map((r, i) => <option key={i} value={r.race}>{r.race}</option>)}
               </select>
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Abattage prévu">
-              <input type="date" className={inputClass} value={abattagePrevu} onChange={(e) => setAbattagePrevu(e.target.value)} />
-              {suggere && <p className="text-xs text-slate-400 mt-1">💡 Suggéré : {frDate(suggere)} ({(config.agesAbattage || {})[espece === "caille" ? "caille" : "poule"] || (espece === "caille" ? 8 : 18)} sem — modifiable dans Réglages)
-                {!abattagePrevu && <button type="button" onClick={() => setAbattagePrevu(suggere)} className="ml-1 text-emerald-600 hover:underline">utiliser</button>}</p>}
-            </Field>
-            <Field label="Abattage réel">
-              <input type="date" className={inputClass} value={abattageReel} onChange={(e) => setAbattageReel(e.target.value)} />
-            </Field>
-          </div>
-          {/* À l'abattage : poids moyens (g) → rendement carcasse + mise au congélateur */}
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="Poids vif moyen (g)">
-              <input type="number" min="0" className={inputClass} value={poidsVif} onChange={(e) => setPoidsVif(e.target.value)} placeholder="ex. 2400" />
-            </Field>
-            <Field label="Poids carcasse moyen (g)">
-              <input type="number" min="0" className={inputClass} value={poidsCarcasse} onChange={(e) => setPoidsCarcasse(e.target.value)} placeholder="ex. 1650" />
-            </Field>
-            <Field label="Rendement">
-              <input className={inputClass + " bg-slate-100"} value={rendement != null ? rendement + " %" : "—"} readOnly />
-            </Field>
-          </div>
-          <Field label="Mis au congélateur (nombre)">
-            <input type="number" min="0" className={inputClass} value={nbCongele} onChange={(e) => setNbCongele(e.target.value)} placeholder={statut === "abattu" && nombre ? "ex. " + nombre : ""} />
-            <p className="text-xs text-slate-400 mt-1">Le stock congélateur se décompte avec le bouton « −1 » du tableau à chaque sujet consommé.</p>
+          <Field label="Statut">
+            <select className={inputClass} value={statut} onChange={(e) => setStatut(e.target.value)}>
+              {listeConfig(config, "statutsAbattoir").map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
           </Field>
           <Field label="Observations">
             <textarea className={inputClass} rows="2" value={obs} onChange={(e) => setObs(e.target.value)} />
           </Field>
+          <FormButtons onClose={onClose} />
+        </form>
+      );
+    }
+
+    // Une séance d'abattage : lot choisi dans la liste, nombre abattus, et par défaut TOUS au congélateur.
+    function AbattageForm({ onClose, espece, indexInit, seance }) {
+      const { abattoir, patchLigne } = useData();
+      const edition = !!seance;
+      const choix = abattoir.map((a, i) => ({ a, i }))
+        .filter(({ a, i }) => (edition ? i === indexInit : (a.espece === "caille" ? "caille" : "poule") === espece && restantsLot(a) > 0));
+      const [idx, setIdx] = useState(indexInit != null ? String(indexInit) : (choix.length === 1 ? String(choix[0].i) : ""));
+      const [date, setDate] = useState(seance ? (seance.date || "") : AUJOURDHUI_ISO);
+      const [nombre, setNombre] = useState(seance ? String(seance.nombre || "") : "");
+      const [congele, setCongele] = useState(seance ? String(seance.congele || 0) : null);        // null = suit « nombre »
+      const [dateCongel, setDateCongel] = useState(seance ? (seance.dateCongel || "") : null);    // null = suit « date »
+      const [poidsCarcasse, setPoidsCarcasse] = useState(seance && seance.poidsCarcasse ? String(seance.poidsCarcasse) : "");
+      const [poidsVif, setPoidsVif] = useState(seance && seance.poidsVif ? String(seance.poidsVif) : "");
+      const a = idx !== "" ? abattoir[Number(idx)] : null;
+      const max = a ? restantsLot(a) + (edition ? Number(seance.nombre) || 0 : 0) : null;
+      const congeleVal = congele == null ? nombre : congele;
+      const dateCongelVal = dateCongel == null ? date : dateCongel;
+      const estim = a ? poidsVifSeance(a, { date, poidsVif }) : null;
+      const rend = a ? rendementSeance(a, { date, poidsVif, poidsCarcasse }) : null;
+      const [erreur, setErreur] = useState("");
+
+      function submit(e) {
+        e.preventDefault();
+        const n = Number(nombre) || 0;
+        if (!a) { setErreur("Choisis un lot."); return; }
+        if (n <= 0) { setErreur("Indique combien tu en as abattu."); return; }
+        if (max != null && n > max) { setErreur("Il ne reste que " + max + " animal(aux) dans ce lot."); return; }
+        const c = Math.min(n, Math.max(0, Number(congeleVal) || 0));
+        const rec = {
+          ...(seance || {}), id: seance ? seance.id : "ab" + Date.now().toString(36),
+          date, nombre: n, congele: c, dateCongel: c > 0 ? dateCongelVal : "",
+          poidsCarcasse: Number(poidsCarcasse) || "", poidsVif: Number(poidsVif) || "",
+          sorties: (seance && seance.sorties) || [],
+        };
+        const liste = abattagesLot(a);
+        const suivante = edition ? liste.map((x) => (x.id === seance.id ? rec : x)) : liste.concat([rec]);
+        patchLigne("abattoir", Number(idx), { abattages: suivante, nbCongele: "", abattageReel: "" });
+        onClose();
+      }
+      if (!edition && choix.length === 0)
+        return <div className="space-y-3"><p className="text-sm text-slate-500">Aucun lot avec des animaux restants.</p>
+          <div className="flex justify-end"><button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50">Fermer</button></div></div>;
+      return (
+        <form onSubmit={submit} className="space-y-3">
+          <Field label="Lot">
+            <select className={inputClass} value={idx} disabled={edition} onChange={(e) => setIdx(e.target.value)}>
+              <option value="">— choisir —</option>
+              {choix.map(({ a: l, i }) => <option key={i} value={i}>{l.lot || "Lot sans numéro"}{l.naissance ? " · né le " + frDate(l.naissance) : ""} · {restantsLot(l)} restant(s)</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Date d'abattage">
+              <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} required />
+            </Field>
+            <Field label={"Nombre abattus" + (max != null ? " (max " + max + ")" : "")}>
+              <input type="number" min="1" max={max || undefined} className={inputClass} value={nombre} onChange={(e) => setNombre(e.target.value)} autoFocus />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3 bg-indigo-50 border border-indigo-100 rounded-xl p-3">
+            <Field label="🧊 Mis au congélateur">
+              <input type="number" min="0" className={inputClass} value={congeleVal} onChange={(e) => setCongele(e.target.value)} />
+            </Field>
+            <Field label="Date de congélation">
+              <input type="date" className={inputClass} value={dateCongelVal} onChange={(e) => setDateCongel(e.target.value)} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Poids carcasse moyen (g)">
+              <input type="number" min="0" className={inputClass} value={poidsCarcasse} onChange={(e) => setPoidsCarcasse(e.target.value)} placeholder="facultatif" />
+            </Field>
+            <Field label="Poids vif moyen (g)">
+              <input type="number" min="0" className={inputClass} value={poidsVif} onChange={(e) => setPoidsVif(e.target.value)}
+                placeholder={estim && estim.estime ? "≈ " + estim.poids + " (pesée)" : "facultatif"} />
+            </Field>
+            <Field label="Rendement">
+              <input className={inputClass + " bg-slate-100"} value={rend ? (rend.estime ? "≈ " : "") + rend.pct + " %" : "—"} readOnly />
+            </Field>
+          </div>
+          {erreur && <p className="text-sm text-red-600">{erreur}</p>}
           <FormButtons onClose={onClose} />
         </form>
       );
@@ -5288,7 +5387,7 @@
             <button type="submit" className="px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium whitespace-nowrap">+ Peser</button>
           </form>
           {pesees.length === 0
-            ? <p className="text-sm text-slate-400">Aucune pesée. Pèse régulièrement (ex. 1×/semaine) pour suivre la croissance et choisir le bon moment d'abattage.</p>
+            ? <p className="text-sm text-slate-400">Une pesée dans les 14 jours avant l'abattage sert de poids vif pour estimer le rendement.</p>
             : <table className="w-full text-sm">
                 <thead className="text-slate-500 text-left"><tr><th className="px-2 py-1 font-medium">Date</th><th className="px-2 py-1 font-medium">Poids moyen</th><th className="px-2 py-1 font-medium">Évolution</th><th></th></tr></thead>
                 <tbody>
@@ -5314,21 +5413,46 @@
       );
     }
 
+    // Bouton « −1 » d'une ligne du congélateur : demande où part la bête (mangée, chien, donnée)
+    function SortieCongel({ onSortie }) {
+      const [ouvert, setOuvert] = useState(false);
+      if (!ouvert) return <button onClick={() => setOuvert(true)} title="Sortir 1 du congélateur" className="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-50 text-xs">−1</button>;
+      return (
+        <span className="inline-flex gap-1">
+          {MOTIFS_SORTIE_CONGEL.map((m) => (
+            <button key={m.id} onClick={() => { onSortie(m.id); setOuvert(false); }} title={m.id}
+              className="px-1.5 py-0.5 rounded border border-slate-300 hover:bg-emerald-50 text-sm">{m.icon}</button>
+          ))}
+          <button onClick={() => setOuvert(false)} className="px-1 text-slate-400 hover:text-slate-600 text-xs">✕</button>
+        </span>
+      );
+    }
+
     function Abattoir() {
       const { abattoir, poussins, config, majLigne, supprimerLigne, patchLigne } = useData();
+      const [espece, setEspece] = useState("poule");
       const [open, setOpen] = useState(false);
       const [edit, setEdit] = useState(null);
-      const [pesees, setPesees] = useState(null);   // { index } → modale des pesées
+      const [pesees, setPesees] = useState(null);     // { index } → modale des pesées
+      const [abattage, setAbattage] = useState(null); // { index?, seance? } → modale « Abattre »
+      const [voirTermines, setVoirTermines] = useState(false);
       const today = AUJOURDHUI_ISO;
-      // Lots de BÉBÉS encore en croissance (module Poussins) : dans combien de temps seront-ils
-      // prêts pour l'abattage ? (naissance + âge d'abattage conseillé des Réglages)
+      const espDe = (x) => (x === "caille" ? "caille" : "poule");
+      const semAbattage = (config.agesAbattage || {})[espece] || (espece === "caille" ? 8 : 18);
+
+      const lotsEsp = abattoir.map((a, i) => ({ a, i })).filter(({ a }) => espDe(a.espece) === espece);
+      const actifs = lotsEsp.filter(({ a }) => restantsLot(a) > 0)
+        .sort((x, y) => (x.a.naissance || "").localeCompare(y.a.naissance || ""));
+      const termines = lotsEsp.filter(({ a }) => restantsLot(a) === 0)
+        .sort((x, y) => (y.a.naissance || "").localeCompare(x.a.naissance || ""));
+
+      // Lots de BÉBÉS encore en croissance (module Poussins) de l'espèce affichée
       const bebesAVenir = poussins
-        .filter((p) => p.statut === "en croissance" && p.date)
+        .filter((p) => p.statut === "en croissance" && p.date && espDe(p.espece) === espece)
         .map((p) => {
-          const espece = p.espece === "caille" ? "caille" : "poule";
           const datePrete = abattageSuggere({ naissance: p.date, espece }, config);
           const restant = datePrete ? Math.ceil((new Date(datePrete) - AUJOURDHUI) / 86400000) : null;
-          return { p, espece, datePrete, restant };
+          return { p, datePrete, restant };
         })
         .sort((a, b) => (a.restant || 0) - (b.restant || 0));
       const libRestant = (j) => {
@@ -5337,90 +5461,176 @@
         if (j < 14) return "dans " + j + " j";
         return "dans ~" + Math.round(j / 7) + " semaines";
       };
-      // Stock congélateur : lots abattus avec nbCongele > 0 ; alerte si plus vieux que config.dureeCongel (mois)
+
+      // Congélateur : une ligne par mise au congélateur encore non vide, la plus ancienne en tête
       const dureeCongel = Number(config.dureeCongel) || 9;
-      const auCongel = abattoir.map((a, i) => ({ a, i })).filter(({ a }) => Number(a.nbCongele) > 0);
-      const totalCongel = auCongel.reduce((s, { a }) => s + Number(a.nbCongele), 0);
-      const moisCongel = (a) => a.abattageReel ? Math.floor((joursDepuis(a.abattageReel) || 0) / 30.44) : null;
-      const plusVieux = auCongel.map(({ a }) => moisCongel(a)).filter((m) => m != null).sort((x, y) => y - x)[0];
-      const enRetardAbattage = abattoir.filter((a) => a.statut !== "abattu" && a.statut !== "décédé" && abattageSuggere(a, config) && abattageSuggere(a, config) < today).length;
+      const moisDepuis = (d) => (d ? Math.floor((joursDepuis(d) || 0) / 30.44) : null);
+      const congel = [];
+      lotsEsp.forEach(({ a, i }) => abattagesLot(a).forEach((x) => {
+        const n = auCongelSeance(x);
+        if (n > 0) congel.push({ a, i, x, n, mois: moisDepuis(x.dateCongel || x.date) });
+      }));
+      congel.sort((u, v) => (u.x.dateCongel || u.x.date || "").localeCompare(v.x.dateCongel || v.x.date || ""));
+      const totalCongel = congel.reduce((s, c) => s + c.n, 0);
+
+      const majSeance = (a, i, id, patch) =>
+        patchLigne("abattoir", i, { abattages: abattagesLot(a).map((x) => (x.id === id ? { ...x, ...patch } : x)), nbCongele: "", abattageReel: "" });
+      const supprimerSeance = (a, i, id) => {
+        if (!window.confirm("Supprimer cette séance d'abattage ?")) return;
+        patchLigne("abattoir", i, { abattages: abattagesLot(a).filter((x) => x.id !== id), nbCongele: "", abattageReel: "" });
+      };
+      const sortir = (c, motif) => majSeance(c.a, c.i, c.x.id, { sorties: (c.x.sorties || []).concat([{ date: today, motif }]) });
+
+      const btn = "px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50";
+      const carteLot = ({ a, i }) => {   // appelée comme fonction (pas un composant : pas de remontage à chaque rendu)
+        const sug = abattageSuggere(a, config);
+        const rest = restantsLot(a);
+        const seances = abattagesLot(a).slice().sort((u, v) => (u.date || "").localeCompare(v.date || ""));
+        const dern = (a.pesees || []).slice().sort((x, y) => (x.date || "").localeCompare(y.date || "")).pop();
+        const pret = sug && sug <= today;
+        return (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+            <div className="flex items-start justify-between gap-2 mb-1">
+              <div>
+                <p className="font-semibold text-slate-800">{a.lot || "Lot sans numéro"} {a.race ? <span className="font-normal text-slate-400 text-sm">· {a.race}</span> : null}</p>
+                <p className="text-xs text-slate-500">{a.naissance ? "Né le " + frDate(a.naissance) + " · " + ageJeune(a.naissance).label : "Date de naissance inconnue"}</p>
+              </div>
+              <StatutAnimal statut={statutLotAbattoir(a)} />
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm my-2">
+              <span>Restants : <span className="font-semibold">{rest}</span><span className="text-slate-400"> / {Number(a.nombre) || 0}</span></span>
+              {rest > 0 && sug && <span className={pret ? "text-emerald-700" : "text-slate-500"}>Prêt vers le {frDate(sug)}{pret ? " ✅" : ""}</span>}
+              {dern && <span className="text-slate-500">⚖️ {dern.poids} g ({frDate(dern.date)})</span>}
+            </div>
+            {seances.length > 0 && (
+              <ul className="text-xs text-slate-600 border-t border-slate-100 pt-2 mb-2 space-y-1">
+                {seances.map((x) => {
+                  const r = rendementSeance(a, x);
+                  return (
+                    <li key={x.id} className="flex items-center justify-between gap-2">
+                      <span>🔪 {x.nombre} le {frDate(x.date)}
+                        {Number(x.congele) > 0 ? " · 🧊 " + x.congele : ""}
+                        {Number(x.poidsCarcasse) > 0 ? " · carc. " + x.poidsCarcasse + " g" : ""}
+                        {r ? " · " + (r.estime ? "≈ " : "") + r.pct + " %" : ""}</span>
+                      <span className="whitespace-nowrap">
+                        <button onClick={() => setAbattage({ index: i, seance: x })} title="Modifier" className="px-1 text-slate-400 hover:text-slate-700">✏️</button>
+                        <button onClick={() => supprimerSeance(a, i, x.id)} title="Supprimer" className="px-1 text-slate-300 hover:text-red-500">🗑</button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <div className="flex flex-wrap items-center gap-2 mt-2">
+              {rest > 0 && <button onClick={() => setAbattage({ index: i })} className="px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium">🔪 Abattre</button>}
+              {rest > 0 && <button onClick={() => setPesees({ index: i })} className={btn}>⚖️ Peser</button>}
+              <span className="ml-auto flex items-center gap-1">
+                <ObsCell texte={a.obs} titre="Observation" onSave={(v) => patchLigne("abattoir", i, { obs: v })} />
+                <RowActions onEdit={() => setEdit({ index: i, rec: a })} onDelete={() => supprimerLigne("abattoir", i)} />
+              </span>
+            </div>
+          </div>
+        );
+      };
+
       return (
         <div>
           <PageHeader
-            title="Animaux destinés à l'abattoir"
-            subtitle="Lots élevés pour la consommation — pesées, rendement carcasse et stock congélateur"
-            action={<AddButton onClick={() => setOpen(true)} label="Ajouter un animal ou lot" />}
+            title="Abattoir"
+            subtitle="Lots élevés pour la consommation, abattages et congélateur"
+            action={<AddButton onClick={() => setOpen(true)} label="Ajouter un lot" />}
           />
 
-          {/* Résumé : congélateur + retards d'abattage */}
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-5">
-            <StatCard label="🧊 Au congélateur" value={totalCongel} color="indigo" sub={auCongel.length ? auCongel.length + " lot(s)" : "rien en stock"} />
-            <StatCard label="Plus ancien au congél." value={plusVieux != null ? plusVieux + " mois" : "—"} color={plusVieux != null && plusVieux >= dureeCongel ? "red" : "slate"} sub={"consommer avant " + dureeCongel + " mois (Réglages)"} />
-            <StatCard label="Abattage dépassé" value={enRetardAbattage} color={enRetardAbattage ? "orange" : "emerald"} sub="lots au-delà de l'âge conseillé" />
+          <div className="flex gap-2 mb-5 border-b border-slate-200">
+            {[["poule", "🐔 Poules"], ["caille", "🐦 Cailles"]].map(([v, l]) => {
+              const n = abattoir.filter((a) => espDe(a.espece) === v && restantsLot(a) > 0).length;
+              return (
+                <button key={v} onClick={() => setEspece(v)}
+                  className={"px-4 py-2 text-sm font-medium -mb-px border-b-2 " + (espece === v ? "border-emerald-600 text-emerald-700" : "border-transparent text-slate-500 hover:text-slate-700")}>
+                  {l}{n ? <span className="ml-1 text-xs text-slate-400">({n})</span> : null}
+                </button>
+              );
+            })}
           </div>
 
-          {/* Lots de bébés à venir : compte à rebours avant l'âge d'abattage conseillé */}
+          {actifs.length > 0 && (
+            <div className="mb-5">
+              <button onClick={() => setAbattage({})} className="w-full sm:w-auto px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">🔪 Enregistrer un abattage</button>
+            </div>
+          )}
+
+          {/* Congélateur */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-5">
+            <h2 className="text-lg font-semibold mb-2">🧊 Congélateur <span className="text-sm font-normal text-slate-400">— {totalCongel} {espece === "caille" ? "caille(s)" : "poulet(s)"}</span></h2>
+            {congel.length === 0
+              ? <p className="text-sm text-slate-400">Vide.</p>
+              : <ul className="divide-y divide-slate-100">
+                  {congel.map((c, k) => {
+                    const vieux = c.mois != null && c.mois >= dureeCongel;
+                    return (
+                      <li key={k} className="flex items-center justify-between gap-2 py-2 text-sm">
+                        <span className={vieux ? "text-red-600" : ""}>
+                          <span className="font-semibold">{c.n}</span> · {c.a.lot || "lot sans numéro"} · congelé{c.n > 1 ? "s" : ""} le {frDate(c.x.dateCongel || c.x.date)}
+                          <span className={"text-xs " + (vieux ? "font-medium" : "text-slate-400")}> · {c.mois != null ? c.mois + " mois" : "—"}{vieux ? " ⚠️ à consommer" : ""}</span>
+                        </span>
+                        <SortieCongel onSortie={(m) => sortir(c, m)} />
+                      </li>
+                    );
+                  })}
+                </ul>}
+            {congel.length > 0 && <p className="text-xs text-slate-400 mt-2">−1 → 🍽️ mangé · 🐕 chien · 🎁 donné. Alerte au-delà de {dureeCongel} mois (Réglages).</p>}
+          </div>
+
+          {/* Lots en cours */}
+          <h2 className="text-lg font-semibold mb-3">Lots en cours</h2>
+          {actifs.length === 0
+            ? <p className="text-sm text-slate-400 mb-5">Aucun lot {espece === "caille" ? "de cailles" : "de poules"} en cours.</p>
+            : <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                {actifs.map(({ a, i }) => <React.Fragment key={i}>{carteLot({ a, i })}</React.Fragment>)}
+              </div>}
+
+          {/* Bébés à venir : compte à rebours avant l'âge d'abattage conseillé */}
           {bebesAVenir.length > 0 && <>
-            <h2 className="text-lg font-semibold mb-3">🐥 Bébés à venir <span className="text-sm font-normal text-slate-400">— dans combien de temps seront-ils prêts ?</span></h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-3">
-              {bebesAVenir.map(({ p, espece, datePrete, restant }, k) => (
+            <h2 className="text-lg font-semibold mb-3">🐥 Bébés à venir</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-5">
+              {bebesAVenir.map(({ p, datePrete, restant }, k) => (
                 <div key={k} className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="text-sm font-medium text-slate-700">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {labelJeune(p.espece)} · {vivantsLot(p)} vivant(s)</span></p>
+                    <p className="text-sm font-medium text-slate-700">{p.id || labelJeune(p.espece)} <span className="font-normal text-slate-400">· {vivantsLot(p)} vivant(s)</span></p>
                     <span className={"px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap " + (restant != null && restant <= 0 ? "bg-emerald-100 text-emerald-700" : (restant != null && restant < 14 ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"))}>{libRestant(restant)}</span>
                   </div>
                   <p className="text-xs text-slate-500">Né le {frDate(p.date)} · {ageJeune(p.date).label}</p>
-                  <p className="text-xs text-slate-500">Prêt pour l'abattage vers le <span className="font-medium">{datePrete ? frDate(datePrete) : "—"}</span> <span className="text-slate-400">({(config.agesAbattage || {})[espece] || (espece === "caille" ? 8 : 18)} sem)</span></p>
+                  <p className="text-xs text-slate-500">Prêt pour l'abattage vers le <span className="font-medium">{datePrete ? frDate(datePrete) : "—"}</span> <span className="text-slate-400">({semAbattage} sem)</span></p>
                 </div>
               ))}
             </div>
           </>}
 
-          <Table
-            resume={(r, k) => { const a = abattoir[k]; return <><span className="font-medium">{a.lot || "—"}</span> — {a.espece}<span className="text-slate-400"> · {a.nombre} · {a.statut}{Number(a.nbCongele) > 0 ? " · 🧊 " + a.nbCongele : ""}</span></>; }}
-            columns={["Lot", "Espèce", "Race", "Naissance", "Nombre", "Statut", "Suggéré", "Abattage prévu", "Abattage réel", "⚖️ Poids", "🧊 Congél.", "Obs", ""]}
-            rows={abattoir.map((a, i) => {
-              const sug = abattageSuggere(a, config);
-              const sugDepasse = sug && sug < today && a.statut !== "abattu" && a.statut !== "décédé";
-              const dern = (a.pesees || []).slice().sort((x, y) => (x.date || "").localeCompare(y.date || "")).pop();
-              const rend = (Number(a.poidsVif) > 0 && Number(a.poidsCarcasse) > 0) ? Math.round((a.poidsCarcasse / a.poidsVif) * 100) : null;
-              const mc = moisCongel(a);
-              return [
-                <span className="font-medium">{a.lot || "—"}</span>,
-                a.espece,
-                a.race || "—",
-                frDate(a.naissance),
-                a.nombre,
-                <StatutAnimal statut={a.statut} />,
-                sug ? <span className={"whitespace-nowrap text-xs " + (sugDepasse ? "text-red-600 font-medium" : "text-slate-500")}>{frDate(sug)}{sugDepasse ? " ⚠️" : ""}</span> : "—",
-                frDate(a.abattagePrevu),
-                frDate(a.abattageReel),
-                <span className="whitespace-nowrap text-xs">
-                  {a.statut === "abattu" && Number(a.poidsCarcasse) > 0
-                    ? <>carc. <span className="font-medium">{a.poidsCarcasse} g</span>{rend != null ? " · " + rend + " %" : ""}</>
-                    : (dern ? <><span className="font-medium">{dern.poids} g</span> <span className="text-slate-400">({frDate(dern.date)})</span></> : <span className="text-slate-300">—</span>)}
-                  <button onClick={() => setPesees({ index: i })} title="Pesées du lot" className="ml-1 px-1 py-0.5 rounded hover:bg-slate-100">⚖️</button>
-                </span>,
-                Number(a.nbCongele) > 0
-                  ? <span className={"whitespace-nowrap text-xs " + (mc != null && mc >= dureeCongel ? "text-red-600 font-medium" : "")}>
-                      🧊 {a.nbCongele}{mc != null ? " · " + mc + " mois" : ""}{mc != null && mc >= dureeCongel ? " ⚠️" : ""}
-                      <button onClick={() => patchLigne("abattoir", i, { nbCongele: Math.max(0, Number(a.nbCongele) - 1) })} title="1 sujet consommé" className="ml-1 px-1.5 py-0.5 rounded border border-slate-300 hover:bg-slate-50">−1</button>
-                    </span>
-                  : <span className="text-slate-300 text-xs">—</span>,
-                <ObsCell texte={a.obs} titre="Observation" onSave={(v) => patchLigne("abattoir", i, { obs: v })} />,
-                <RowActions onEdit={() => setEdit({ index: i, rec: a })} onDelete={() => supprimerLigne("abattoir", i)} />,
-              ];
-            })}
-          />
-          <p className="text-xs text-slate-400 mt-2">« Suggéré » = naissance + âge d'abattage conseillé (Réglages : {(config.agesAbattage || {}).poule || 18} sem poule · {(config.agesAbattage || {}).caille || 8} sem caille). ⚖️ = pesées régulières du lot (poids moyen). 🧊 « −1 » à chaque sujet sorti du congélateur ; alerte au-delà de {dureeCongel} mois.</p>
+          {/* Lots terminés, repliés */}
+          {termines.length > 0 && (
+            <div className="mb-5">
+              <button onClick={() => setVoirTermines((v) => !v)} className="text-sm text-slate-500 hover:text-slate-700">
+                {voirTermines ? "▾" : "▸"} Lots terminés ({termines.length})
+              </button>
+              {voirTermines && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                {termines.map(({ a, i }) => <React.Fragment key={i}>{carteLot({ a, i })}</React.Fragment>)}
+              </div>}
+            </div>
+          )}
+
           {open && (
-            <Modal title="Nouvel animal / lot abattoir" onClose={() => setOpen(false)}>
-              <AbattoirForm onClose={() => setOpen(false)} />
+            <Modal title={"Nouveau lot — " + (espece === "caille" ? "cailles" : "poules")} onClose={() => setOpen(false)}>
+              <AbattoirForm especeInit={espece} onClose={() => setOpen(false)} />
             </Modal>
           )}
           {edit && (
-            <Modal title="Modifier la ligne abattoir" onClose={() => setEdit(null)}>
+            <Modal title={"Modifier le lot " + (edit.rec.lot || "")} onClose={() => setEdit(null)}>
               <AbattoirForm initial={edit.rec} onSave={(rec) => majLigne("abattoir", edit.index, rec)} onClose={() => setEdit(null)} />
+            </Modal>
+          )}
+          {abattage && (
+            <Modal title={abattage.seance ? "✏️ Modifier l'abattage" : "🔪 Abattage"} onClose={() => setAbattage(null)}>
+              <AbattageForm espece={espece} indexInit={abattage.index} seance={abattage.seance} onClose={() => setAbattage(null)} />
             </Modal>
           )}
           {pesees && (
@@ -6770,7 +6980,7 @@
       if (id === "poules")  return (Number(e.poules) || 0) + (Number(e.coqs) || 0);
       if (id === "cailles") return (Number(e.caillesF) || 0) + (Number(e.caillesM) || 0);
       if (id === "jeunes")  return (d.poussins || []).filter((p) => p.statut === "en croissance").reduce((s, p) => s + vivantsLot(p), 0);
-      if (id === "engrais") return (d.abattoir || []).filter((a) => a.statut !== "abattu" && a.statut !== "décédé").reduce((s, a) => s + (Number(a.nombre) || 0), 0);
+      if (id === "engrais") return (d.abattoir || []).reduce((s, a) => s + restantsLot(a), 0);
       return 0;
     }
     const consommateursDe = (config, article) => ((config && config.consommateurs) || {})[memArticleKey(article)] || [];
@@ -10014,7 +10224,7 @@
       });
       // Abattages prévus (animaux destinés à la consommation) — si une date d'abattage prévu est renseignée
       abattoir.forEach((a) => {
-        if (!a.abattagePrevu || a.abattageReel) return;   // déjà abattu → on n'affiche plus
+        if (!a.abattagePrevu || a.abattageReel || abattusLot(a) > 0) return;   // champ des anciennes saisies ; déjà abattu → on n'affiche plus
         add(a.abattagePrevu, { icon: "🔪", label: "Abattage prévu — " + (a.lot || a.espece || "lot") + (a.nombre ? " (" + a.nombre + ")" : ""), color: "slate", page: "abattoir" });
       });
       return events;
@@ -10240,7 +10450,7 @@
       { id: "poulaillers", label: "Gestion poulailler", icon: "🏠", comp: GestionPoulaillers },
       { id: "lots",      label: "Récolte des œufs", icon: "🥚", comp: Lots },
       { id: "reproducteurs", label: "Animaux reproducteurs", icon: "🐓", comp: Reproducteurs },
-      { id: "abattoir",  label: "Animaux consommation", icon: "🍗", comp: Abattoir },
+      { id: "abattoir",  label: "Abattoir", icon: "🔪", comp: Abattoir },
       { id: "consommables", label: "Inventaire consommables", icon: "🧺", comp: InventaireConsommables },
       { id: "materiel",  label: "Inventaire matériel", icon: "🔧", comp: InventaireMateriel },
       { id: "catalogue", label: "Catalogue des races", icon: "📖", comp: Catalogue },
@@ -10492,7 +10702,7 @@
        type="text/plain" : le navigateur ne l'exécute pas tout seul, on le lance nous-mêmes
        après vérification. Régénéré par `python3 outils/recompiler.py` après toute
        modification du bloc #appsrc ci-dessus. NE PAS ÉDITER À LA MAIN. -->
-  <script type="text/plain" id="appjs" data-sig="706959:2cf3c827">const{useState,useEffect,useRef,useContext,createContext}=React;// --- Constantes métier ---
+  <script type="text/plain" id="appjs" data-sig="718012:e787f9e7">const{useState,useEffect,useRef,useContext,createContext}=React;// --- Constantes métier ---
 const DUREE={poule:21,caille:17};// jours d'incubation
 const CAPACITE={poule:120,caille:240};// œufs / couveuse (repli si la couveuse n'a pas sa capacité propre)
 // Parc de couveuses par défaut — modifiable dans Réglages (ajout d'une 3ᵉ couveuse, capacités…).
@@ -10660,7 +10870,7 @@ function vivantsLot(p){if(p&&p.nes!=null&&p.nes!=="")return Math.max(0,(Number(p
 function vivantsAuJour(p,jour){const base=p&&p.nes!=null&&p.nes!==""?(Number(p.nes)||0)-(Number(p.morts)||0):Number(p&&p.nombre)||0;const j=p&&p.jours||{};const mortsCumul=Object.keys(j).reduce((s,k)=>Number(k)<=jour?s+(Number(j[k]&&j[k].morts)||0):s,0);return Math.max(0,base-mortsCumul);}// --- Inventaires : repères de temps + helpers de calcul ---
 const ANNEE_COURANTE=AUJOURDHUI.getFullYear();// Version de l'app, affichée en bas du menu — à INCRÉMENTER à chaque publication GitHub.
 // Permet de vérifier d'un coup d'œil que le téléphone a bien la dernière version.
-const APP_VERSION="v123 — 18/09/2026";const MOIS_COURANT=AUJOURDHUI.toISOString().slice(0,7);// "AAAA-MM"
+const APP_VERSION="v124 — 25/09/2026";const MOIS_COURANT=AUJOURDHUI.toISOString().slice(0,7);// "AAAA-MM"
 const annee=iso=>(iso||"").slice(0,4);const moisDe=iso=>(iso||"").slice(0,7);const eur=n=>(Number(n)||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2})+" €";const moisFr=ym=>{const noms=["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."];const[y,m]=ym.split("-");return noms[parseInt(m,10)-1]+" "+y;};// Statistiques consommables : stock par article + dépenses (entrées) par mois/an.
 function statsConsommables(consommables){const map={};// article -> agrégat
 consommables.forEach(c=>{const q=Number(c.quantite)||0;const a=map[c.article]||(map[c.article]={article:c.article,categorie:c.categorie,unite:c.unite,entrees:0,sorties:0,seuil:0,prixRef:0});if(c.mouvement==="sortie")a.sorties+=q;else{a.entrees+=q;if(Number(c.prixUnitaire)>0)a.prixRef=Number(c.prixUnitaire);}if(Number(c.seuil)>0)a.seuil=Number(c.seuil);if(c.unite)a.unite=c.unite;});const parArticle=Object.keys(map).map(k=>{const a=map[k];const stock=a.entrees-a.sorties;return{...a,stock,bas:a.seuil>0&&stock<=a.seuil};}).sort((x,y)=>x.article.localeCompare(y.article));const depMois={},depAnnee={};consommables.forEach(c=>{if(c.mouvement==="sortie")return;// seules les entrées sont des dépenses
@@ -10839,7 +11049,7 @@ function effectifsReproducteurs(reproducteurs,config){if(!(reproducteurs||[]).le
 function abattageSuggere(a,config){if(!a.naissance)return null;const sem=(config&&config.agesAbattage||{})[a.espece==="caille"?"caille":"poule"]||(a.espece==="caille"?8:18);return dateDecalee(a.naissance,sem*7);}// REGISTRE D'ÉLEVAGE : événements réglementaires reconstruits depuis les données existantes —
 // entrées (naissances, achats), sorties (abattages), mortalité (jeunes + reproducteurs),
 // traitements (soins des zones + traitements des lots de jeunes). Tri du plus récent au plus ancien.
-function lignesRegistre({poussins,reproducteurs,abattoir,poulaillers,breederPurchases,traitements,config}){const out=[];const push=(date,cat,nature,espece,nombre,detail)=>{if(date)out.push({date:String(date).slice(0,10),cat,nature,espece:espece||"—",nombre:nombre===""||nombre==null?"":Number(nombre)||0,detail:detail||""});};const espJ=p=>p.espece==="caille"?"caille":"poule";const lblTrait=k=>(ACTIONS_COCHES.find(a=>a.key===k)||{}).label||k;(poussins||[]).forEach(p=>{push(p.date,"Entrée","Naissance",espJ(p),p.nes!==""&&p.nes!=null?p.nes:p.nombre,"Lot "+(p.id||"—"));Object.keys(p.jours||{}).forEach(n=>{const m=Number(((p.jours||{})[n]||{}).morts)||0;if(m>0)push(dateDecalee(p.date,Number(n)-1),"Mortalité","Perte jeunes",espJ(p),m,"Lot "+(p.id||"—")+" · J"+n);});Object.keys(p.traitements||{}).forEach(k=>push(p.traitements[k],"Traitement",lblTrait(k),espJ(p),"","Lot "+(p.id||"—")+" (jeunes)"));});(breederPurchases||[]).forEach(b=>push(b.date,"Entrée","Achat",b.espece,b.nombre,(b.type||"achat")+(b.fournisseur?" — "+b.fournisseur:"")));(abattoir||[]).forEach(a=>{if(a.abattageReel)push(a.abattageReel,"Sortie","Abattage",a.espece,a.nombre,"Lot "+(a.lot||"—"));});(reproducteurs||[]).forEach(r=>{if(r.statut==="décédé"&&r.dateFin)push(r.dateFin,"Mortalité","Décès reproducteur",r.espece,r.nombre||1,r.nom||"");});(poulaillers||[]).forEach(pl=>{TRAITEMENTS.filter(k=>ligneFaitAction(pl,k)).forEach(k=>{const q=pl.quantites&&pl.quantites[k];push(pl.date,"Traitement",lblTrait(k),"—","",(pl.zone||"")+(q!==""&&q!=null?" · "+q+" ml":""));});});// Traitements de la table dédiée : une ligne de registre par produit administré
+function lignesRegistre({poussins,reproducteurs,abattoir,poulaillers,breederPurchases,traitements,config}){const out=[];const push=(date,cat,nature,espece,nombre,detail)=>{if(date)out.push({date:String(date).slice(0,10),cat,nature,espece:espece||"—",nombre:nombre===""||nombre==null?"":Number(nombre)||0,detail:detail||""});};const espJ=p=>p.espece==="caille"?"caille":"poule";const lblTrait=k=>(ACTIONS_COCHES.find(a=>a.key===k)||{}).label||k;(poussins||[]).forEach(p=>{push(p.date,"Entrée","Naissance",espJ(p),p.nes!==""&&p.nes!=null?p.nes:p.nombre,"Lot "+(p.id||"—"));Object.keys(p.jours||{}).forEach(n=>{const m=Number(((p.jours||{})[n]||{}).morts)||0;if(m>0)push(dateDecalee(p.date,Number(n)-1),"Mortalité","Perte jeunes",espJ(p),m,"Lot "+(p.id||"—")+" · J"+n);});Object.keys(p.traitements||{}).forEach(k=>push(p.traitements[k],"Traitement",lblTrait(k),espJ(p),"","Lot "+(p.id||"—")+" (jeunes)"));});(breederPurchases||[]).forEach(b=>push(b.date,"Entrée","Achat",b.espece,b.nombre,(b.type||"achat")+(b.fournisseur?" — "+b.fournisseur:"")));(abattoir||[]).forEach(a=>abattagesLot(a).forEach(x=>{if(x.date)push(x.date,"Sortie","Abattage",a.espece,x.nombre,"Lot "+(a.lot||"—"));}));(reproducteurs||[]).forEach(r=>{if(r.statut==="décédé"&&r.dateFin)push(r.dateFin,"Mortalité","Décès reproducteur",r.espece,r.nombre||1,r.nom||"");});(poulaillers||[]).forEach(pl=>{TRAITEMENTS.filter(k=>ligneFaitAction(pl,k)).forEach(k=>{const q=pl.quantites&&pl.quantites[k];push(pl.date,"Traitement",lblTrait(k),"—","",(pl.zone||"")+(q!==""&&q!=null?" · "+q+" ml":""));});});// Traitements de la table dédiée : une ligne de registre par produit administré
 (traitements||[]).forEach(t=>{const cbs=ciblesDe(t);const qui=cbs.map(c=>c.type==="lot"?"Lot "+((lotJeuneDeRef(poussins,c.ref)||{}).id||"sans numéro"):c.ref).join(" + ")||"—";// Espèce : celle des lots visés si tous concordent, sinon « — » (traitement mixte)
 const esps=Array.from(new Set(cbs.filter(c=>c.type==="lot").map(c=>(lotJeuneDeRef(poussins,c.ref)||{}).espece==="caille"?"caille":"poule")));const esp=esps.length===1?esps[0]:"—";(t.produits||[]).forEach(pr=>{const dose=pr.dose!==""&&pr.dose!=null?" · "+pr.dose+" "+(pr.unite||"ml"):"";const duree=(Number(t.duree)||1)>1?" · "+t.duree+" j":"";const par=" · "+libelleVoieCourt(t.voie)+(t.lieu?" ("+t.lieu+")":"");push(t.date,"Traitement",pr.nom,esp,t.animaux,qui+par+dose+duree+(t.motif?" · "+t.motif:""));});});out.sort((a,b)=>b.date.localeCompare(a.date));return out;}// Impression du registre (fenêtre dédiée → PDF via « imprimer »)
 function imprimerRegistre(lignes,config){const el=config&&config.elevage||{};const esc=s=>String(s==null?"":s).replace(/</g,"&lt;");const rows=lignes.map(l=>"<tr><td>"+frDate(l.date)+"</td><td>"+esc(l.cat)+"</td><td>"+esc(l.nature)+"</td><td>"+esc(l.espece)+"</td><td>"+(l.nombre===""?"":l.nombre)+"</td><td>"+esc(l.detail)+"</td></tr>").join("");const w=window.open("","_blank");if(!w){alert("Autorise les fenêtres pop-up pour imprimer le registre.");return;}w.document.write("<html><head><title>Registre d'élevage</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;margin:24px;color:#0f172a}h1{font-size:18px;margin:0 0 4px}p{color:#475569;margin:2px 0}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{border:1px solid #cbd5e1;padding:4px 6px;text-align:left;vertical-align:top}th{background:#f1f5f9}</style></head><body>"+"<h1>Registre d'élevage</h1>"+"<p>"+esc(el.nom||"")+(el.detenteur?" — détenteur : "+esc(el.detenteur):"")+"</p>"+(el.adresse?"<p>"+esc(el.adresse)+"</p>":"")+"<p>Édité le "+frDate(new Date().toISOString().slice(0,10))+" · "+lignes.length+" événement(s)</p>"+"<table><thead><tr><th>Date</th><th>Catégorie</th><th>Nature</th><th>Espèce</th><th>Nb</th><th>Détail</th></tr></thead><tbody>"+rows+"</tbody></table>"+"</body></html>");w.document.close();w.focus();setTimeout(()=>w.print(),300);}// Lignées « à risque » de consanguinité : lignées (non vides) ayant ≥ 2 reproducteurs ACTIFS
@@ -11024,14 +11234,26 @@ const SANTE_CLS={maladie:"bg-red-100 text-red-700",blessure:"bg-orange-100 text-
 const[date,setDate]=useState(new Date().toISOString().slice(0,10));const[type,setType]=useState("maladie");const[description,setDescription]=useState("");const entrees=(rec.sante||[]).map((e,i)=>({e,i})).sort((a,b)=>(b.e.date||"").localeCompare(a.e.date||""));const ajouter=ev=>{ev.preventDefault();if(!description.trim())return;patchLigne("reproducteurs",index,{sante:(rec.sante||[]).concat([{date,type,description:description.trim()}])});setDescription("");};const retirer=i=>patchLigne("reproducteurs",index,{sante:(rec.sante||[]).filter((_,k)=>k!==i)});return/*#__PURE__*/React.createElement("div",{className:"space-y-4"},/*#__PURE__*/React.createElement("form",{onSubmit:ajouter,className:"bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2"},/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Date"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:date,onChange:e=>setDate(e.target.value),required:true})),/*#__PURE__*/React.createElement(Field,{label:"Type"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:type,onChange:e=>setType(e.target.value)},listeConfig(config,"typesSante").map(t=>/*#__PURE__*/React.createElement("option",{key:t,value:t},t))))),/*#__PURE__*/React.createElement(Field,{label:"Description (sympt\xF4mes, produit et dose, remarque\u2026)"},/*#__PURE__*/React.createElement("textarea",{className:inputClass,rows:"2",value:description,onChange:e=>setDescription(e.target.value),placeholder:"ex. boite l\xE9g\xE8rement \u2014 patte droite ; ou : Vermifuge X, 0,5 ml"})),/*#__PURE__*/React.createElement("div",{className:"flex justify-end"},/*#__PURE__*/React.createElement("button",{type:"submit",className:"px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium"},"+ Ajouter au carnet"))),entrees.length===0?/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400"},"Aucun \xE9v\xE9nement de sant\xE9 enregistr\xE9 \u2014 c'est bon signe \uD83D\uDC4D"):/*#__PURE__*/React.createElement("div",{className:"space-y-2 max-h-72 overflow-y-auto pr-1"},entrees.map(({e,i})=>/*#__PURE__*/React.createElement("div",{key:i,className:"flex items-start gap-2 bg-white border border-slate-100 rounded-lg p-2.5 shadow-sm"},/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs font-medium shrink-0 "+(SANTE_CLS[e.type]||SANTE_CLS.autre)},e.type),/*#__PURE__*/React.createElement("div",{className:"min-w-0 flex-1"},/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-400"},frDate(e.date)),/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-700 break-words"},e.description)),/*#__PURE__*/React.createElement("button",{onClick:()=>retirer(i),title:"Supprimer",className:"text-slate-300 hover:text-red-500 shrink-0"},"\uD83D\uDDD1")))),/*#__PURE__*/React.createElement("div",{className:"flex justify-end"},/*#__PURE__*/React.createElement("button",{type:"button",onClick:onClose,className:"px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"},"Fermer")));}function Reproducteurs(){const{reproducteurs,config,majLigne,supprimerLigne,patchLigne}=useData();const[vue,setVue]=useState("animaux");// "animaux" | "achats"
 const[open,setOpen]=useState(false);const[edit,setEdit]=useState(null);// { index, rec }
 const[sante,setSante]=useState(null);// { index } → carnet de santé
-const[q,setQ]=useState("");const[filtre,setFiltre]=useState("tous");const fbtn=actif=>"px-3 py-1.5 rounded-lg text-sm border "+(actif?"bg-emerald-600 text-white border-emerald-600":"bg-white text-slate-600 border-slate-300 hover:bg-slate-50");const txt=q.trim().toLowerCase();const passeFiltre=r=>{if(filtre==="actifs")return r.statut==="actif";if(filtre==="décédés")return r.statut==="décédé";if(filtre==="poule")return r.espece==="poule";if(filtre==="coq")return r.espece==="coq";if(filtre==="caille femelle")return r.espece==="caille femelle";if(filtre==="caille mâle")return r.espece==="caille mâle";return true;};const passeTexte=r=>!txt||[r.nom,r.espece,r.race,r.statut,r.obs].filter(Boolean).some(v=>String(v).toLowerCase().includes(txt));const filtres=reproducteurs.map((r,i)=>({r,i})).filter(({r})=>passeFiltre(r)&&passeTexte(r));return/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement(PageHeader,{title:"Animaux reproducteurs",subtitle:"Suivi individuel des reproducteurs et achats par lot",action:vue==="animaux"?/*#__PURE__*/React.createElement(AddButton,{onClick:()=>setOpen(true),label:"Ajouter un reproducteur"}):null}),/*#__PURE__*/React.createElement("div",{className:"flex gap-2 mb-5 border-b border-slate-200"},[["animaux","🐔 Animaux"],["achats","🛒 Achats"]].map(([v,l])=>/*#__PURE__*/React.createElement("button",{key:v,onClick:()=>setVue(v),className:"px-4 py-2 text-sm font-medium -mb-px border-b-2 "+(vue===v?"border-emerald-600 text-emerald-700":"border-transparent text-slate-500 hover:text-slate-700")},l))),vue==="achats"&&/*#__PURE__*/React.createElement(AchatsReproducteurs,null),vue==="animaux"&&/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("div",{className:"bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-5 space-y-3"},/*#__PURE__*/React.createElement("input",{className:inputClass,value:q,onChange:e=>setQ(e.target.value),placeholder:"\uD83D\uDD0D Rechercher (nom, esp\xE8ce, race, statut, observation\u2026)"}),/*#__PURE__*/React.createElement("div",{className:"flex flex-wrap gap-2"},[["tous","Tous"],["actifs","Actifs"],["décédés","Décédés"],["poule","Poules"],["coq","Coqs"],["caille femelle","Cailles ♀"],["caille mâle","Cailles ♂"]].map(([v,l])=>/*#__PURE__*/React.createElement("button",{key:v,onClick:()=>setFiltre(v),className:fbtn(filtre===v)},l)))),/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400 mb-3"},filtres.reduce((s,{r})=>s+(Number(r.nombre)||1),0)," animal(aux) \xB7 ",filtres.length," ligne(s)"),ligneesRisque(reproducteurs).length>0&&/*#__PURE__*/React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5"},/*#__PURE__*/React.createElement("p",{className:"text-sm font-semibold text-amber-800 mb-1"},"\uD83E\uDDEC Consanguinit\xE9 \u2014 \xE0 surveiller"),/*#__PURE__*/React.createElement("ul",{className:"space-y-1"},ligneesRisque(reproducteurs).map((g,k)=>/*#__PURE__*/React.createElement("li",{key:k,className:"text-sm text-amber-700"},/*#__PURE__*/React.createElement("span",{className:"font-medium"},g.lignee)," : ",g.noms.join(", ")," \u2014 \xE9vite de les accoupler entre eux.")))),/*#__PURE__*/React.createElement(Table,{resume:(row,k)=>{const r=filtres[k].r;return/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("span",{className:"font-medium"},r.nom||"(lot)")," \u2014 ",r.espece,(Number(r.nombre)||1)>1?" ×"+r.nombre:"",/*#__PURE__*/React.createElement("span",{className:"text-slate-400"}," \xB7 ",r.statut,r.lignee?" · "+r.lignee:""));},columns:["Nom","Nb","Espèce","Race","Lignée","Naissance / arrivée","Âge","Stade repro","Statut","Décès / retrait","Obs",""],rows:filtres.map(({r,i})=>[/*#__PURE__*/React.createElement("span",{className:"font-medium"},r.nom||/*#__PURE__*/React.createElement("span",{className:"text-slate-400 font-normal"},"(lot sans nom)")),(Number(r.nombre)||1)>1?/*#__PURE__*/React.createElement("span",{className:"font-medium text-emerald-600"},r.nombre):Number(r.nombre)||1,r.espece,/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement("span",null,r.race||"—"),r.couleur?/*#__PURE__*/React.createElement("span",{className:"block text-xs text-slate-400"},r.couleur):null),r.lignee?/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-600"},r.lignee):/*#__PURE__*/React.createElement("span",{className:"text-slate-300"},"\u2014"),r.naissance?/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},frDate(r.naissance)):r.arrivee?/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},frDate(r.arrivee)," ",/*#__PURE__*/React.createElement("span",{className:"text-slate-400 text-xs"},"(arriv\xE9e)")):"—",/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},ageAnimal(r)),/*#__PURE__*/React.createElement(BadgeAgeRepro,{a:alerteAgeRepro(r,config)}),/*#__PURE__*/React.createElement(StatutAnimal,{statut:r.statut}),frDate(r.dateFin),/*#__PURE__*/React.createElement(ObsCell,{texte:r.obs,titre:"Observation — "+r.nom,onSave:v=>patchLigne("reproducteurs",i,{obs:v})}),/*#__PURE__*/React.createElement(RowActions,{onEdit:()=>setEdit({index:i,rec:r}),onDelete:()=>supprimerLigne("reproducteurs",i),extra:/*#__PURE__*/React.createElement("button",{onClick:()=>setSante({index:i}),title:"Carnet de sant\xE9",className:"px-1.5 py-0.5 rounded text-xs "+((r.sante||[]).length?"text-red-600 hover:bg-red-50 font-medium":"text-slate-400 hover:bg-slate-100")},"\uD83E\uDE7A",(r.sante||[]).length?" "+r.sante.length:"")})])}),open&&/*#__PURE__*/React.createElement(Modal,{title:"Nouveau reproducteur",onClose:()=>setOpen(false)},/*#__PURE__*/React.createElement(ReproducteurForm,{onClose:()=>setOpen(false)})),edit&&/*#__PURE__*/React.createElement(Modal,{title:"Modifier — "+(edit.rec.nom||"lot"),onClose:()=>setEdit(null)},/*#__PURE__*/React.createElement(ReproducteurForm,{initial:edit.rec,onSave:rec=>majLigne("reproducteurs",edit.index,rec),onClose:()=>setEdit(null)})),sante&&/*#__PURE__*/React.createElement(Modal,{title:"🩺 Carnet de santé — "+((reproducteurs[sante.index]||{}).nom||"reproducteur"),onClose:()=>setSante(null)},/*#__PURE__*/React.createElement(CarnetSante,{index:sante.index,onClose:()=>setSante(null)}))));}/* ---------- Animaux destinés à l'abattoir ---------- */function AbattoirForm({onClose,initial,onSave}){const{races,ajouterAbattoir,config}=useData();const[lot,setLot]=useState(initial?initial.lot||"":"");const[espece,setEspece]=useState(initial?initial.espece:"poule");const[race,setRace]=useState(initial?initial.race||"":"");const[naissance,setNaissance]=useState(initial?initial.naissance||"":"");const[nombre,setNombre]=useState(initial?String(initial.nombre):"");const[statut,setStatut]=useState(initial?initial.statut:"en croissance");const[abattagePrevu,setAbattagePrevu]=useState(initial?initial.abattagePrevu||"":"");const[abattageReel,setAbattageReel]=useState(initial?initial.abattageReel||"":"");const[poidsVif,setPoidsVif]=useState(initial&&initial.poidsVif?String(initial.poidsVif):"");const[poidsCarcasse,setPoidsCarcasse]=useState(initial&&initial.poidsCarcasse?String(initial.poidsCarcasse):"");const[nbCongele,setNbCongele]=useState(initial&&initial.nbCongele!=null&&initial.nbCongele!==""?String(initial.nbCongele):"");const[obs,setObs]=useState(initial?initial.obs||"":"");const suggere=abattageSuggere({naissance,espece},config);const rendement=Number(poidsVif)>0&&Number(poidsCarcasse)>0?Math.round(Number(poidsCarcasse)/Number(poidsVif)*100):null;function submit(e){e.preventDefault();const rec={...(initial||{}),// préserve les pesées et champs annexes en édition
-lot:lot.trim(),espece,race,naissance,nombre:Number(nombre)||0,statut,abattagePrevu,abattageReel,poidsVif:Number(poidsVif)||"",poidsCarcasse:Number(poidsCarcasse)||"",nbCongele:nbCongele===""?"":Math.max(0,Number(nbCongele)||0),obs:obs.trim()};(onSave||ajouterAbattoir)(rec);onClose();}return/*#__PURE__*/React.createElement("form",{onSubmit:submit,className:"space-y-3"},/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Num\xE9ro de lot"},/*#__PURE__*/React.createElement("input",{className:inputClass,value:lot,onChange:e=>setLot(e.target.value),placeholder:"ex. 26P01"})),/*#__PURE__*/React.createElement(Field,{label:"Esp\xE8ce"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:espece,onChange:e=>setEspece(e.target.value)},/*#__PURE__*/React.createElement("option",{value:"poule"},"Poule"),/*#__PURE__*/React.createElement("option",{value:"caille"},"Caille")))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Race (si connue)"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:race,onChange:e=>setRace(e.target.value)},/*#__PURE__*/React.createElement("option",{value:""},"\u2014"),races.map((r,i)=>/*#__PURE__*/React.createElement("option",{key:i,value:r.race},r.race)))),/*#__PURE__*/React.createElement(Field,{label:"Date de naissance"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:naissance,onChange:e=>setNaissance(e.target.value)}))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Nombre d'animaux"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:nombre,onChange:e=>setNombre(e.target.value)})),/*#__PURE__*/React.createElement(Field,{label:"Statut"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:statut,onChange:e=>setStatut(e.target.value)},listeConfig(config,"statutsAbattoir").map(s=>/*#__PURE__*/React.createElement("option",{key:s,value:s},s.charAt(0).toUpperCase()+s.slice(1)))))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Abattage pr\xE9vu"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:abattagePrevu,onChange:e=>setAbattagePrevu(e.target.value)}),suggere&&/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-400 mt-1"},"\uD83D\uDCA1 Sugg\xE9r\xE9 : ",frDate(suggere)," (",(config.agesAbattage||{})[espece==="caille"?"caille":"poule"]||(espece==="caille"?8:18)," sem \u2014 modifiable dans R\xE9glages)",!abattagePrevu&&/*#__PURE__*/React.createElement("button",{type:"button",onClick:()=>setAbattagePrevu(suggere),className:"ml-1 text-emerald-600 hover:underline"},"utiliser"))),/*#__PURE__*/React.createElement(Field,{label:"Abattage r\xE9el"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:abattageReel,onChange:e=>setAbattageReel(e.target.value)}))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-3 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Poids vif moyen (g)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:poidsVif,onChange:e=>setPoidsVif(e.target.value),placeholder:"ex. 2400"})),/*#__PURE__*/React.createElement(Field,{label:"Poids carcasse moyen (g)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:poidsCarcasse,onChange:e=>setPoidsCarcasse(e.target.value),placeholder:"ex. 1650"})),/*#__PURE__*/React.createElement(Field,{label:"Rendement"},/*#__PURE__*/React.createElement("input",{className:inputClass+" bg-slate-100",value:rendement!=null?rendement+" %":"—",readOnly:true}))),/*#__PURE__*/React.createElement(Field,{label:"Mis au cong\xE9lateur (nombre)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:nbCongele,onChange:e=>setNbCongele(e.target.value),placeholder:statut==="abattu"&&nombre?"ex. "+nombre:""}),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-400 mt-1"},"Le stock cong\xE9lateur se d\xE9compte avec le bouton \xAB \u22121 \xBB du tableau \xE0 chaque sujet consomm\xE9.")),/*#__PURE__*/React.createElement(Field,{label:"Observations"},/*#__PURE__*/React.createElement("textarea",{className:inputClass,rows:"2",value:obs,onChange:e=>setObs(e.target.value)})),/*#__PURE__*/React.createElement(FormButtons,{onClose:onClose}));}// Pesées régulières d'un lot de consommation (poids moyen en g) — courbe de croissance simple
+const[q,setQ]=useState("");const[filtre,setFiltre]=useState("tous");const fbtn=actif=>"px-3 py-1.5 rounded-lg text-sm border "+(actif?"bg-emerald-600 text-white border-emerald-600":"bg-white text-slate-600 border-slate-300 hover:bg-slate-50");const txt=q.trim().toLowerCase();const passeFiltre=r=>{if(filtre==="actifs")return r.statut==="actif";if(filtre==="décédés")return r.statut==="décédé";if(filtre==="poule")return r.espece==="poule";if(filtre==="coq")return r.espece==="coq";if(filtre==="caille femelle")return r.espece==="caille femelle";if(filtre==="caille mâle")return r.espece==="caille mâle";return true;};const passeTexte=r=>!txt||[r.nom,r.espece,r.race,r.statut,r.obs].filter(Boolean).some(v=>String(v).toLowerCase().includes(txt));const filtres=reproducteurs.map((r,i)=>({r,i})).filter(({r})=>passeFiltre(r)&&passeTexte(r));return/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement(PageHeader,{title:"Animaux reproducteurs",subtitle:"Suivi individuel des reproducteurs et achats par lot",action:vue==="animaux"?/*#__PURE__*/React.createElement(AddButton,{onClick:()=>setOpen(true),label:"Ajouter un reproducteur"}):null}),/*#__PURE__*/React.createElement("div",{className:"flex gap-2 mb-5 border-b border-slate-200"},[["animaux","🐔 Animaux"],["achats","🛒 Achats"]].map(([v,l])=>/*#__PURE__*/React.createElement("button",{key:v,onClick:()=>setVue(v),className:"px-4 py-2 text-sm font-medium -mb-px border-b-2 "+(vue===v?"border-emerald-600 text-emerald-700":"border-transparent text-slate-500 hover:text-slate-700")},l))),vue==="achats"&&/*#__PURE__*/React.createElement(AchatsReproducteurs,null),vue==="animaux"&&/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("div",{className:"bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-5 space-y-3"},/*#__PURE__*/React.createElement("input",{className:inputClass,value:q,onChange:e=>setQ(e.target.value),placeholder:"\uD83D\uDD0D Rechercher (nom, esp\xE8ce, race, statut, observation\u2026)"}),/*#__PURE__*/React.createElement("div",{className:"flex flex-wrap gap-2"},[["tous","Tous"],["actifs","Actifs"],["décédés","Décédés"],["poule","Poules"],["coq","Coqs"],["caille femelle","Cailles ♀"],["caille mâle","Cailles ♂"]].map(([v,l])=>/*#__PURE__*/React.createElement("button",{key:v,onClick:()=>setFiltre(v),className:fbtn(filtre===v)},l)))),/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400 mb-3"},filtres.reduce((s,{r})=>s+(Number(r.nombre)||1),0)," animal(aux) \xB7 ",filtres.length," ligne(s)"),ligneesRisque(reproducteurs).length>0&&/*#__PURE__*/React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5"},/*#__PURE__*/React.createElement("p",{className:"text-sm font-semibold text-amber-800 mb-1"},"\uD83E\uDDEC Consanguinit\xE9 \u2014 \xE0 surveiller"),/*#__PURE__*/React.createElement("ul",{className:"space-y-1"},ligneesRisque(reproducteurs).map((g,k)=>/*#__PURE__*/React.createElement("li",{key:k,className:"text-sm text-amber-700"},/*#__PURE__*/React.createElement("span",{className:"font-medium"},g.lignee)," : ",g.noms.join(", ")," \u2014 \xE9vite de les accoupler entre eux.")))),/*#__PURE__*/React.createElement(Table,{resume:(row,k)=>{const r=filtres[k].r;return/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("span",{className:"font-medium"},r.nom||"(lot)")," \u2014 ",r.espece,(Number(r.nombre)||1)>1?" ×"+r.nombre:"",/*#__PURE__*/React.createElement("span",{className:"text-slate-400"}," \xB7 ",r.statut,r.lignee?" · "+r.lignee:""));},columns:["Nom","Nb","Espèce","Race","Lignée","Naissance / arrivée","Âge","Stade repro","Statut","Décès / retrait","Obs",""],rows:filtres.map(({r,i})=>[/*#__PURE__*/React.createElement("span",{className:"font-medium"},r.nom||/*#__PURE__*/React.createElement("span",{className:"text-slate-400 font-normal"},"(lot sans nom)")),(Number(r.nombre)||1)>1?/*#__PURE__*/React.createElement("span",{className:"font-medium text-emerald-600"},r.nombre):Number(r.nombre)||1,r.espece,/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement("span",null,r.race||"—"),r.couleur?/*#__PURE__*/React.createElement("span",{className:"block text-xs text-slate-400"},r.couleur):null),r.lignee?/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-600"},r.lignee):/*#__PURE__*/React.createElement("span",{className:"text-slate-300"},"\u2014"),r.naissance?/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},frDate(r.naissance)):r.arrivee?/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},frDate(r.arrivee)," ",/*#__PURE__*/React.createElement("span",{className:"text-slate-400 text-xs"},"(arriv\xE9e)")):"—",/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},ageAnimal(r)),/*#__PURE__*/React.createElement(BadgeAgeRepro,{a:alerteAgeRepro(r,config)}),/*#__PURE__*/React.createElement(StatutAnimal,{statut:r.statut}),frDate(r.dateFin),/*#__PURE__*/React.createElement(ObsCell,{texte:r.obs,titre:"Observation — "+r.nom,onSave:v=>patchLigne("reproducteurs",i,{obs:v})}),/*#__PURE__*/React.createElement(RowActions,{onEdit:()=>setEdit({index:i,rec:r}),onDelete:()=>supprimerLigne("reproducteurs",i),extra:/*#__PURE__*/React.createElement("button",{onClick:()=>setSante({index:i}),title:"Carnet de sant\xE9",className:"px-1.5 py-0.5 rounded text-xs "+((r.sante||[]).length?"text-red-600 hover:bg-red-50 font-medium":"text-slate-400 hover:bg-slate-100")},"\uD83E\uDE7A",(r.sante||[]).length?" "+r.sante.length:"")})])}),open&&/*#__PURE__*/React.createElement(Modal,{title:"Nouveau reproducteur",onClose:()=>setOpen(false)},/*#__PURE__*/React.createElement(ReproducteurForm,{onClose:()=>setOpen(false)})),edit&&/*#__PURE__*/React.createElement(Modal,{title:"Modifier — "+(edit.rec.nom||"lot"),onClose:()=>setEdit(null)},/*#__PURE__*/React.createElement(ReproducteurForm,{initial:edit.rec,onSave:rec=>majLigne("reproducteurs",edit.index,rec),onClose:()=>setEdit(null)})),sante&&/*#__PURE__*/React.createElement(Modal,{title:"🩺 Carnet de santé — "+((reproducteurs[sante.index]||{}).nom||"reproducteur"),onClose:()=>setSante(null)},/*#__PURE__*/React.createElement(CarnetSante,{index:sante.index,onClose:()=>setSante(null)}))));}/* ---------- Abattoir (animaux destinés à la consommation) ----------
+       Un lot = { lot, espece, race, naissance, nombre, statut, obs, pesees, abattages }.
+       Chaque séance d'abattage est une entrée de `abattages` : on abat par petits groupes. */const MOTIFS_SORTIE_CONGEL=[{id:"mangé",icon:"🍽️"},{id:"chien",icon:"🐕"},{id:"donné",icon:"🎁"}];// Séances d'abattage d'un lot. Les lignes saisies avant ce modèle (une seule date
+// `abattageReel` + `nbCongele` sur le lot) sont relues comme une séance unique ; la première
+// écriture (nouvel abattage, sortie du congélateur) les convertit.
+function abattagesLot(a){if(Array.isArray(a.abattages))return a.abattages;const cong=Number(a.nbCongele)||0;if(!a.abattageReel&&!cong&&a.statut!=="abattu")return[];return[{id:"ancien",date:a.abattageReel||"",nombre:a.statut==="abattu"?Number(a.nombre)||cong:cong,congele:cong,dateCongel:a.abattageReel||"",poidsVif:a.poidsVif||"",poidsCarcasse:a.poidsCarcasse||"",sorties:[]}];}const abattusLot=a=>abattagesLot(a).reduce((s,x)=>s+(Number(x.nombre)||0),0);const restantsLot=a=>a.statut==="décédé"?0:Math.max(0,(Number(a.nombre)||0)-abattusLot(a));const auCongelSeance=x=>Math.max(0,(Number(x.congele)||0)-(x.sorties||[]).length);// Statut affiché : « abattu » dès que tout le lot est passé à l'abattoir, sinon le statut saisi.
+const statutLotAbattoir=a=>a.statut!=="décédé"&&abattusLot(a)>0&&restantsLot(a)===0?"abattu":a.statut;// Poids vif d'une séance : saisi, sinon ESTIMÉ par la dernière pesée du lot (≤ 14 j avant).
+function poidsVifSeance(a,x){if(Number(x.poidsVif)>0)return{poids:Number(x.poidsVif),estime:false};const p=(a.pesees||[]).filter(q=>q.date&&x.date&&q.date<=x.date&&(new Date(x.date)-new Date(q.date))/86400000<=14).sort((u,v)=>u.date.localeCompare(v.date)).pop();return p?{poids:Number(p.poids),estime:true}:null;}function rendementSeance(a,x){const pv=poidsVifSeance(a,x);if(!pv||!(Number(x.poidsCarcasse)>0))return null;return{pct:Math.round(Number(x.poidsCarcasse)/pv.poids*100),estime:pv.estime};}// Création / modification d'un lot (plus de dates ni de poids ici : ils vivent dans les séances)
+function AbattoirForm({onClose,initial,onSave,especeInit}){const{races,ajouterAbattoir,config,poussins}=useData();const[lot,setLot]=useState(initial?initial.lot||"":"");const[espece,setEspece]=useState(initial?initial.espece:especeInit||"poule");const[race,setRace]=useState(initial?initial.race||"":"");const[naissance,setNaissance]=useState(initial?initial.naissance||"":"");const[nombre,setNombre]=useState(initial?String(initial.nombre):"");const[statut,setStatut]=useState(initial?initial.statut:"en croissance");const[obs,setObs]=useState(initial?initial.obs||"":"");const lotsNaissance=poussins.filter(p=>(p.espece==="caille"?"caille":"poule")===espece).slice().sort((x,y)=>(y.date||"").localeCompare(x.date||""));const choisirNaissance=k=>{const p=lotsNaissance[Number(k)];if(!p)return;setLot(p.id||"");setNaissance(p.date||"");setNombre(String(vivantsLot(p)));};function submit(e){e.preventDefault();const rec={...(initial||{}),lot:lot.trim(),espece,race,naissance,nombre:Number(nombre)||0,statut,obs:obs.trim()};if(!initial)rec.abattages=[];(onSave||ajouterAbattoir)(rec);onClose();}return/*#__PURE__*/React.createElement("form",{onSubmit:submit,className:"space-y-3"},/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Esp\xE8ce"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:espece,onChange:e=>setEspece(e.target.value)},/*#__PURE__*/React.createElement("option",{value:"poule"},"Poule"),/*#__PURE__*/React.createElement("option",{value:"caille"},"Caille"))),!initial&&lotsNaissance.length>0?/*#__PURE__*/React.createElement(Field,{label:"Reprendre un lot de naissance"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:"",onChange:e=>choisirNaissance(e.target.value)},/*#__PURE__*/React.createElement("option",{value:""},"\u2014"),lotsNaissance.map((p,k)=>/*#__PURE__*/React.createElement("option",{key:k,value:k},libelleLotJeune(p)," (",vivantsLot(p),")")))):/*#__PURE__*/React.createElement("div",null)),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Num\xE9ro de lot"},/*#__PURE__*/React.createElement("input",{className:inputClass,value:lot,onChange:e=>setLot(e.target.value),placeholder:"ex. 26P01"})),/*#__PURE__*/React.createElement(Field,{label:"Date de naissance"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:naissance,onChange:e=>setNaissance(e.target.value)}))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Nombre d'animaux"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:nombre,onChange:e=>setNombre(e.target.value)})),/*#__PURE__*/React.createElement(Field,{label:"Race (si connue)"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:race,onChange:e=>setRace(e.target.value)},/*#__PURE__*/React.createElement("option",{value:""},"\u2014"),races.map((r,i)=>/*#__PURE__*/React.createElement("option",{key:i,value:r.race},r.race))))),/*#__PURE__*/React.createElement(Field,{label:"Statut"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:statut,onChange:e=>setStatut(e.target.value)},listeConfig(config,"statutsAbattoir").map(s=>/*#__PURE__*/React.createElement("option",{key:s,value:s},s.charAt(0).toUpperCase()+s.slice(1))))),/*#__PURE__*/React.createElement(Field,{label:"Observations"},/*#__PURE__*/React.createElement("textarea",{className:inputClass,rows:"2",value:obs,onChange:e=>setObs(e.target.value)})),/*#__PURE__*/React.createElement(FormButtons,{onClose:onClose}));}// Une séance d'abattage : lot choisi dans la liste, nombre abattus, et par défaut TOUS au congélateur.
+function AbattageForm({onClose,espece,indexInit,seance}){const{abattoir,patchLigne}=useData();const edition=!!seance;const choix=abattoir.map((a,i)=>({a,i})).filter(({a,i})=>edition?i===indexInit:(a.espece==="caille"?"caille":"poule")===espece&&restantsLot(a)>0);const[idx,setIdx]=useState(indexInit!=null?String(indexInit):choix.length===1?String(choix[0].i):"");const[date,setDate]=useState(seance?seance.date||"":AUJOURDHUI_ISO);const[nombre,setNombre]=useState(seance?String(seance.nombre||""):"");const[congele,setCongele]=useState(seance?String(seance.congele||0):null);// null = suit « nombre »
+const[dateCongel,setDateCongel]=useState(seance?seance.dateCongel||"":null);// null = suit « date »
+const[poidsCarcasse,setPoidsCarcasse]=useState(seance&&seance.poidsCarcasse?String(seance.poidsCarcasse):"");const[poidsVif,setPoidsVif]=useState(seance&&seance.poidsVif?String(seance.poidsVif):"");const a=idx!==""?abattoir[Number(idx)]:null;const max=a?restantsLot(a)+(edition?Number(seance.nombre)||0:0):null;const congeleVal=congele==null?nombre:congele;const dateCongelVal=dateCongel==null?date:dateCongel;const estim=a?poidsVifSeance(a,{date,poidsVif}):null;const rend=a?rendementSeance(a,{date,poidsVif,poidsCarcasse}):null;const[erreur,setErreur]=useState("");function submit(e){e.preventDefault();const n=Number(nombre)||0;if(!a){setErreur("Choisis un lot.");return;}if(n<=0){setErreur("Indique combien tu en as abattu.");return;}if(max!=null&&n>max){setErreur("Il ne reste que "+max+" animal(aux) dans ce lot.");return;}const c=Math.min(n,Math.max(0,Number(congeleVal)||0));const rec={...(seance||{}),id:seance?seance.id:"ab"+Date.now().toString(36),date,nombre:n,congele:c,dateCongel:c>0?dateCongelVal:"",poidsCarcasse:Number(poidsCarcasse)||"",poidsVif:Number(poidsVif)||"",sorties:seance&&seance.sorties||[]};const liste=abattagesLot(a);const suivante=edition?liste.map(x=>x.id===seance.id?rec:x):liste.concat([rec]);patchLigne("abattoir",Number(idx),{abattages:suivante,nbCongele:"",abattageReel:""});onClose();}if(!edition&&choix.length===0)return/*#__PURE__*/React.createElement("div",{className:"space-y-3"},/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-500"},"Aucun lot avec des animaux restants."),/*#__PURE__*/React.createElement("div",{className:"flex justify-end"},/*#__PURE__*/React.createElement("button",{type:"button",onClick:onClose,className:"px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"},"Fermer")));return/*#__PURE__*/React.createElement("form",{onSubmit:submit,className:"space-y-3"},/*#__PURE__*/React.createElement(Field,{label:"Lot"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:idx,disabled:edition,onChange:e=>setIdx(e.target.value)},/*#__PURE__*/React.createElement("option",{value:""},"\u2014 choisir \u2014"),choix.map(({a:l,i})=>/*#__PURE__*/React.createElement("option",{key:i,value:i},l.lot||"Lot sans numéro",l.naissance?" · né le "+frDate(l.naissance):""," \xB7 ",restantsLot(l)," restant(s)")))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Date d'abattage"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:date,onChange:e=>setDate(e.target.value),required:true})),/*#__PURE__*/React.createElement(Field,{label:"Nombre abattus"+(max!=null?" (max "+max+")":"")},/*#__PURE__*/React.createElement("input",{type:"number",min:"1",max:max||undefined,className:inputClass,value:nombre,onChange:e=>setNombre(e.target.value),autoFocus:true}))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 gap-3 bg-indigo-50 border border-indigo-100 rounded-xl p-3"},/*#__PURE__*/React.createElement(Field,{label:"\uD83E\uDDCA Mis au cong\xE9lateur"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:congeleVal,onChange:e=>setCongele(e.target.value)})),/*#__PURE__*/React.createElement(Field,{label:"Date de cong\xE9lation"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:dateCongelVal,onChange:e=>setDateCongel(e.target.value)}))),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-3 gap-3"},/*#__PURE__*/React.createElement(Field,{label:"Poids carcasse moyen (g)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:poidsCarcasse,onChange:e=>setPoidsCarcasse(e.target.value),placeholder:"facultatif"})),/*#__PURE__*/React.createElement(Field,{label:"Poids vif moyen (g)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:poidsVif,onChange:e=>setPoidsVif(e.target.value),placeholder:estim&&estim.estime?"≈ "+estim.poids+" (pesée)":"facultatif"})),/*#__PURE__*/React.createElement(Field,{label:"Rendement"},/*#__PURE__*/React.createElement("input",{className:inputClass+" bg-slate-100",value:rend?(rend.estime?"≈ ":"")+rend.pct+" %":"—",readOnly:true}))),erreur&&/*#__PURE__*/React.createElement("p",{className:"text-sm text-red-600"},erreur),/*#__PURE__*/React.createElement(FormButtons,{onClose:onClose}));}// Pesées régulières d'un lot de consommation (poids moyen en g) — courbe de croissance simple
 function PeseesLot({index,onClose}){const{abattoir,patchLigne}=useData();const a=abattoir[index]||{};// lecture fraîche
-const[date,setDate]=useState(new Date().toISOString().slice(0,10));const[poids,setPoids]=useState("");const pesees=(a.pesees||[]).slice().sort((x,y)=>(x.date||"").localeCompare(y.date||""));const ajouter=e=>{e.preventDefault();const p=Number(poids)||0;if(!p)return;patchLigne("abattoir",index,{pesees:(a.pesees||[]).concat([{date,poids:p}])});setPoids("");};const retirer=i=>patchLigne("abattoir",index,{pesees:(a.pesees||[]).filter((_,k)=>k!==i)});return/*#__PURE__*/React.createElement("div",{className:"space-y-4"},/*#__PURE__*/React.createElement("form",{onSubmit:ajouter,className:"flex gap-2 items-end bg-slate-50 border border-slate-200 rounded-xl p-3"},/*#__PURE__*/React.createElement(Field,{label:"Date"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:date,onChange:e=>setDate(e.target.value)})),/*#__PURE__*/React.createElement(Field,{label:"Poids moyen (g)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:poids,onChange:e=>setPoids(e.target.value),placeholder:"ex. 1850"})),/*#__PURE__*/React.createElement("button",{type:"submit",className:"px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium whitespace-nowrap"},"+ Peser")),pesees.length===0?/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400"},"Aucune pes\xE9e. P\xE8se r\xE9guli\xE8rement (ex. 1\xD7/semaine) pour suivre la croissance et choisir le bon moment d'abattage."):/*#__PURE__*/React.createElement("table",{className:"w-full text-sm"},/*#__PURE__*/React.createElement("thead",{className:"text-slate-500 text-left"},/*#__PURE__*/React.createElement("tr",null,/*#__PURE__*/React.createElement("th",{className:"px-2 py-1 font-medium"},"Date"),/*#__PURE__*/React.createElement("th",{className:"px-2 py-1 font-medium"},"Poids moyen"),/*#__PURE__*/React.createElement("th",{className:"px-2 py-1 font-medium"},"\xC9volution"),/*#__PURE__*/React.createElement("th",null))),/*#__PURE__*/React.createElement("tbody",null,pesees.map((p,i)=>{const prec=pesees[i-1];const delta=prec?p.poids-prec.poids:null;const idxOrig=(a.pesees||[]).findIndex(x=>x.date===p.date&&x.poids===p.poids);return/*#__PURE__*/React.createElement("tr",{key:i,className:"border-t border-slate-100"},/*#__PURE__*/React.createElement("td",{className:"px-2 py-1"},frDate(p.date)),/*#__PURE__*/React.createElement("td",{className:"px-2 py-1 font-medium"},p.poids," g"),/*#__PURE__*/React.createElement("td",{className:"px-2 py-1"},delta==null?"—":/*#__PURE__*/React.createElement("span",{className:delta>=0?"text-emerald-600":"text-red-600"},delta>=0?"+":"",delta," g")),/*#__PURE__*/React.createElement("td",{className:"px-2 py-1 text-right"},/*#__PURE__*/React.createElement("button",{onClick:()=>retirer(idxOrig),className:"text-slate-300 hover:text-red-500"},"\uD83D\uDDD1")));}))),/*#__PURE__*/React.createElement("div",{className:"flex justify-end"},/*#__PURE__*/React.createElement("button",{type:"button",onClick:onClose,className:"px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"},"Fermer")));}function Abattoir(){const{abattoir,poussins,config,majLigne,supprimerLigne,patchLigne}=useData();const[open,setOpen]=useState(false);const[edit,setEdit]=useState(null);const[pesees,setPesees]=useState(null);// { index } → modale des pesées
-const today=AUJOURDHUI_ISO;// Lots de BÉBÉS encore en croissance (module Poussins) : dans combien de temps seront-ils
-// prêts pour l'abattage ? (naissance + âge d'abattage conseillé des Réglages)
-const bebesAVenir=poussins.filter(p=>p.statut==="en croissance"&&p.date).map(p=>{const espece=p.espece==="caille"?"caille":"poule";const datePrete=abattageSuggere({naissance:p.date,espece},config);const restant=datePrete?Math.ceil((new Date(datePrete)-AUJOURDHUI)/86400000):null;return{p,espece,datePrete,restant};}).sort((a,b)=>(a.restant||0)-(b.restant||0));const libRestant=j=>{if(j==null)return"—";if(j<=0)return"✅ âge atteint";if(j<14)return"dans "+j+" j";return"dans ~"+Math.round(j/7)+" semaines";};// Stock congélateur : lots abattus avec nbCongele > 0 ; alerte si plus vieux que config.dureeCongel (mois)
-const dureeCongel=Number(config.dureeCongel)||9;const auCongel=abattoir.map((a,i)=>({a,i})).filter(({a})=>Number(a.nbCongele)>0);const totalCongel=auCongel.reduce((s,{a})=>s+Number(a.nbCongele),0);const moisCongel=a=>a.abattageReel?Math.floor((joursDepuis(a.abattageReel)||0)/30.44):null;const plusVieux=auCongel.map(({a})=>moisCongel(a)).filter(m=>m!=null).sort((x,y)=>y-x)[0];const enRetardAbattage=abattoir.filter(a=>a.statut!=="abattu"&&a.statut!=="décédé"&&abattageSuggere(a,config)&&abattageSuggere(a,config)<today).length;return/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement(PageHeader,{title:"Animaux destin\xE9s \xE0 l'abattoir",subtitle:"Lots \xE9lev\xE9s pour la consommation \u2014 pes\xE9es, rendement carcasse et stock cong\xE9lateur",action:/*#__PURE__*/React.createElement(AddButton,{onClick:()=>setOpen(true),label:"Ajouter un animal ou lot"})}),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-2 md:grid-cols-3 gap-4 mb-5"},/*#__PURE__*/React.createElement(StatCard,{label:"\uD83E\uDDCA Au cong\xE9lateur",value:totalCongel,color:"indigo",sub:auCongel.length?auCongel.length+" lot(s)":"rien en stock"}),/*#__PURE__*/React.createElement(StatCard,{label:"Plus ancien au cong\xE9l.",value:plusVieux!=null?plusVieux+" mois":"—",color:plusVieux!=null&&plusVieux>=dureeCongel?"red":"slate",sub:"consommer avant "+dureeCongel+" mois (Réglages)"}),/*#__PURE__*/React.createElement(StatCard,{label:"Abattage d\xE9pass\xE9",value:enRetardAbattage,color:enRetardAbattage?"orange":"emerald",sub:"lots au-del\xE0 de l'\xE2ge conseill\xE9"})),bebesAVenir.length>0&&/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("h2",{className:"text-lg font-semibold mb-3"},"\uD83D\uDC25 B\xE9b\xE9s \xE0 venir ",/*#__PURE__*/React.createElement("span",{className:"text-sm font-normal text-slate-400"},"\u2014 dans combien de temps seront-ils pr\xEAts ?")),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-3"},bebesAVenir.map(({p,espece,datePrete,restant},k)=>/*#__PURE__*/React.createElement("div",{key:k,className:"bg-white rounded-xl shadow-sm border border-slate-100 p-4"},/*#__PURE__*/React.createElement("div",{className:"flex items-start justify-between gap-2 mb-1"},/*#__PURE__*/React.createElement("p",{className:"text-sm font-medium text-slate-700"},p.id||labelJeune(p.espece)," ",/*#__PURE__*/React.createElement("span",{className:"font-normal text-slate-400"},"\xB7 ",labelJeune(p.espece)," \xB7 ",vivantsLot(p)," vivant(s)")),/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap "+(restant!=null&&restant<=0?"bg-emerald-100 text-emerald-700":restant!=null&&restant<14?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600")},libRestant(restant))),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-500"},"N\xE9 le ",frDate(p.date)," \xB7 ",ageJeune(p.date).label),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-500"},"Pr\xEAt pour l'abattage vers le ",/*#__PURE__*/React.createElement("span",{className:"font-medium"},datePrete?frDate(datePrete):"—")," ",/*#__PURE__*/React.createElement("span",{className:"text-slate-400"},"(",(config.agesAbattage||{})[espece]||(espece==="caille"?8:18)," sem)")))))),/*#__PURE__*/React.createElement(Table,{resume:(r,k)=>{const a=abattoir[k];return/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("span",{className:"font-medium"},a.lot||"—")," \u2014 ",a.espece,/*#__PURE__*/React.createElement("span",{className:"text-slate-400"}," \xB7 ",a.nombre," \xB7 ",a.statut,Number(a.nbCongele)>0?" · 🧊 "+a.nbCongele:""));},columns:["Lot","Espèce","Race","Naissance","Nombre","Statut","Suggéré","Abattage prévu","Abattage réel","⚖️ Poids","🧊 Congél.","Obs",""],rows:abattoir.map((a,i)=>{const sug=abattageSuggere(a,config);const sugDepasse=sug&&sug<today&&a.statut!=="abattu"&&a.statut!=="décédé";const dern=(a.pesees||[]).slice().sort((x,y)=>(x.date||"").localeCompare(y.date||"")).pop();const rend=Number(a.poidsVif)>0&&Number(a.poidsCarcasse)>0?Math.round(a.poidsCarcasse/a.poidsVif*100):null;const mc=moisCongel(a);return[/*#__PURE__*/React.createElement("span",{className:"font-medium"},a.lot||"—"),a.espece,a.race||"—",frDate(a.naissance),a.nombre,/*#__PURE__*/React.createElement(StatutAnimal,{statut:a.statut}),sug?/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap text-xs "+(sugDepasse?"text-red-600 font-medium":"text-slate-500")},frDate(sug),sugDepasse?" ⚠️":""):"—",frDate(a.abattagePrevu),frDate(a.abattageReel),/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap text-xs"},a.statut==="abattu"&&Number(a.poidsCarcasse)>0?/*#__PURE__*/React.createElement(React.Fragment,null,"carc. ",/*#__PURE__*/React.createElement("span",{className:"font-medium"},a.poidsCarcasse," g"),rend!=null?" · "+rend+" %":""):dern?/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("span",{className:"font-medium"},dern.poids," g")," ",/*#__PURE__*/React.createElement("span",{className:"text-slate-400"},"(",frDate(dern.date),")")):/*#__PURE__*/React.createElement("span",{className:"text-slate-300"},"\u2014"),/*#__PURE__*/React.createElement("button",{onClick:()=>setPesees({index:i}),title:"Pes\xE9es du lot",className:"ml-1 px-1 py-0.5 rounded hover:bg-slate-100"},"\u2696\uFE0F")),Number(a.nbCongele)>0?/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap text-xs "+(mc!=null&&mc>=dureeCongel?"text-red-600 font-medium":"")},"\uD83E\uDDCA ",a.nbCongele,mc!=null?" · "+mc+" mois":"",mc!=null&&mc>=dureeCongel?" ⚠️":"",/*#__PURE__*/React.createElement("button",{onClick:()=>patchLigne("abattoir",i,{nbCongele:Math.max(0,Number(a.nbCongele)-1)}),title:"1 sujet consomm\xE9",className:"ml-1 px-1.5 py-0.5 rounded border border-slate-300 hover:bg-slate-50"},"\u22121")):/*#__PURE__*/React.createElement("span",{className:"text-slate-300 text-xs"},"\u2014"),/*#__PURE__*/React.createElement(ObsCell,{texte:a.obs,titre:"Observation",onSave:v=>patchLigne("abattoir",i,{obs:v})}),/*#__PURE__*/React.createElement(RowActions,{onEdit:()=>setEdit({index:i,rec:a}),onDelete:()=>supprimerLigne("abattoir",i)})];})}),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-400 mt-2"},"\xAB Sugg\xE9r\xE9 \xBB = naissance + \xE2ge d'abattage conseill\xE9 (R\xE9glages : ",(config.agesAbattage||{}).poule||18," sem poule \xB7 ",(config.agesAbattage||{}).caille||8," sem caille). \u2696\uFE0F = pes\xE9es r\xE9guli\xE8res du lot (poids moyen). \uD83E\uDDCA \xAB \u22121 \xBB \xE0 chaque sujet sorti du cong\xE9lateur ; alerte au-del\xE0 de ",dureeCongel," mois."),open&&/*#__PURE__*/React.createElement(Modal,{title:"Nouvel animal / lot abattoir",onClose:()=>setOpen(false)},/*#__PURE__*/React.createElement(AbattoirForm,{onClose:()=>setOpen(false)})),edit&&/*#__PURE__*/React.createElement(Modal,{title:"Modifier la ligne abattoir",onClose:()=>setEdit(null)},/*#__PURE__*/React.createElement(AbattoirForm,{initial:edit.rec,onSave:rec=>majLigne("abattoir",edit.index,rec),onClose:()=>setEdit(null)})),pesees&&/*#__PURE__*/React.createElement(Modal,{title:"⚖️ Pesées — "+((abattoir[pesees.index]||{}).lot||"lot"),onClose:()=>setPesees(null)},/*#__PURE__*/React.createElement(PeseesLot,{index:pesees.index,onClose:()=>setPesees(null)})));}/* ---------- Inventaire consommables ---------- */// Pastille état stock (bas / ok)
+const[date,setDate]=useState(new Date().toISOString().slice(0,10));const[poids,setPoids]=useState("");const pesees=(a.pesees||[]).slice().sort((x,y)=>(x.date||"").localeCompare(y.date||""));const ajouter=e=>{e.preventDefault();const p=Number(poids)||0;if(!p)return;patchLigne("abattoir",index,{pesees:(a.pesees||[]).concat([{date,poids:p}])});setPoids("");};const retirer=i=>patchLigne("abattoir",index,{pesees:(a.pesees||[]).filter((_,k)=>k!==i)});return/*#__PURE__*/React.createElement("div",{className:"space-y-4"},/*#__PURE__*/React.createElement("form",{onSubmit:ajouter,className:"flex gap-2 items-end bg-slate-50 border border-slate-200 rounded-xl p-3"},/*#__PURE__*/React.createElement(Field,{label:"Date"},/*#__PURE__*/React.createElement("input",{type:"date",className:inputClass,value:date,onChange:e=>setDate(e.target.value)})),/*#__PURE__*/React.createElement(Field,{label:"Poids moyen (g)"},/*#__PURE__*/React.createElement("input",{type:"number",min:"0",className:inputClass,value:poids,onChange:e=>setPoids(e.target.value),placeholder:"ex. 1850"})),/*#__PURE__*/React.createElement("button",{type:"submit",className:"px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium whitespace-nowrap"},"+ Peser")),pesees.length===0?/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400"},"Une pes\xE9e dans les 14 jours avant l'abattage sert de poids vif pour estimer le rendement."):/*#__PURE__*/React.createElement("table",{className:"w-full text-sm"},/*#__PURE__*/React.createElement("thead",{className:"text-slate-500 text-left"},/*#__PURE__*/React.createElement("tr",null,/*#__PURE__*/React.createElement("th",{className:"px-2 py-1 font-medium"},"Date"),/*#__PURE__*/React.createElement("th",{className:"px-2 py-1 font-medium"},"Poids moyen"),/*#__PURE__*/React.createElement("th",{className:"px-2 py-1 font-medium"},"\xC9volution"),/*#__PURE__*/React.createElement("th",null))),/*#__PURE__*/React.createElement("tbody",null,pesees.map((p,i)=>{const prec=pesees[i-1];const delta=prec?p.poids-prec.poids:null;const idxOrig=(a.pesees||[]).findIndex(x=>x.date===p.date&&x.poids===p.poids);return/*#__PURE__*/React.createElement("tr",{key:i,className:"border-t border-slate-100"},/*#__PURE__*/React.createElement("td",{className:"px-2 py-1"},frDate(p.date)),/*#__PURE__*/React.createElement("td",{className:"px-2 py-1 font-medium"},p.poids," g"),/*#__PURE__*/React.createElement("td",{className:"px-2 py-1"},delta==null?"—":/*#__PURE__*/React.createElement("span",{className:delta>=0?"text-emerald-600":"text-red-600"},delta>=0?"+":"",delta," g")),/*#__PURE__*/React.createElement("td",{className:"px-2 py-1 text-right"},/*#__PURE__*/React.createElement("button",{onClick:()=>retirer(idxOrig),className:"text-slate-300 hover:text-red-500"},"\uD83D\uDDD1")));}))),/*#__PURE__*/React.createElement("div",{className:"flex justify-end"},/*#__PURE__*/React.createElement("button",{type:"button",onClick:onClose,className:"px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50"},"Fermer")));}// Bouton « −1 » d'une ligne du congélateur : demande où part la bête (mangée, chien, donnée)
+function SortieCongel({onSortie}){const[ouvert,setOuvert]=useState(false);if(!ouvert)return/*#__PURE__*/React.createElement("button",{onClick:()=>setOuvert(true),title:"Sortir 1 du cong\xE9lateur",className:"px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-50 text-xs"},"\u22121");return/*#__PURE__*/React.createElement("span",{className:"inline-flex gap-1"},MOTIFS_SORTIE_CONGEL.map(m=>/*#__PURE__*/React.createElement("button",{key:m.id,onClick:()=>{onSortie(m.id);setOuvert(false);},title:m.id,className:"px-1.5 py-0.5 rounded border border-slate-300 hover:bg-emerald-50 text-sm"},m.icon)),/*#__PURE__*/React.createElement("button",{onClick:()=>setOuvert(false),className:"px-1 text-slate-400 hover:text-slate-600 text-xs"},"\u2715"));}function Abattoir(){const{abattoir,poussins,config,majLigne,supprimerLigne,patchLigne}=useData();const[espece,setEspece]=useState("poule");const[open,setOpen]=useState(false);const[edit,setEdit]=useState(null);const[pesees,setPesees]=useState(null);// { index } → modale des pesées
+const[abattage,setAbattage]=useState(null);// { index?, seance? } → modale « Abattre »
+const[voirTermines,setVoirTermines]=useState(false);const today=AUJOURDHUI_ISO;const espDe=x=>x==="caille"?"caille":"poule";const semAbattage=(config.agesAbattage||{})[espece]||(espece==="caille"?8:18);const lotsEsp=abattoir.map((a,i)=>({a,i})).filter(({a})=>espDe(a.espece)===espece);const actifs=lotsEsp.filter(({a})=>restantsLot(a)>0).sort((x,y)=>(x.a.naissance||"").localeCompare(y.a.naissance||""));const termines=lotsEsp.filter(({a})=>restantsLot(a)===0).sort((x,y)=>(y.a.naissance||"").localeCompare(x.a.naissance||""));// Lots de BÉBÉS encore en croissance (module Poussins) de l'espèce affichée
+const bebesAVenir=poussins.filter(p=>p.statut==="en croissance"&&p.date&&espDe(p.espece)===espece).map(p=>{const datePrete=abattageSuggere({naissance:p.date,espece},config);const restant=datePrete?Math.ceil((new Date(datePrete)-AUJOURDHUI)/86400000):null;return{p,datePrete,restant};}).sort((a,b)=>(a.restant||0)-(b.restant||0));const libRestant=j=>{if(j==null)return"—";if(j<=0)return"✅ âge atteint";if(j<14)return"dans "+j+" j";return"dans ~"+Math.round(j/7)+" semaines";};// Congélateur : une ligne par mise au congélateur encore non vide, la plus ancienne en tête
+const dureeCongel=Number(config.dureeCongel)||9;const moisDepuis=d=>d?Math.floor((joursDepuis(d)||0)/30.44):null;const congel=[];lotsEsp.forEach(({a,i})=>abattagesLot(a).forEach(x=>{const n=auCongelSeance(x);if(n>0)congel.push({a,i,x,n,mois:moisDepuis(x.dateCongel||x.date)});}));congel.sort((u,v)=>(u.x.dateCongel||u.x.date||"").localeCompare(v.x.dateCongel||v.x.date||""));const totalCongel=congel.reduce((s,c)=>s+c.n,0);const majSeance=(a,i,id,patch)=>patchLigne("abattoir",i,{abattages:abattagesLot(a).map(x=>x.id===id?{...x,...patch}:x),nbCongele:"",abattageReel:""});const supprimerSeance=(a,i,id)=>{if(!window.confirm("Supprimer cette séance d'abattage ?"))return;patchLigne("abattoir",i,{abattages:abattagesLot(a).filter(x=>x.id!==id),nbCongele:"",abattageReel:""});};const sortir=(c,motif)=>majSeance(c.a,c.i,c.x.id,{sorties:(c.x.sorties||[]).concat([{date:today,motif}])});const btn="px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50";const carteLot=({a,i})=>{// appelée comme fonction (pas un composant : pas de remontage à chaque rendu)
+const sug=abattageSuggere(a,config);const rest=restantsLot(a);const seances=abattagesLot(a).slice().sort((u,v)=>(u.date||"").localeCompare(v.date||""));const dern=(a.pesees||[]).slice().sort((x,y)=>(x.date||"").localeCompare(y.date||"")).pop();const pret=sug&&sug<=today;return/*#__PURE__*/React.createElement("div",{className:"bg-white rounded-xl shadow-sm border border-slate-100 p-4"},/*#__PURE__*/React.createElement("div",{className:"flex items-start justify-between gap-2 mb-1"},/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement("p",{className:"font-semibold text-slate-800"},a.lot||"Lot sans numéro"," ",a.race?/*#__PURE__*/React.createElement("span",{className:"font-normal text-slate-400 text-sm"},"\xB7 ",a.race):null),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-500"},a.naissance?"Né le "+frDate(a.naissance)+" · "+ageJeune(a.naissance).label:"Date de naissance inconnue")),/*#__PURE__*/React.createElement(StatutAnimal,{statut:statutLotAbattoir(a)})),/*#__PURE__*/React.createElement("div",{className:"flex flex-wrap gap-x-4 gap-y-1 text-sm my-2"},/*#__PURE__*/React.createElement("span",null,"Restants : ",/*#__PURE__*/React.createElement("span",{className:"font-semibold"},rest),/*#__PURE__*/React.createElement("span",{className:"text-slate-400"}," / ",Number(a.nombre)||0)),rest>0&&sug&&/*#__PURE__*/React.createElement("span",{className:pret?"text-emerald-700":"text-slate-500"},"Pr\xEAt vers le ",frDate(sug),pret?" ✅":""),dern&&/*#__PURE__*/React.createElement("span",{className:"text-slate-500"},"\u2696\uFE0F ",dern.poids," g (",frDate(dern.date),")")),seances.length>0&&/*#__PURE__*/React.createElement("ul",{className:"text-xs text-slate-600 border-t border-slate-100 pt-2 mb-2 space-y-1"},seances.map(x=>{const r=rendementSeance(a,x);return/*#__PURE__*/React.createElement("li",{key:x.id,className:"flex items-center justify-between gap-2"},/*#__PURE__*/React.createElement("span",null,"\uD83D\uDD2A ",x.nombre," le ",frDate(x.date),Number(x.congele)>0?" · 🧊 "+x.congele:"",Number(x.poidsCarcasse)>0?" · carc. "+x.poidsCarcasse+" g":"",r?" · "+(r.estime?"≈ ":"")+r.pct+" %":""),/*#__PURE__*/React.createElement("span",{className:"whitespace-nowrap"},/*#__PURE__*/React.createElement("button",{onClick:()=>setAbattage({index:i,seance:x}),title:"Modifier",className:"px-1 text-slate-400 hover:text-slate-700"},"\u270F\uFE0F"),/*#__PURE__*/React.createElement("button",{onClick:()=>supprimerSeance(a,i,x.id),title:"Supprimer",className:"px-1 text-slate-300 hover:text-red-500"},"\uD83D\uDDD1")));})),/*#__PURE__*/React.createElement("div",{className:"flex flex-wrap items-center gap-2 mt-2"},rest>0&&/*#__PURE__*/React.createElement("button",{onClick:()=>setAbattage({index:i}),className:"px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium"},"\uD83D\uDD2A Abattre"),rest>0&&/*#__PURE__*/React.createElement("button",{onClick:()=>setPesees({index:i}),className:btn},"\u2696\uFE0F Peser"),/*#__PURE__*/React.createElement("span",{className:"ml-auto flex items-center gap-1"},/*#__PURE__*/React.createElement(ObsCell,{texte:a.obs,titre:"Observation",onSave:v=>patchLigne("abattoir",i,{obs:v})}),/*#__PURE__*/React.createElement(RowActions,{onEdit:()=>setEdit({index:i,rec:a}),onDelete:()=>supprimerLigne("abattoir",i)}))));};return/*#__PURE__*/React.createElement("div",null,/*#__PURE__*/React.createElement(PageHeader,{title:"Abattoir",subtitle:"Lots \xE9lev\xE9s pour la consommation, abattages et cong\xE9lateur",action:/*#__PURE__*/React.createElement(AddButton,{onClick:()=>setOpen(true),label:"Ajouter un lot"})}),/*#__PURE__*/React.createElement("div",{className:"flex gap-2 mb-5 border-b border-slate-200"},[["poule","🐔 Poules"],["caille","🐦 Cailles"]].map(([v,l])=>{const n=abattoir.filter(a=>espDe(a.espece)===v&&restantsLot(a)>0).length;return/*#__PURE__*/React.createElement("button",{key:v,onClick:()=>setEspece(v),className:"px-4 py-2 text-sm font-medium -mb-px border-b-2 "+(espece===v?"border-emerald-600 text-emerald-700":"border-transparent text-slate-500 hover:text-slate-700")},l,n?/*#__PURE__*/React.createElement("span",{className:"ml-1 text-xs text-slate-400"},"(",n,")"):null);})),actifs.length>0&&/*#__PURE__*/React.createElement("div",{className:"mb-5"},/*#__PURE__*/React.createElement("button",{onClick:()=>setAbattage({}),className:"w-full sm:w-auto px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"},"\uD83D\uDD2A Enregistrer un abattage")),/*#__PURE__*/React.createElement("div",{className:"bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-5"},/*#__PURE__*/React.createElement("h2",{className:"text-lg font-semibold mb-2"},"\uD83E\uDDCA Cong\xE9lateur ",/*#__PURE__*/React.createElement("span",{className:"text-sm font-normal text-slate-400"},"\u2014 ",totalCongel," ",espece==="caille"?"caille(s)":"poulet(s)")),congel.length===0?/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400"},"Vide."):/*#__PURE__*/React.createElement("ul",{className:"divide-y divide-slate-100"},congel.map((c,k)=>{const vieux=c.mois!=null&&c.mois>=dureeCongel;return/*#__PURE__*/React.createElement("li",{key:k,className:"flex items-center justify-between gap-2 py-2 text-sm"},/*#__PURE__*/React.createElement("span",{className:vieux?"text-red-600":""},/*#__PURE__*/React.createElement("span",{className:"font-semibold"},c.n)," \xB7 ",c.a.lot||"lot sans numéro"," \xB7 congel\xE9",c.n>1?"s":""," le ",frDate(c.x.dateCongel||c.x.date),/*#__PURE__*/React.createElement("span",{className:"text-xs "+(vieux?"font-medium":"text-slate-400")}," \xB7 ",c.mois!=null?c.mois+" mois":"—",vieux?" ⚠️ à consommer":"")),/*#__PURE__*/React.createElement(SortieCongel,{onSortie:m=>sortir(c,m)}));})),congel.length>0&&/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-400 mt-2"},"\u22121 \u2192 \uD83C\uDF7D\uFE0F mang\xE9 \xB7 \uD83D\uDC15 chien \xB7 \uD83C\uDF81 donn\xE9. Alerte au-del\xE0 de ",dureeCongel," mois (R\xE9glages).")),/*#__PURE__*/React.createElement("h2",{className:"text-lg font-semibold mb-3"},"Lots en cours"),actifs.length===0?/*#__PURE__*/React.createElement("p",{className:"text-sm text-slate-400 mb-5"},"Aucun lot ",espece==="caille"?"de cailles":"de poules"," en cours."):/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-1 md:grid-cols-2 gap-4 mb-5"},actifs.map(({a,i})=>/*#__PURE__*/React.createElement(React.Fragment,{key:i},carteLot({a,i})))),bebesAVenir.length>0&&/*#__PURE__*/React.createElement(React.Fragment,null,/*#__PURE__*/React.createElement("h2",{className:"text-lg font-semibold mb-3"},"\uD83D\uDC25 B\xE9b\xE9s \xE0 venir"),/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-5"},bebesAVenir.map(({p,datePrete,restant},k)=>/*#__PURE__*/React.createElement("div",{key:k,className:"bg-white rounded-xl shadow-sm border border-slate-100 p-4"},/*#__PURE__*/React.createElement("div",{className:"flex items-start justify-between gap-2 mb-1"},/*#__PURE__*/React.createElement("p",{className:"text-sm font-medium text-slate-700"},p.id||labelJeune(p.espece)," ",/*#__PURE__*/React.createElement("span",{className:"font-normal text-slate-400"},"\xB7 ",vivantsLot(p)," vivant(s)")),/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap "+(restant!=null&&restant<=0?"bg-emerald-100 text-emerald-700":restant!=null&&restant<14?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600")},libRestant(restant))),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-500"},"N\xE9 le ",frDate(p.date)," \xB7 ",ageJeune(p.date).label),/*#__PURE__*/React.createElement("p",{className:"text-xs text-slate-500"},"Pr\xEAt pour l'abattage vers le ",/*#__PURE__*/React.createElement("span",{className:"font-medium"},datePrete?frDate(datePrete):"—")," ",/*#__PURE__*/React.createElement("span",{className:"text-slate-400"},"(",semAbattage," sem)")))))),termines.length>0&&/*#__PURE__*/React.createElement("div",{className:"mb-5"},/*#__PURE__*/React.createElement("button",{onClick:()=>setVoirTermines(v=>!v),className:"text-sm text-slate-500 hover:text-slate-700"},voirTermines?"▾":"▸"," Lots termin\xE9s (",termines.length,")"),voirTermines&&/*#__PURE__*/React.createElement("div",{className:"grid grid-cols-1 md:grid-cols-2 gap-4 mt-3"},termines.map(({a,i})=>/*#__PURE__*/React.createElement(React.Fragment,{key:i},carteLot({a,i}))))),open&&/*#__PURE__*/React.createElement(Modal,{title:"Nouveau lot — "+(espece==="caille"?"cailles":"poules"),onClose:()=>setOpen(false)},/*#__PURE__*/React.createElement(AbattoirForm,{especeInit:espece,onClose:()=>setOpen(false)})),edit&&/*#__PURE__*/React.createElement(Modal,{title:"Modifier le lot "+(edit.rec.lot||""),onClose:()=>setEdit(null)},/*#__PURE__*/React.createElement(AbattoirForm,{initial:edit.rec,onSave:rec=>majLigne("abattoir",edit.index,rec),onClose:()=>setEdit(null)})),abattage&&/*#__PURE__*/React.createElement(Modal,{title:abattage.seance?"✏️ Modifier l'abattage":"🔪 Abattage",onClose:()=>setAbattage(null)},/*#__PURE__*/React.createElement(AbattageForm,{espece:espece,indexInit:abattage.index,seance:abattage.seance,onClose:()=>setAbattage(null)})),pesees&&/*#__PURE__*/React.createElement(Modal,{title:"⚖️ Pesées — "+((abattoir[pesees.index]||{}).lot||"lot"),onClose:()=>setPesees(null)},/*#__PURE__*/React.createElement(PeseesLot,{index:pesees.index,onClose:()=>setPesees(null)})));}/* ---------- Inventaire consommables ---------- */// Pastille état stock (bas / ok)
 // `bas` = stock sous le seuil · `manuel` = mis dans la liste de courses à la main
 function StockBadge({bas,manuel}){if(bas||manuel)return/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 whitespace-nowrap",title:manuel&&!bas?"Ajouté à la main à la liste de courses":"Stock sous le seuil d'alerte"},manuel&&!bas?"🛒 à racheter":"⚠️ à racheter");return/*#__PURE__*/React.createElement("span",{className:"px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700"},"ok");}// Fusionne un article mal écrit dans le bon : tous ses mouvements sont renommés (rien n'est supprimé).
 function FusionArticlesForm({articles,onClose,onFusion}){const[source,setSource]=useState("");const[dest,setDest]=useState("");const ok=source&&dest&&normLibelle(source)!==normLibelle(dest);const submit=e=>{e.preventDefault();if(!ok)return;onFusion(source,dest);onClose();};return/*#__PURE__*/React.createElement("form",{onSubmit:submit,className:"space-y-3"},/*#__PURE__*/React.createElement(Field,{label:"Article mal \xE9crit (dispara\xEEtra du stock)"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:source,onChange:e=>setSource(e.target.value),required:true},/*#__PURE__*/React.createElement("option",{value:""},"\u2014 choisir \u2014"),articles.map(a=>/*#__PURE__*/React.createElement("option",{key:a,value:a},a)))),/*#__PURE__*/React.createElement(Field,{label:"Article correct (r\xE9cup\xE8re les mouvements)"},/*#__PURE__*/React.createElement("select",{className:inputClass,value:dest,onChange:e=>setDest(e.target.value),required:true},/*#__PURE__*/React.createElement("option",{value:""},"\u2014 choisir \u2014"),articles.filter(a=>normLibelle(a)!==normLibelle(source)).map(a=>/*#__PURE__*/React.createElement("option",{key:a,value:a},a)))),/*#__PURE__*/React.createElement(FormButtons,{onClose:onClose}));}function ConsommableForm({onClose,mouvementInit,initial,onSave}){const{ajouterConsommable,consommables,config,setConfig,reproducteurs,poussins,abattoir}=useData();const CONSO_CATS_C=config.catsConso,UNITES_C=config.unites;const[date,setDate]=useState(initial?initial.date:new Date().toISOString().slice(0,10));const[article,setArticle]=useState(initial?initial.article:"");const[categorie,setCategorie]=useState(initial?initial.categorie:CONSO_CATS_C[0]);const[mouvement,setMouvement]=useState(initial?initial.mouvement:mouvementInit||"entrée");const[quantite,setQuantite]=useState(initial?String(initial.quantite):"");// Unité par défaut = « pièce » : on compte des SACS, pas des kilos. Le poids du sac est
@@ -11130,7 +11352,7 @@ function toggleArticleUrgent(config,article){const liste=(config&&config.article
 // Rattacher un article à ses mangeurs permet deux choses : compter les bouches, et surtout
 // RECALCULER la durée d'un sac quand le cheptel change — sans attendre la prochaine sortie.
 const GROUPES_CONSO=[{id:"poules",label:"🐔 Poules & coqs"},{id:"cailles",label:"🐦 Cailles"},{id:"jeunes",label:"🐥 Poussins & cailleteaux"},{id:"engrais",label:"🍗 Animaux consommation"}];// Effectif vivant d'un groupe, à l'instant T, depuis les données déjà saisies
-function effectifGroupe(id,d){const e=effectifsReproducteurs(d.reproducteurs,d.config);if(id==="poules")return(Number(e.poules)||0)+(Number(e.coqs)||0);if(id==="cailles")return(Number(e.caillesF)||0)+(Number(e.caillesM)||0);if(id==="jeunes")return(d.poussins||[]).filter(p=>p.statut==="en croissance").reduce((s,p)=>s+vivantsLot(p),0);if(id==="engrais")return(d.abattoir||[]).filter(a=>a.statut!=="abattu"&&a.statut!=="décédé").reduce((s,a)=>s+(Number(a.nombre)||0),0);return 0;}const consommateursDe=(config,article)=>(config&&config.consommateurs||{})[memArticleKey(article)]||[];// Nombre total de bouches sur un article. 0 si aucun consommateur n'est indiqué.
+function effectifGroupe(id,d){const e=effectifsReproducteurs(d.reproducteurs,d.config);if(id==="poules")return(Number(e.poules)||0)+(Number(e.coqs)||0);if(id==="cailles")return(Number(e.caillesF)||0)+(Number(e.caillesM)||0);if(id==="jeunes")return(d.poussins||[]).filter(p=>p.statut==="en croissance").reduce((s,p)=>s+vivantsLot(p),0);if(id==="engrais")return(d.abattoir||[]).reduce((s,a)=>s+restantsLot(a),0);return 0;}const consommateursDe=(config,article)=>(config&&config.consommateurs||{})[memArticleKey(article)]||[];// Nombre total de bouches sur un article. 0 si aucun consommateur n'est indiqué.
 function effectifConsommateurs(config,article,d){return consommateursDe(config,article).reduce((s,g)=>s+effectifGroupe(g,d),0);}// ===== Sac en cours : combien de temps dure un sac, et quand faut-il vraiment racheter ? =====
 // L'utilisateur ne pèse pas ce qu'il donne. La seule mesure fiable est le TEMPS ENTRE DEUX
 // SORTIES DE SAC : si un sac dure 3 semaines, sortir un sac du stock ne veut pas dire qu'il
@@ -11418,7 +11640,7 @@ lots.forEach(l=>{if(l.statut==="terminé"||!l.dateDebut)return;const cE=l.espece
 add(l.dateDebut,{icon:"🥚",label:"Mise en couveuse "+l.id+" ("+l.espece+")",color:cE,page:"lots"});add(dateEclosion(l.dateDebut,l.espece),{icon:"🐣",label:"Éclosion prévue "+l.id+" ("+l.espece+")",color:cE,page:"lots"});const params=normeEspece(config,l.espece).params||{};if(params.mirage1)add(dateDecalee(l.dateDebut,Number(params.mirage1)),{icon:"🔦",label:"Mirage 1 — "+l.id+" ("+l.espece+")",color:cE,page:"lots"});if(params.mirage2)add(dateDecalee(l.dateDebut,Number(params.mirage2)),{icon:"🔦",label:"Mirage 2 — "+l.id+" ("+l.espece+")",color:cE,page:"lots"});if(l.statut==="en couveuse"){const duree=DUREE[l.espece]||21;const cons=Number(config.conservationOeufs)||14,delta=Number(config.deltaEclosion)||0;add(dateDecalee(l.dateDebut,Math.max(0,duree-cons+delta)),{icon:"🥚",label:"Début récolte prochaine couvée — couveuse "+l.couveuse+" ("+l.espece+")",color:cE,page:"lots"});}});rappelsIntelligents(poulaillers,config,traitements).forEach(r=>{if(r.prochain)add(r.prochain,{icon:"🔔",label:r.label+" — "+r.zone,color:"red",page:"poulaillers"});});poulaillers.forEach(p=>{if(p.rappel&&!ligneFaitAction(p,"nettoyage"))add(p.rappel,{icon:"⏰",label:"Rappel — "+p.zone,color:"red",page:"poulaillers"});});// Transferts prévus des bébés à la fin du suivi (≈ 8 semaines depuis la naissance)
 const nS=config.jeunes&&config.jeunes.suiviSemaines||8;poussins.forEach(p=>{if(p.statut!=="en croissance"||!p.date)return;add(dateDecalee(p.date,nS*7),{icon:"🍗",label:"Transfert prévu ("+nS+" sem.) — "+(p.id||labelJeune(p.espece)),color:"purple",page:"poulaillers"});});// Jalons d'âge des reproducteurs actifs : entrée en ponte/repro (min) et début de déclin
 reproducteurs.forEach(r=>{if(r.statut!=="actif"||!r.naissance)return;const seuils=(config.agesRepro||{})[r.espece];if(!seuils)return;const nom=r.nom||r.espece;if(seuils.min!=null)add(dateDecalee(r.naissance,Math.round(seuils.min*30.44)),{icon:"🐓",label:"Âge de ponte/repro — "+nom,color:"emerald",page:"reproducteurs"});if(seuils.declin!=null)add(dateDecalee(r.naissance,Math.round(seuils.declin*30.44)),{icon:"⚠️",label:"Début de déclin — "+nom,color:"orange",page:"reproducteurs"});});// Abattages prévus (animaux destinés à la consommation) — si une date d'abattage prévu est renseignée
-abattoir.forEach(a=>{if(!a.abattagePrevu||a.abattageReel)return;// déjà abattu → on n'affiche plus
+abattoir.forEach(a=>{if(!a.abattagePrevu||a.abattageReel||abattusLot(a)>0)return;// champ des anciennes saisies ; déjà abattu → on n'affiche plus
 add(a.abattagePrevu,{icon:"🔪",label:"Abattage prévu — "+(a.lot||a.espece||"lot")+(a.nombre?" ("+a.nombre+")":""),color:"slate",page:"abattoir"});});return events;}// Calendrier mensuel : couvaisons (mise en couveuse + éclosion prévue + mirages),
 // début de récolte des œufs pour la couvée suivante, et rappels (nettoyage / traitements / manuels).
 // Chaque événement a une `page` cible → cliquable pour s'y rendre.
@@ -11431,7 +11653,7 @@ const nbJours=new Date(vue.y,vue.m+1,0).getDate();const cells=[];for(let i=0;i<o
        ============================================================ */// Ordre : quotidien en haut, élevage au milieu, inventaires, puis réglages/historique en bas.
 // Ordre demandé. Couveuses & Statistiques ne sont plus des onglets :
 // leur contenu est intégré dans le tableau de bord (sections déroulantes).
-const PAGES=[{id:"dashboard",label:"Tableau de bord",icon:"📊",comp:Dashboard},{id:"calendrier",label:"Calendrier",icon:"📅",comp:Calendrier},{id:"poulaillers",label:"Gestion poulailler",icon:"🏠",comp:GestionPoulaillers},{id:"lots",label:"Récolte des œufs",icon:"🥚",comp:Lots},{id:"reproducteurs",label:"Animaux reproducteurs",icon:"🐓",comp:Reproducteurs},{id:"abattoir",label:"Animaux consommation",icon:"🍗",comp:Abattoir},{id:"consommables",label:"Inventaire consommables",icon:"🧺",comp:InventaireConsommables},{id:"materiel",label:"Inventaire matériel",icon:"🔧",comp:InventaireMateriel},{id:"catalogue",label:"Catalogue des races",icon:"📖",comp:Catalogue},{id:"reglages",label:"Réglages / Base de données",icon:"⚙️",comp:Reglages},{id:"historique",label:"Historique",icon:"🗄️",comp:Historique}];// Indicateur de sauvegarde + bouton « Sauvegarder maintenant » (barre latérale)
+const PAGES=[{id:"dashboard",label:"Tableau de bord",icon:"📊",comp:Dashboard},{id:"calendrier",label:"Calendrier",icon:"📅",comp:Calendrier},{id:"poulaillers",label:"Gestion poulailler",icon:"🏠",comp:GestionPoulaillers},{id:"lots",label:"Récolte des œufs",icon:"🥚",comp:Lots},{id:"reproducteurs",label:"Animaux reproducteurs",icon:"🐓",comp:Reproducteurs},{id:"abattoir",label:"Abattoir",icon:"🔪",comp:Abattoir},{id:"consommables",label:"Inventaire consommables",icon:"🧺",comp:InventaireConsommables},{id:"materiel",label:"Inventaire matériel",icon:"🔧",comp:InventaireMateriel},{id:"catalogue",label:"Catalogue des races",icon:"📖",comp:Catalogue},{id:"reglages",label:"Réglages / Base de données",icon:"⚙️",comp:Reglages},{id:"historique",label:"Historique",icon:"🗄️",comp:Historique}];// Indicateur de sauvegarde + bouton « Sauvegarder maintenant » (barre latérale)
 function SaveIndicator(){const store=useData();const s=useSyncState();const[,force]=useState(0);const[connecte,setConnecte]=useState(false);useEffect(()=>{const id=setInterval(()=>force(n=>n+1),30000);return()=>clearInterval(id);},[]);// rafraîchit « il y a X min »
 // Vraie connexion = un utilisateur cloud authentifié (la lib peut être chargée sans compte = mode local)
 useEffect(()=>{const c=getSb();if(!c){setConnecte(false);return;}c.auth.getUser().then(({data})=>setConnecte(!!(data&&data.user))).catch(()=>setConnecte(false));},[s.at]);let cls,txt,icone;if(!connecte||s.status==="local"){cls="bg-slate-800 text-slate-300";icone="💾";txt="Sur cet appareil";}else if(s.status==="saving"||s.status==="pending"){cls="bg-amber-500/20 text-amber-200";icone="⏳";txt="Enregistrement…";}else if(s.status==="error"){cls="bg-red-500/20 text-red-200";icone="⚠️";txt="Hors-ligne — non sauvegardé";}else{cls="bg-emerald-500/20 text-emerald-200";icone="✓";txt="Sauvegardé "+tempsRelatif(s.at);}const action=()=>{if(connecte)pushCloud();else exporterDonnees(store);};return/*#__PURE__*/React.createElement("div",{className:"space-y-1.5"},/*#__PURE__*/React.createElement("div",{className:"flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs "+cls,title:s.at?"Dernière sauvegarde : "+new Date(s.at).toLocaleString("fr-FR"):""},/*#__PURE__*/React.createElement("span",null,icone),/*#__PURE__*/React.createElement("span",{className:"truncate"},txt)),/*#__PURE__*/React.createElement("div",{className:"flex gap-1.5"},/*#__PURE__*/React.createElement("button",{onClick:action,title:connecte?"Sauvegarder maintenant (cloud)":"Télécharger une sauvegarde (JSON)",className:"flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700"},"\uD83D\uDCBE Sauvegarder"),/*#__PURE__*/React.createElement("button",{onClick:()=>exporterDonnees(store),title:"Exporter (JSON)",className:"px-2.5 py-1.5 rounded-lg text-sm text-slate-300 bg-slate-800 hover:bg-slate-700"},"\u2B07\uFE0F"),/*#__PURE__*/React.createElement("label",{title:"Importer (JSON)",className:"px-2.5 py-1.5 rounded-lg text-sm text-slate-300 bg-slate-800 hover:bg-slate-700 cursor-pointer"},"\u2B06\uFE0F",/*#__PURE__*/React.createElement("input",{type:"file",accept:"application/json,.json",className:"hidden",onChange:e=>{if(e.target.files[0])importerDonnees(e.target.files[0]);e.target.value="";}}))));}// Bouton bascule jour / nuit (préférence mémorisée dans localStorage)
